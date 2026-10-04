@@ -114,3 +114,7 @@ lint/tmp/
 # lint/reports/
 /sd
 /reference
+
+# Python bytecode (tools/*.py)
+__pycache__/
+*.pyc
