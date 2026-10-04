@@ -20,6 +20,9 @@ are planned for the future.
 - Save states (multiple slots, with preview thumbnails)
 - Adjustable screen placement/size in the VR view
 - Configurable VB screen color palette, including a custom R/G/B tint
+- Per-shade color palettes (Red Viper-style colorization): each of the
+  Virtual Boy's 4 shades gets its own color, so a game's layers keep their
+  own hues through fades - found at the end of Settings → Color Palette
 
 ## Opening the menu
 
@@ -184,3 +187,16 @@ target. No OpenXR runtime or headset required at all:
 ```
 build-pc\Debug\VirtualBoyGoPC2D.exe
 ```
+
+## Credits
+
+- **Beetle VB** ([libretro/beetle-vb-libretro](https://github.com/libretro/beetle-vb-libretro)),
+  libretro's fork of Mednafen's Virtual Boy emulation - the emulator core,
+  GPL-2.0. Compiled from the untouched submodule, except for a one-line
+  generated change to its video code that exposes each pixel's shade index
+  (see `cmake/PatchBeetleVip.cmake`).
+- **Red Viper** ([skyfloogle/red-viper](https://github.com/skyfloogle/red-viper)),
+  the Virtual Boy emulator for the 3DS - the per-shade colorization idea
+  (its "multicolour" mode), and the "fire & leaf" preset is adapted from
+  Red Viper's default multicolour palette. VirtualBoyGo's implementation
+  (`core/emu/ShadeColorizer`) is its own code; no Red Viper code is used.

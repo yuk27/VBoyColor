@@ -71,13 +71,15 @@ void MainPage::Init(UiRenderer &ui, const UiMenuResources &resources)
     AppSettings *settings = resources.settings;
     m_preview = std::make_shared<MenuImage>(ui, resources.smallFont, Emulator::kPreviewWidth, Emulator::kPreviewHeight,
                                             kPreviewX, kPreviewY, kPreviewWidth, kPreviewHeight,
+                                            // Save previews are stored as plain luminance, so with a
+                                            // per-shade palette active (ScreenTint() white) they show
+                                            // in grayscale rather than in the palette's colors.
                                             [settings]() -> XrColor4f
                                             {
-                                                return settings ? XrColor4f{settings->colorR, settings->colorG, settings->colorB, 1.0f}
-                                                                : XrColor4f{1.0f, 1.0f, 1.0f, 1.0f};
+                                                return settings ? settings->ScreenTint() : XrColor4f{1.0f, 1.0f, 1.0f, 1.0f};
                                             },
                                             [settings]() -> int
-                                            { return settings ? settings->selectedPattern : -1; });
+                                            { return settings ? settings->ScreenPattern() : -1; });
     m_menu.MenuItems.push_back(m_preview);
 
     m_menu.BackPress = [appMenu]() { if (appMenu) appMenu->Hide(); };

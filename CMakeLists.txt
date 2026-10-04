@@ -159,6 +159,14 @@ endif()
 # sync with exactly what upstream's own build compiles).
 # --------------------------------------------------------------------------
 set(VB_CORE_DIR ${CMAKE_SOURCE_DIR}/third_party/beetle-vb-libretro)
+
+# vip.c is compiled from a generated copy that tags each output pixel with
+# its VB shade index (for per-shade color palettes) - see
+# cmake/PatchBeetleVip.cmake. Everything else is compiled straight from the
+# untouched submodule.
+include(${CMAKE_SOURCE_DIR}/cmake/PatchBeetleVip.cmake)
+vbgo_generate_patched_vip(${VB_CORE_DIR} ${CMAKE_BINARY_DIR}/generated/beetle-vb)
+
 add_library(vb_core STATIC
     ${VB_CORE_DIR}/mednafen/hw_cpu/v810/v810_cpu.cpp
     ${VB_CORE_DIR}/mednafen/mempatcher.cpp
@@ -166,7 +174,7 @@ add_library(vb_core STATIC
     ${VB_CORE_DIR}/mednafen/vb/vsu.c
     ${VB_CORE_DIR}/mednafen/vb/input.c
     ${VB_CORE_DIR}/mednafen/vb/timer.c
-    ${VB_CORE_DIR}/mednafen/vb/vip.c
+    ${VBGO_PATCHED_VIP_SOURCE}
     ${VB_CORE_DIR}/mednafen/hw_cpu/v810/fpu-new/softfloat.c
     ${VB_CORE_DIR}/mednafen/sound/Blip_Buffer.c
     ${VB_CORE_DIR}/mednafen/state.c
@@ -180,6 +188,10 @@ target_include_directories(vb_core PUBLIC
     ${VB_CORE_DIR}/mednafen/include
     ${VB_CORE_DIR}/libretro-common/include
 )
+# The generated vip.c lives outside the submodule, so its quoted includes
+# ("vb.h", "vip_draw.inc", "../math_ops.h", ...) can no longer resolve
+# relative to its own folder - point them at the original one instead.
+target_include_directories(vb_core PRIVATE ${VB_CORE_DIR}/mednafen/vb)
 # Matches upstream's own Makefile flags (see Makefile/Makefile.common) for a
 # WANT_32BPP, non-static-linking, non-HAVE_GRIFFIN build.
 target_compile_definitions(vb_core PRIVATE
@@ -220,6 +232,7 @@ add_library(vbgo_app STATIC
     core/menu/pages/EmulatorButtonMapPage.cpp
     core/menu/pages/MoveScreenPage.cpp
     core/emu/Emulator.cpp
+    core/emu/ShadeColorizer.cpp
     core/emu/AudioOutput.cpp
     core/input/XrInput.cpp
     core/input/ButtonMapping.cpp

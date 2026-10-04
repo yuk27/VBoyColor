@@ -360,6 +360,10 @@ int main()
                 keyboardWasDown[key] = down;
             }
 
+            // Even while paused - a palette change from the menu re-colors
+            // the frame already on screen (see Emulator::SetShadePalette).
+            emulator.SetShadePalette(settings.selectedShadePalette);
+
             // Pause emulation while the menu is open so gameplay doesn't
             // keep advancing behind it.
             if (!appMenu.IsOpen())
@@ -402,9 +406,8 @@ int main()
                                   appMenu.GetBackgroundColor());
             if (emulator.HasScreen())
             {
-                const XrColor4f tint{settings.colorR, settings.colorG, settings.colorB, 1.0f};
                 emulator.DrawScreen(uiRenderer, 0, 0, static_cast<float>(extent.width), static_cast<float>(extent.height),
-                                    Emulator::Eye::Left, tint, settings.selectedPattern);
+                                    Emulator::Eye::Left, settings.ScreenTint(), settings.ScreenPattern());
             }
             if (appMenu.IsVisible())
                 appMenu.Draw(uiRenderer, menuX, menuY);

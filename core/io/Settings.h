@@ -23,8 +23,10 @@ enum class FollowHeadMode : int32_t
 struct AppSettings
 {
     // Bumped whenever the on-disk layout changes - Load() refuses (leaves
-    // defaults in place) on a mismatch rather than attempting migration.
-    static constexpr int kVersion = 11;
+    // defaults in place) on a mismatch rather than attempting migration,
+    // except from version 11, whose layout is an exact prefix of this one
+    // (12 only appended selectedShadePalette) - see Settings.cpp.
+    static constexpr int kVersion = 12;
 
     // Move Screen / Follow Head. Only OpenXrApp's quad-layer pose consumes
     // these - meaningless on the flat pc2d debug build.
@@ -56,6 +58,24 @@ struct AppSettings
     // button carries two independent physical bindings
     // (MappedButtons::Buttons[0]/[1]) - either triggers it.
     ButtonMapper::MappedButtons vbButtons[16];
+
+    // -1 = off; 0+ = index into kShadePalettes - per-shade colors baked into
+    // the frame itself by Emulator::SetShadePalette (Red Viper-style
+    // colorization). Mutually exclusive with both the tint and
+    // selectedPattern above: while one's active, ScreenTint()/ScreenPattern()
+    // go neutral and SettingsPage hides the R/G/B rows. Kept as the LAST
+    // field so a version-11 settings file is an exact prefix of this layout
+    // (see Settings.cpp's migration).
+    int selectedShadePalette = -1;
+
+    // What the screen should be drawn with (Emulator::DrawScreen's tint/
+    // patternIndex) - neutral while a shade palette is active, since its
+    // colors are already in the frame and tinting on top would double them.
+    XrColor4f ScreenTint() const
+    {
+        return selectedShadePalette >= 0 ? XrColor4f{1.0f, 1.0f, 1.0f, 1.0f} : XrColor4f{colorR, colorG, colorB, 1.0f};
+    }
+    int ScreenPattern() const { return selectedShadePalette >= 0 ? -1 : selectedPattern; }
 
     // Best-effort; failures are silently ignored. Takes Platform by
     // reference rather than storing one - this struct is memcpy'd whole
@@ -103,3 +123,43 @@ inline constexpr std::array<std::array<XrColor4f, 5>, 6> kScreenPatterns = {{
     {{{0.02f, 0.03f, 0.00f, 1.0f}, {0.15f, 0.30f, 0.02f, 1.0f}, {0.35f, 0.55f, 0.05f, 1.0f}, {0.65f, 0.85f, 0.15f, 1.0f}, {0.95f, 1.00f, 0.70f, 1.0f}}},
 }};
 inline constexpr int kScreenPatternCount = static_cast<int>(kScreenPatterns.size());
+
+namespace SettingsDetail
+{
+    // 0xRRGGBB -> XrColor4f, so the palette table below can be written (and
+    // compared against reference palettes) as familiar hex codes.
+    constexpr XrColor4f Hex(uint32_t rgb)
+    {
+        return {((rgb >> 16) & 0xFF) / 255.0f, ((rgb >> 8) & 0xFF) / 255.0f, (rgb & 0xFF) / 255.0f, 1.0f};
+    }
+} // namespace SettingsDetail
+
+// Per-shade palettes (AppSettings::selectedShadePalette) - one color for
+// each of the VB's 4 shades: background (the VB's black), then the dark,
+// light and lightest drawn shades (BRTA, BRTB, BRTA+BRTB+BRTC). Unlike the
+// tint/patterns above, which recolor the finished frame by brightness, these
+// color each pixel by which shade it is (core/emu/ShadeColorizer.h) - the
+// colorization approach Red Viper (github.com/skyfloogle/red-viper)
+// introduced, which keeps each layer's hue stable through fades. Shown at a
+// typical game's brightness, each shade appears as exactly the color listed.
+inline constexpr std::array<std::array<XrColor4f, 4>, 9> kShadePalettes = {{
+    // Handheld LCD green, light background (classic pea-soup look)
+    {{SettingsDetail::Hex(0x9BBC0F), SettingsDetail::Hex(0x8BAC0F), SettingsDetail::Hex(0x306230), SettingsDetail::Hex(0x0F380F)}},
+    // Handheld LCD green, dark background
+    {{SettingsDetail::Hex(0x0F380F), SettingsDetail::Hex(0x306230), SettingsDetail::Hex(0x8BAC0F), SettingsDetail::Hex(0x9BBC0F)}},
+    // Warm cream / orange / red / plum, light background (Super-style)
+    {{SettingsDetail::Hex(0xF8E8C8), SettingsDetail::Hex(0xD89048), SettingsDetail::Hex(0xA82820), SettingsDetail::Hex(0x301850)}},
+    // Evenly spaced grayscale
+    {{SettingsDetail::Hex(0x000000), SettingsDetail::Hex(0x555555), SettingsDetail::Hex(0xAAAAAA), SettingsDetail::Hex(0xFFFFFF)}},
+    // Fire & leaf - rust / green / gold on near-black (after Red Viper's multicolour default)
+    {{SettingsDetail::Hex(0x080200), SettingsDetail::Hex(0x8C2A0A), SettingsDetail::Hex(0x1DBB00), SettingsDetail::Hex(0xFFD800)}},
+    // Neon - purple / cyan / lime on near-black violet
+    {{SettingsDetail::Hex(0x0B0614), SettingsDetail::Hex(0x7A1FA2), SettingsDetail::Hex(0x00B8D4), SettingsDetail::Hex(0xF4FF81)}},
+    // Deep sea - navy / azure / ice on near-black blue
+    {{SettingsDetail::Hex(0x020814), SettingsDetail::Hex(0x0D3B66), SettingsDetail::Hex(0x3A86C8), SettingsDetail::Hex(0xBFE6FF)}},
+    // Sepia
+    {{SettingsDetail::Hex(0x1A0F07), SettingsDetail::Hex(0x5C3A1E), SettingsDetail::Hex(0xA87B4F), SettingsDetail::Hex(0xF2DEB8)}},
+    // Paper - inverted: dark ink on off-white (brighter VB shades print darker)
+    {{SettingsDetail::Hex(0xF4EFE1), SettingsDetail::Hex(0x8C877B), SettingsDetail::Hex(0x4A463F), SettingsDetail::Hex(0x141414)}},
+}};
+inline constexpr int kShadePaletteCount = static_cast<int>(kShadePalettes.size());

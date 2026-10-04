@@ -1,6 +1,7 @@
 #pragma once
 
 #include "emu/AudioOutput.h"
+#include "emu/ShadeColorizer.h"
 #include "gfx/UiRenderer.h"
 #include "io/Platform.h"
 
@@ -133,13 +134,26 @@ public:
     // RunFrame produced (all-black before any ROM loads). tint multiplies
     // the drawn pixels (white = no-op) - the VB color palette/custom RGB
     // tint (AppSettings::colorR/G/B) is applied this way, since the core
-    // itself has no palette concept and always outputs pre-colored frames.
+    // itself has no palette concept and always outputs pre-colored frames
+    // (per-shade palettes are the exception - see SetShadePalette - and
+    // callers pass AppSettings::ScreenTint()/ScreenPattern(), which go
+    // neutral while one is active).
     // patternIndex (0-5, see kScreenPatterns in Settings.h) draws through
     // screen_pattern.frag's multi-hue gradient instead, ignoring tint
     // entirely - the flat single-color multiply path above is otherwise
     // completely unchanged. -1 (default) keeps today's tint-only behavior.
     void DrawScreen(UiRenderer &ui, float x, float y, float w, float h, Eye eye = Eye::Both,
                     const XrColor4f &tint = XrColor4f{1.0f, 1.0f, 1.0f, 1.0f}, int patternIndex = -1) const;
+
+    // Per-shade colorization (AppSettings::selectedShadePalette): -1 = off,
+    // the core's grayscale goes to the screen texture as-is; 0+ = index into
+    // kShadePalettes, every pixel recolored by which VB shade it is (see
+    // ShadeColorizer). Unlike the tint/pattern, this is baked into the
+    // uploaded frame rather than applied at draw time, so on a change the
+    // last frame is immediately re-colored and re-uploaded - the screen
+    // updates live while the menu has emulation paused. Cheap when
+    // unchanged; call once per app frame with the current setting.
+    void SetShadePalette(int paletteIndex);
 
     // UI slots are 0-9 (10 total, matching FrontendGo's saveStates[10]) -
     // slot 0 is unsuffixed on disk, same as FrontendGo's slot 0 (see
@@ -171,6 +185,11 @@ private:
     std::string StateFileName(int uiSlot, const char *ext) const;
 
     void CaptureScreenshotGrayscale(std::vector<uint8_t> &outGray) const;
+
+    // Converts m_rawFrame into m_frameBufferRgba (colorized if a shade
+    // palette is active, otherwise a straight copy with opaque alpha) and
+    // uploads it to the screen texture.
+    void UploadFrame();
 
     // Cart battery-save, matches FrontendGo's <romDir>/<stem>.srm. Must run
     // before retro_unload_game() - the SRAM pointer isn't valid after.
@@ -207,6 +226,19 @@ private:
     // uploading the core's buffer directly, or the screen renders fully
     // transparent (black, since nothing else is behind it).
     std::vector<uint8_t> m_frameBufferRgba;
+
+    // Untouched copy of the core's last frame - gray RGB plus the shade
+    // index tag in each pixel's top byte (cmake/PatchBeetleVip.cmake). Kept
+    // so a shade palette change can re-color the frame on screen without
+    // running the core (UploadFrame), and so save-state previews stay true
+    // VB luminance whatever palette is active (CaptureScreenshotGrayscale).
+    // Same size as m_frameBufferRgba; m_hasFrame is false until the first
+    // frame lands in it.
+    std::vector<uint8_t> m_rawFrame;
+    bool m_hasFrame = false;
+
+    int m_shadePaletteIndex = -1; // see SetShadePalette
+    ShadeColorizer m_shadeColorizer;
 
     // Plays whatever the audio_sample_batch callback forwards to it - see
     // Emulator.cpp's RetroAudioSampleBatch. Owned here (not a global) since

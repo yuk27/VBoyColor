@@ -170,6 +170,7 @@ void Emulator::Initialize(UiRenderer &ui, Platform &platform)
     // frame's actual valid region is.
     m_screenTexture = ui.CreateStreamingImage(kFbWidth, kFbHeight, VK_FORMAT_B8G8R8A8_SRGB);
     m_frameBufferRgba.resize(static_cast<size_t>(kFbWidth) * kFbHeight * 4);
+    m_rawFrame.resize(m_frameBufferRgba.size());
 }
 
 bool Emulator::LoadRom(const std::string &romPath, const std::string &displayName)
@@ -246,9 +247,55 @@ void Emulator::RunFrame(float deltaSeconds)
 
     if (ranAny && g_frameReady && m_ui)
     {
+        std::memcpy(m_rawFrame.data(), g_pendingFrame, m_rawFrame.size());
+        m_hasFrame = true;
+        UploadFrame();
+        m_lastFrameWidth = g_pendingWidth > 0 ? g_pendingWidth : kSideBySideWidth;
+        m_lastFrameHeight = g_pendingHeight > 0 ? g_pendingHeight : kSideBySideHeight;
+        g_frameReady = false;
+    }
+}
+
+void Emulator::SetShadePalette(int paletteIndex)
+{
+    if (paletteIndex < 0 || paletteIndex >= kShadePaletteCount)
+        paletteIndex = -1;
+    if (paletteIndex == m_shadePaletteIndex)
+        return;
+
+    m_shadePaletteIndex = paletteIndex;
+    if (paletteIndex >= 0)
+    {
+        std::array<ShadeRgb, 4> palette;
+        for (int i = 0; i < 4; ++i)
+        {
+            const XrColor4f &c = kShadePalettes[paletteIndex][i];
+            palette[i] = ShadeRgb{c.r, c.g, c.b};
+        }
+        m_shadeColorizer.SetPalette(palette);
+    }
+
+    // Emulation is paused while the menu is open, so RunFrame won't upload
+    // anything new until it closes - re-color the frame already on screen
+    // now so palette changes show up immediately.
+    if (m_hasFrame && m_ui)
+        UploadFrame();
+}
+
+void Emulator::UploadFrame()
+{
+    const size_t pixelCount = m_rawFrame.size() / 4;
+    if (m_shadePaletteIndex >= 0)
+    {
+        m_shadeColorizer.Colorize(m_rawFrame.data(), m_frameBufferRgba.data(), pixelCount);
+    }
+    else
+    {
         // Force alpha to opaque while copying - see m_frameBufferRgba's doc
         // comment for why the core's own buffer can't be uploaded directly.
-        const auto *src = static_cast<const uint8_t *>(g_pendingFrame);
+        // (Its top byte also carries the shade index tag, which this mode
+        // doesn't need.)
+        const uint8_t *src = m_rawFrame.data();
         for (size_t i = 0; i < m_frameBufferRgba.size(); i += 4)
         {
             m_frameBufferRgba[i + 0] = src[i + 0];
@@ -256,11 +303,8 @@ void Emulator::RunFrame(float deltaSeconds)
             m_frameBufferRgba[i + 2] = src[i + 2];
             m_frameBufferRgba[i + 3] = 0xFF;
         }
-        m_ui->UpdateStreamingImage(m_screenTexture, m_frameBufferRgba.data(), m_frameBufferRgba.size());
-        m_lastFrameWidth = g_pendingWidth > 0 ? g_pendingWidth : kSideBySideWidth;
-        m_lastFrameHeight = g_pendingHeight > 0 ? g_pendingHeight : kSideBySideHeight;
-        g_frameReady = false;
     }
+    m_ui->UpdateStreamingImage(m_screenTexture, m_frameBufferRgba.data(), m_frameBufferRgba.size());
 }
 
 void Emulator::DrawScreen(UiRenderer &ui, float x, float y, float w, float h, Eye eye, const XrColor4f &tint,
@@ -300,7 +344,10 @@ std::string Emulator::StateFileName(int uiSlot, const char *ext) const
 void Emulator::CaptureScreenshotGrayscale(std::vector<uint8_t> &outGray) const
 {
     outGray.assign(static_cast<size_t>(kPreviewWidth) * kPreviewHeight, 0);
-    if (m_frameBufferRgba.empty())
+    // Sampled from the raw core frame, not the uploaded (possibly shade-
+    // palette colorized) one, so .stateimg always stores true VB luminance
+    // regardless of the palette active when the state was saved.
+    if (!m_hasFrame)
         return;
 
     // Left-eye crop of the current side-by-side frame (native VB
@@ -324,9 +371,9 @@ void Emulator::CaptureScreenshotGrayscale(std::vector<uint8_t> &outGray) const
         {
             const uint32_t srcX = x * srcEyeWidth / kPreviewWidth;
             const size_t srcIndex = (static_cast<size_t>(srcY) * kFbWidth + srcX) * 4;
-            const uint8_t r = m_frameBufferRgba[srcIndex + 0];
-            const uint8_t g = m_frameBufferRgba[srcIndex + 1];
-            const uint8_t b = m_frameBufferRgba[srcIndex + 2];
+            const uint8_t r = m_rawFrame[srcIndex + 0];
+            const uint8_t g = m_rawFrame[srcIndex + 1];
+            const uint8_t b = m_rawFrame[srcIndex + 2];
             // Core output is gamma-encoded (sRGB-like). Linearize before
             // storing so .stateimg holds true luminance - byte-compatible
             // with old save files (pre-fed1a44) which were also linear.

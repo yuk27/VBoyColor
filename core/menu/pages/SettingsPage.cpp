@@ -1,4 +1,5 @@
 #include "menu/pages/SettingsPage.h"
+#include "emu/ShadeColorizer.h"
 #include "io/Platform.h"
 #include "io/Settings.h"
 #include "menu/MenuPage.h"
@@ -30,8 +31,9 @@ constexpr const char *kColorPaletteLabel = "Color Palette";
 // 2/3, 1) - it's levels 0x00/0x63/0x87 out of a 0xff full intensity (level 3
 // is whatever colorR/G/B is currently set to, since that already stands in
 // for "full brightness" everywhere else in this app - the tint applied to
-// the actual game screen).
-constexpr float kBrightnessLevels[4] = {0.0f, 0x63 / 255.0f, 0x87 / 255.0f, 1.0f};
+// the actual game screen). These are kVbNominalShadeLevels, shared with
+// ShadeColorizer, which maps these same levels to the exact colors of a
+// per-shade palette.
 
 void DrawColorPreview(UiRenderer &ui, UiFontHandle labelFont, AppSettings *settings, float rowX, float rowY, float rowW, float rowH, float alpha)
 {
@@ -41,6 +43,18 @@ void DrawColorPreview(UiRenderer &ui, UiFontHandle labelFont, AppSettings *setti
     const float labelWidth = ui.GetTextWidth(labelFont, kColorPaletteLabel);
     float x = rowX + MenuList::kIconSize + MenuList::kIconTextGap + labelWidth + kSwatchLeftGap;
     const float y = rowY + (rowH - kSwatchSize) / 2.0f;
+
+    // A per-shade palette's own 4 colors - at the nominal brightness levels
+    // they're exactly what each shade shows on screen (see ShadeColorizer).
+    if (settings->selectedShadePalette >= 0 && settings->selectedShadePalette < kShadePaletteCount)
+    {
+        for (const XrColor4f &shade : kShadePalettes[settings->selectedShadePalette])
+        {
+            ui.DrawQuadRounded(x, y, kSwatchSize, kSwatchSize, XrColor4f{shade.r, shade.g, shade.b, alpha}, 1.0f);
+            x += kSwatchSize + kSwatchGap;
+        }
+        return;
+    }
 
     // A pattern's 5 gradient stops stand in for the 4 tint brightness
     // swatches below - same kScreenPatterns array the screen shader itself
@@ -57,7 +71,7 @@ void DrawColorPreview(UiRenderer &ui, UiFontHandle labelFont, AppSettings *setti
 
     for (int i = 0; i < 4; ++i)
     {
-        const float level = kBrightnessLevels[i];
+        const float level = kVbNominalShadeLevels[i];
         const XrColor4f c{settings->colorR * level, settings->colorG * level, settings->colorB * level, alpha};
         ui.DrawQuadRounded(x, y, kSwatchSize, kSwatchSize, c, 1.0f);
         x += kSwatchSize + kSwatchGap;
@@ -136,31 +150,43 @@ void SettingsPage::ChangePalette(int delta)
     if (!m_settings)
         return;
     // One combined cycle: the flat-tint presets, then the gradient patterns
-    // (kScreenPatterns) - exactly one of selectedPalette/selectedPattern is
+    // (kScreenPatterns), then the per-shade palettes (kShadePalettes) -
+    // exactly one of selectedPalette/selectedPattern/selectedShadePalette is
     // "active" on any given index (see RefreshLabels, which hides the R/G/B
-    // rows for the pattern half).
-    constexpr int kTotal = kPredefColorCount + kScreenPatternCount;
+    // rows for everything past the tint section).
+    constexpr int kPatternStart = kPredefColorCount;
+    constexpr int kShadeStart = kPatternStart + kScreenPatternCount;
+    constexpr int kTotal = kShadeStart + kShadePaletteCount;
 
     int index;
-    if (m_settings->selectedPattern >= 0)
-        index = kPredefColorCount + m_settings->selectedPattern;
+    if (m_settings->selectedShadePalette >= 0)
+        index = kShadeStart + m_settings->selectedShadePalette;
+    else if (m_settings->selectedPattern >= 0)
+        index = kPatternStart + m_settings->selectedPattern;
     else if (m_settings->selectedPalette >= 0)
         index = m_settings->selectedPalette;
     else
         index = 0; // was on a custom (non-preset) color - start cycling from the first preset
 
     index = (index + delta + kTotal) % kTotal;
-    if (index < kPredefColorCount)
+    if (index < kPatternStart)
     {
         m_settings->selectedPalette = index;
         m_settings->selectedPattern = -1;
+        m_settings->selectedShadePalette = -1;
         m_settings->colorR = kPredefColors[index].r;
         m_settings->colorG = kPredefColors[index].g;
         m_settings->colorB = kPredefColors[index].b;
     }
+    else if (index < kShadeStart)
+    {
+        m_settings->selectedPattern = index - kPatternStart;
+        m_settings->selectedShadePalette = -1;
+    }
     else
     {
-        m_settings->selectedPattern = index - kPredefColorCount;
+        m_settings->selectedShadePalette = index - kShadeStart;
+        m_settings->selectedPattern = -1;
     }
     RefreshLabels();
 }
@@ -175,6 +201,7 @@ void SettingsPage::ChangeColorChannel(float AppSettings::*channel, float delta)
     if (value > 1.0f) value = 1.0f;
     m_settings->selectedPalette = -1; // diverges from whatever preset was selected, matches FrontendGo
     m_settings->selectedPattern = -1; // R/G/B rows are only reachable in tint mode anyway, but stay defensive
+    m_settings->selectedShadePalette = -1;
     RefreshLabels();
 }
 
@@ -198,9 +225,10 @@ void SettingsPage::RefreshLabels()
     m_colorREntry->SetText(FormatFloat("Red: ", m_settings->colorR, 2));
     m_colorGEntry->SetText(FormatFloat("Green: ", m_settings->colorG, 2));
     m_colorBEntry->SetText(FormatFloat("Blue: ", m_settings->colorB, 2));
-    // A gradient pattern has no R/G/B of its own to adjust - hide those
-    // rows entirely while one's selected (see MenuList::Entry::Visible).
-    const bool tintMode = m_settings->selectedPattern < 0;
+    // A gradient pattern or per-shade palette has no R/G/B of its own to
+    // adjust - hide those rows entirely while one's selected (see
+    // MenuList::Entry::Visible).
+    const bool tintMode = m_settings->selectedPattern < 0 && m_settings->selectedShadePalette < 0;
     m_colorREntry->Visible = tintMode;
     m_colorGEntry->Visible = tintMode;
     m_colorBEntry->Visible = tintMode;
