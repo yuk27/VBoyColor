@@ -64,15 +64,20 @@ UncoloredCollector::Crop UncoloredCollector::MakeCrop(const uint64_t *tiles, con
                 continue;
             }
             crop.tiles[static_cast<size_t>(y) * crop.w + x] = t;
-            const TileColorPack::Tile *tile = pack.Find(VBGO_TT_HASH(t));
-            if (state[i] == 1 && tile)
-                std::memcpy(dst, tile->rgb[VBGO_TT_SUBY(t) * 8 + VBGO_TT_SUBX(t)], 3);
+            const TileColorPack::Tile *tile = pack.FindLayer(VBGO_TT_HASH(t), VBGO_TT_WORLD(t));
+            if (!tile)
+                tile = pack.Find(VBGO_TT_HASH(t));
+            const unsigned index = VBGO_TT_SUBY(t) * 8 + VBGO_TT_SUBX(t);
+            if (tile && (tile->mask >> index & 1))
+                std::memcpy(dst, tile->rgb[index], 3);
             else
             {
-                // Full brightness, whatever the game's fade level right now.
+                // The palette's color (full brightness, whatever the game's fade
+                // level right now) - unpainted, or left uncolored on purpose.
                 const uint8_t shade = raw[(static_cast<size_t>(y0 + y) * rawStride + x0 + x) * 4 + 3] & 3;
                 std::memcpy(dst, palette[shade].data(), 3);
-                crop.keys.push_back(Key(t));
+                if (state[i] == 2)
+                    crop.keys.push_back(Key(t));
             }
         }
     std::sort(crop.keys.begin(), crop.keys.end());
@@ -98,7 +103,7 @@ int UncoloredCollector::AddFrame(const uint64_t *tiles, const uint8_t *raw, size
         const uint8_t *px = &raw[(static_cast<size_t>(i / W) * rawStride + i % W) * 4];
         if (!VBGO_TT_VALID(t) || (px[0] | px[1] | px[2]) == 0)
             continue;
-        const bool painted = pack.Has(VBGO_TT_HASH(t), VBGO_TT_SUBY(t) * 8 + VBGO_TT_SUBX(t));
+        const bool painted = pack.IsDone(VBGO_TT_HASH(t), VBGO_TT_SUBY(t) * 8 + VBGO_TT_SUBX(t));
         state[i] = painted ? 1 : 2;
         if (!painted)
         {

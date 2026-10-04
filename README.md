@@ -214,6 +214,14 @@ enough on other platforms (copy it next to the ROM on the Quest). In the
 desktop build, **F11** re-imports after editing a painting and **F8** toggles
 the pack for comparison.
 
+**Painting rules.** Only what you change counts: pixels left in the capture's
+own colors are ignored, so a capture can be painted a bit at a time. Paint
+**magenta (#FF00FF)** over anything that should keep the Multicolor palette's
+colors - it overrides whatever else (a tile sheet, say) would color those
+tiles. When the game reuses a tile in different places (a cloud tile inside a
+mountain) and one layer is consistently painted differently, that layer keeps
+its own colors for it.
+
 **Finding what's still uncolored.** In the desktop build, **F7** starts
 collecting: play normally, and every object the pack doesn't color yet (a new
 enemy, another pose of a character, new scenery) is gathered once, cropped from

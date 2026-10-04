@@ -14,7 +14,8 @@ capture's exact pixels:
    offset the well-matching layers agree on.
 3. Colors are read at the middle of every pixel and snapped to a small palette
    (k-means) of the mockup's own colors; then every tile pixel takes the color
-   it shows most often across the screen, so repeated tiles come out identical.
+   it shows most often on its layer, so repeated tiles come out identical (and
+   a tile the game reuses on another layer can keep different colors there).
 
 Works best when the capture shows the same moment as the mockup (same scroll
 positions and animation frames) - then the offsets are all ~0 and the result
@@ -60,10 +61,12 @@ def main():
     if data[:8] != b"VBGOTIL1":
         raise SystemExit(f"{args.tiles}: not a VirtualBoyGo .tiles file")
     t = np.frombuffer(data, np.uint64, W * H, 16).reshape(H, W)
-    lit = ((t >> np.uint64(63)) == 1) & (ref > 25)
+    lit = ((t >> np.uint64(63)) == 1) & (ref > 25) # visible tile pixels
     world = ((t >> np.uint64(43)) & np.uint64(31)).astype(int)
-    key = ((t & np.uint64(0xFFFFFFFF)) << np.uint64(6)) | (
-        ((t >> np.uint64(35)) & np.uint64(7)) * np.uint64(8) + ((t >> np.uint64(32)) & np.uint64(7)))
+    # tile pixel + layer
+    key = ((t & np.uint64(0xFFFFFFFF)) << np.uint64(11)) | ((
+        ((t >> np.uint64(35)) & np.uint64(7)) * np.uint64(8) + ((t >> np.uint64(32)) & np.uint64(7))) << np.uint64(5)) | \
+        ((t >> np.uint64(43)) & np.uint64(31))
 
     # 1. global fit
     my, mx = np.nonzero(lum > 40)

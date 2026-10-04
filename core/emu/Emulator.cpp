@@ -414,7 +414,8 @@ void Emulator::PaintColorPack()
 
     const uint64_t *tiles = vbgo_tiletrack_frame();
     const uint32_t eyeOffset[2] = {0, m_lastFrameWidth - VBGO_TT_WIDTH};
-    uint32_t lastHash = 0;
+    const bool layerColors = m_colorPack.HasLayerColors();
+    uint32_t lastHash = 0, lastWorld = 0;
     bool haveLast = false;
     const TileColorPack::Tile *lastTile = nullptr;
     for (int eye = 0; eye < 2; ++eye)
@@ -430,11 +431,15 @@ void Emulator::PaintColorPack()
                 const uint8_t *raw = &m_rawFrame[i];
                 if ((raw[0] | raw[1] | raw[2]) == 0)
                     continue; // shade switched off by the game - stays background
-                const uint32_t hash = VBGO_TT_HASH(t);
-                if (!haveLast || hash != lastHash) // neighbors are usually the same tile - skip the lookup
+                const uint32_t hash = VBGO_TT_HASH(t), world = VBGO_TT_WORLD(t);
+                if (!haveLast || hash != lastHash || world != lastWorld) // neighbors are usually the same tile - skip the lookup
                 {
-                    lastTile = m_colorPack.Find(hash);
+                    // the layer's own colors for this tile, if it has any (reused tiles), else the tile's
+                    lastTile = layerColors ? m_colorPack.FindLayer(hash, world) : nullptr;
+                    if (!lastTile)
+                        lastTile = m_colorPack.Find(hash);
                     lastHash = hash;
+                    lastWorld = world;
                     haveLast = true;
                 }
                 if (!lastTile)
@@ -492,11 +497,12 @@ std::string Emulator::ReloadColorPack()
         m_platform->WriteRomsFile(m_romBaseName + ".vbcp", false, bytes.data(), bytes.size());
         std::snprintf(summary, sizeof(summary),
                       "Color pack: imported %d painting(s) + %d tile sheet(s) -> %zu tiles (%zu tile pixels, %zu only "
-                      "from tile sheets; %zu painted differently in different places, majority used; %zu stray shades "
-                      "merged)%s%s, saved %s.vbcp",
+                      "from tile sheets, %zu left uncolored (magenta), %zu with their own colors on a layer; %zu "
+                      "painted differently in different places, majority used; %zu stray shades merged)%s%s, saved %s.vbcp",
                       stats.paintings, stats.sheets, m_colorPack.TileCount(), stats.tilePixels, stats.fromSheets,
-                      stats.inconsistent, stats.mergedColors, stats.rejected ? "; skipped: " : "",
-                      stats.rejected ? stats.lastError.c_str() : "", m_romBaseName.c_str());
+                      stats.erased, stats.layerPixels, stats.inconsistent, stats.mergedColors,
+                      stats.rejected ? "; skipped: " : "", stats.rejected ? stats.lastError.c_str() : "",
+                      m_romBaseName.c_str());
     }
     else if (m_colorPack.Deserialize(m_platform->ReadRomsFile(m_romBaseName + ".vbcp", false)))
         std::snprintf(summary, sizeof(summary), "Color pack: loaded %s.vbcp (%zu tiles)", m_romBaseName.c_str(),
@@ -583,6 +589,9 @@ bool Emulator::WriteCapture(const std::string &base, const uint8_t *rgb, const u
     }
     AppendLe32(sidecar, count);
     sidecar.insert(sidecar.end(), dictionary.begin(), dictionary.end());
+    // The colors this capture shows unpainted pixels in, so the importer can
+    // tell what was left unpainted.
+    TileColorPack::AppendSidecarPalette(sidecar, CapturePalette());
 
     return !png.empty() && m_platform->WriteRomsFile("captures/" + base + ".png", false, png.data(), png.size()) &&
            m_platform->WriteRomsFile("captures/" + base + ".tiles", false, sidecar.data(), sidecar.size());
@@ -637,8 +646,19 @@ std::string Emulator::CaptureTileReference()
             dst[2] = src[0];
         }
 
+    // Only visible pixels: the game also draws tiles in a shade it has
+    // switched off (shown as background) - those must not take the painted
+    // background color.
+    std::vector<uint64_t> tiles(vbgo_tiletrack_frame(), vbgo_tiletrack_frame() + VBGO_TT_EYE_PIXELS);
+    for (int y = 0; y < VBGO_TT_HEIGHT; ++y)
+        for (int x = 0; x < VBGO_TT_WIDTH; ++x)
+        {
+            const uint8_t *raw = &m_rawFrame[(static_cast<size_t>(y) * kFbWidth + x) * 4];
+            if ((raw[0] | raw[1] | raw[2]) == 0)
+                tiles[static_cast<size_t>(y) * VBGO_TT_WIDTH + x] = 0;
+        }
     const std::string base = NextCaptureName("");
-    if (!WriteCapture(base, rgb.data(), vbgo_tiletrack_frame()))
+    if (!WriteCapture(base, rgb.data(), tiles.data()))
         return "";
     std::fprintf(stderr, "[Emulator] Captured tile reference \"%s\"\n", base.c_str());
     return base;
