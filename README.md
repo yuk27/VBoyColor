@@ -197,9 +197,10 @@ screen pixel comes from (`core/emu/vbgo_tiletrack.h`, hooked in through
 `cmake/PatchBeetleVip.cmake`; off by default). In the desktop 2D build:
 
 - **F9** toggles a debug view: one random color per distinct tile.
-- **F10** saves the current frame to `roms/captures/` as a paint-ready
-  grayscale PNG (3x) plus a `.tiles` file mapping every pixel to its tile, so
-  a painted copy can later be turned into tile colors.
+- **F10** saves the current frame to `roms/captures/` as a paint-ready PNG
+  (3x, in the active Multicolor palette - Ember works well - or grayscale)
+  plus a `.tiles` file mapping every pixel to its tile, so a painted copy can
+  later be turned into tile colors.
 
 ## Credits
 

@@ -401,15 +401,23 @@ std::string Emulator::CaptureTileReference()
             break;
     }
 
-    // Left eye, grayscale core output (shade structure only - whatever
-    // palette is active is irrelevant to painting), 3x upscaled.
+    // Left eye, 3x upscaled, in the active Multicolor palette (easier to
+    // tell objects apart while painting - e.g. Ember), or the core's
+    // grayscale otherwise. Only pixel positions matter when reading a
+    // painted copy back, so the palette is purely a painting aid. Never the
+    // tile debug view's colors.
     constexpr int kUp = 3;
     const int w = VBGO_TT_WIDTH * kUp, h = VBGO_TT_HEIGHT * kUp;
+    std::vector<uint8_t> source(m_rawFrame.size());
+    if (m_shadePaletteIndex >= 0)
+        m_shadeColorizer.Colorize(m_rawFrame.data(), source.data(), m_rawFrame.size() / 4);
+    else
+        source = m_rawFrame;
     std::vector<uint8_t> rgb(static_cast<size_t>(w) * h * 3);
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x)
         {
-            const uint8_t *src = &m_rawFrame[(static_cast<size_t>(y / kUp) * kFbWidth + x / kUp) * 4];
+            const uint8_t *src = &source[(static_cast<size_t>(y / kUp) * kFbWidth + x / kUp) * 4];
             uint8_t *dst = &rgb[(static_cast<size_t>(y) * w + x) * 3];
             dst[0] = src[2];
             dst[1] = src[1];

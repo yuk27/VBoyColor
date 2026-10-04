@@ -170,8 +170,9 @@ public:
     bool IsTileDebugView() const { return m_tileDebugView; }
 
     // Saves the current frame's left eye as a paint-ready reference into the
-    // ROMs folder's captures/ subfolder: "<rom> NNN.png" (grayscale core
-    // output, 3x nearest-neighbor upscale) plus "<rom> NNN.tiles" (which tile
+    // ROMs folder's captures/ subfolder: "<rom> NNN.png" (3x nearest-neighbor
+    // upscale, in the active Multicolor palette or else the core's
+    // grayscale) plus "<rom> NNN.tiles" (which tile
     // and in-tile pixel every screen pixel is, for reading a painted copy
     // back later). Needs tracking on for at least one emulated frame first.
     // Returns the base name used ("<rom> NNN"), or "" on failure.
