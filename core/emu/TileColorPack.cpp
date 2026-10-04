@@ -15,6 +15,7 @@ namespace
     constexpr char kSidecarMagic[8] = {'V', 'B', 'G', 'O', 'T', 'I', 'L', '2'}; // + a map cell per pixel
     constexpr char kPaletteMagicV1[8] = {'V', 'B', 'G', 'O', 'P', 'A', 'L', '1'};
     constexpr char kPaletteMagic[8] = {'V', 'B', 'G', 'O', 'P', 'A', 'L', '2'}; // + the brightness level
+    constexpr char kShownMagic[8] = {'V', 'B', 'G', 'O', 'S', 'H', 'W', '1'};   // + RGB per pixel, as captured
     constexpr char kContextMagic[8] = {'V', 'B', 'G', 'O', 'C', 'T', 'X', '1'}; // context variants, after the v3 pack
     constexpr char kLayerBoundMagic[8] = {'V', 'B', 'G', 'O', 'C', 'T', 'X', 'L'}; // which of them are layer-bound, after that
 
@@ -132,6 +133,12 @@ void TileColorPack::AppendSidecarPalette(std::vector<uint8_t> &sidecar, const st
     sidecar.push_back(brightnessLevel);
 }
 
+void TileColorPack::AppendSidecarShown(std::vector<uint8_t> &sidecar, const uint8_t *rgb, size_t pixels)
+{
+    sidecar.insert(sidecar.end(), kShownMagic, kShownMagic + 8);
+    sidecar.insert(sidecar.end(), rgb, rgb + pixels * 3);
+}
+
 const TileColorPack::Tile *TileColorPack::Find(uint32_t hash) const
 {
     const auto it = m_tiles.find(hash);
@@ -183,6 +190,11 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
     // left unpainted, and so was a transparent one still in the background color.
     uint8_t shown[4][3];
     std::memcpy(shown, kDefaultCapturePalette, sizeof(shown));
+    // And, in newer captures, exactly what each pixel showed - pack colors
+    // included (captures show what the pack already colors, so painting can
+    // carry on from there): a pixel still showing it was left alone, and
+    // doesn't vote - a stray color the pack showed then isn't painted in again.
+    const uint8_t *shownPixels = nullptr;
     size_t offset = headerSize + count * (v2 ? 12 : 8);
     if (sidecar.size() >= offset + 4)
     {
@@ -197,10 +209,16 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
         }
         offset += 4 + tiles * (4 + 16);
         const bool v2Palette = sidecar.size() >= offset + 8 + 13 && std::memcmp(&sidecar[offset], kPaletteMagic, 8) == 0;
-        if (v2Palette || (sidecar.size() >= offset + 8 + 12 && std::memcmp(&sidecar[offset], kPaletteMagicV1, 8) == 0))
+        const bool v1Palette = !v2Palette && sidecar.size() >= offset + 8 + 12 &&
+                               std::memcmp(&sidecar[offset], kPaletteMagicV1, 8) == 0;
+        if (v2Palette || v1Palette)
             std::memcpy(shown, &sidecar[offset + 8], sizeof(shown));
         if (v2Palette && !sheet && sidecar[offset + 20] <= 63)
             m_paintingLevels.push_back(sidecar[offset + 20]);
+        offset += v2Palette ? 8 + 13 : v1Palette ? 8 + 12 : 0;
+        if ((v2Palette || v1Palette) && sidecar.size() >= offset + 8 + count * 3 &&
+            std::memcmp(&sidecar[offset], kShownMagic, 8) == 0)
+            shownPixels = &sidecar[offset + 8];
     }
     constexpr int kSameColor = 24;  // |dR|+|dG|+|dB| still counted as the capture's own color
     constexpr int kMagentaReach = 40;
@@ -323,6 +341,9 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
             if (!fill && (Distance(p, shown[1]) <= kSameColor || Distance(p, shown[2]) <= kSameColor ||
                           Distance(p, shown[3]) <= kSameColor))
                 continue; // left as captured - not painted
+            if (shownPixels && Distance(p, &shownPixels[i * 3]) <= kSameColor &&
+                (!fill || Distance(&shownPixels[i * 3], shown[0]) > kSameColor))
+                continue; // still the pack's color it was captured with (a background left as such still counts)
             // (A transparent pixel left as the background still counts: it
             // says where a painted fill ends.)
             const uint32_t rgb = fill && Distance(p, shown[0]) <= kSameColor ? kBackground

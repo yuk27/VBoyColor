@@ -566,6 +566,9 @@ bool Emulator::WriteCapture(const std::string &base, const uint8_t *rgb, const u
     // The colors this capture shows unpainted pixels in, so the importer can
     // tell what was left unpainted (and, for a screen, the game's brightness).
     TileColorPack::AppendSidecarPalette(sidecar, shown ? *shown : CapturePalette(), shown ? brightnessLevel : 255);
+    // And exactly what each pixel showed: pixels left showing the pack's
+    // colors (or anything else) don't count as painted.
+    TileColorPack::AppendSidecarShown(sidecar, rgb, count);
 
     return !png.empty() && m_platform->WriteRomsFile("captures/" + base + ".png", false, png.data(), png.size()) &&
            m_platform->WriteRomsFile("captures/" + base + ".tiles", false, sidecar.data(), sidecar.size());

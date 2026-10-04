@@ -171,6 +171,12 @@ public:
     // sheet drawn at full brightness).
     static void AppendSidecarPalette(std::vector<uint8_t> &sidecar, const std::array<std::array<uint8_t, 3>, 4> &palette,
                                      uint8_t brightnessLevel = 255);
+    // Optional block after the palette: what every pixel of the capture
+    // showed (RGB, at 1x) - captures show the pack's colors where it already
+    // has some, and a pixel still showing them was left alone, so it doesn't
+    // vote (a stray color from another object that happened to show doesn't
+    // get painted in for good).
+    static void AppendSidecarShown(std::vector<uint8_t> &sidecar, const uint8_t *rgb, size_t pixels);
 
     // The game's usual brightness level (0-63) in the screen paintings: the
     // painted colors are what the painter wants to see at that brightness,

@@ -263,7 +263,13 @@ them as compact paint sheets, `roms/captures/<rom name> todo NNN.png` plus
 `.tiles` - colored parts in their pack colors, the rest in the Multicolor
 palette. Paint the rest, drop the sheet into the pack folder like any other
 painting, and repeat until nothing new turns up. A whole new area is kept as a
-full screen instead of pieces, so it's easier to recognize.
+full screen instead of pieces, so it's easier to recognize. Whatever is left
+the way it was captured - Multicolor shades or the pack's colors - doesn't
+count as painted (in any capture, F10 and F6 too), so a wrong color the pack
+showed (another sprite's color on a shared tile) only goes away by painting
+over it, but leaving it doesn't paint it in for good. Captures from builds
+before this didn't record what they showed: there, every pixel that isn't a
+Multicolor shade counts as painted.
 
 **Tile sheets.** **F6** saves everything in the game's tile memory at that
 moment - the graphics loaded for the current area, on screen or not - as
@@ -288,7 +294,8 @@ map cells and fills ~0.2-0.35 ms per eye. Output is otherwise identical.
 **Formats.** `.tiles` version 2 (`VBGOTIL2`) adds the map cell of every
 pixel after the per-pixel records (version 1 files from older captures still
 import, just without cell colors or fills), and the palette block
-(`VBGOPAL2`) adds the game's brightness level. `.vbcp` version 3 adds the
+(`VBGOPAL2`) adds the game's brightness level; newer captures follow it
+with what every pixel showed (`VBGOSHW1`, RGB at 1x). `.vbcp` version 3 adds the
 palette and map cell colors and the reference brightness, optionally followed
 by the per-character colors (`VBGOCTX1`, then `VBGOCTXL` marking the
 background figures' ones - older builds skip both); older packs load as
