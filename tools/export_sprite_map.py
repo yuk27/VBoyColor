@@ -2,7 +2,7 @@
 
 Mario's Tennis keeps almost all of its graphics compressed, so a plain tile
 viewer only shows noise. This tool decompresses everything the game itself
-decompresses and lays it out two ways:
+decompresses and lays it out three ways:
 
 1. "<game> - sprite map.png": one overview of everything, labelled -
    every character's animation frames (near and far court), the screens
@@ -14,6 +14,12 @@ decompresses and lays it out two ways:
    screen paintings don't color. Tiles that only exist outside the assembled
    sprites and screens are collected on "loose tiles" sheets, so every tile in
    the ROM can be painted somewhere.
+3. "character sheets/": one sheet per player with every animation frame the
+   color pack doesn't fully color yet (near court, then far court), in the
+   shades the court shows them. Unlike tile sheets, these import like screen
+   paintings: each frame is a figure of its own and the sheet's frames are one
+   character, so its colors stay its own on the tiles players share
+   (--characters-only writes just these).
 
 If the ROM has a color pack next to it ("<rom>.vbcp"), everything it already
 colors is drawn in its colors, so what's left to paint stands out.
