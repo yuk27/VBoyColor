@@ -4,30 +4,34 @@
 #include <string.h>
 
 int vbgo_tt_on = 0;
+int vbgo_tt_fill = VBGO_TT_FILLS_NONE;
 uint32_t vbgo_tt_world = 0;
 const uint8_t *vbgo_tt_block_base = NULL;
-uint32_t vbgo_tt_block[2 * 512 * 8];
+uint64_t *vbgo_tt_dst[2];
+uint64_t vbgo_tt_stamp_bits = 0;
+static const uint8_t s_no_blank[2048];
+const uint8_t *vbgo_tt_blank = s_no_blank;
+uint8_t vbgo_tt_fill_cells[8192];
 
-/* Tile info in the VB's own framebuffer layout - [fb][eye][column * 256 +
- * row], mirroring the core's double-buffered FB - so it's displayed by the
- * same buffer swap logic as the pixels themselves. */
-static uint64_t s_fb[2][2][384 * 256];
-static uint64_t s_out[2 * VBGO_TT_EYE_PIXELS];
+/* Tags in the VB's own frame buffer layout - [fb][eye][column * 256 + row],
+ * double-buffered like the core's FB, so they're displayed by the same
+ * buffer swap logic as the pixels themselves. */
+static uint64_t s_fb[2][2][VBGO_TT_WIDTH * VBGO_TT_COLUMN];
 
-static const uint16_t *s_chr;
-static uint32_t s_char_hash[2048];
-static bool s_hashes_valid;
-static uint8_t s_char_recorded[2048]; /* per frame: char's rows already in s_seen */
+/* Per frame buffer: its last drawing pass's stamp, and the character
+ * memory / tile hashes / blank flags as that pass started. */
+static uint16_t s_stamp[2];
+static uint16_t s_next_stamp;
+static uint16_t s_chr[2][2048 * 8];
+static uint32_t s_hash[2][2048];
+static uint8_t s_blank[2][2048];
+static int s_have[2];
+static int s_pass_open; /* a drawing pass has started (block 0 seen, or tracking switched on mid-pass) */
+static int s_last_fb = -1;
 
-/* hash -> tile rows, for every tile seen while tracking (open addressing). */
-#define SEEN_CAPACITY 16384
-static struct
-{
-   uint32_t hash;
-   uint8_t used;
-   uint16_t rows[8];
-} s_seen[SEEN_CAPACITY];
-static unsigned s_seen_count;
+/* Per output eye and column: which buffer and eye were shown there
+ * (fb | lr << 1 | 4 for "active"), 0 = blank. */
+static uint8_t s_disp[2][VBGO_TT_WIDTH];
 
 static uint32_t HashChar(const uint16_t *rows)
 {
@@ -42,135 +46,75 @@ static uint32_t HashChar(const uint16_t *rows)
    return h;
 }
 
-static void RefreshHashes(void)
+static void StartPass(unsigned fb, const uint16_t *chr_ram)
 {
    int c;
-   for (c = 0; c < 2048; c++)
-      s_char_hash[c] = HashChar(&s_chr[c * 8]);
-   memset(s_char_recorded, 0, sizeof(s_char_recorded));
-   s_hashes_valid = true;
-}
-
-static void RecordTile(uint32_t hash, const uint16_t *rows)
-{
-   unsigned i = hash & (SEEN_CAPACITY - 1);
-   unsigned probes;
-   for (probes = 0; probes < SEEN_CAPACITY; probes++, i = (i + 1) & (SEEN_CAPACITY - 1))
+   /* A new stamp; on wrap-around forget every old tag, so a pixel left
+    * untouched for 65535 passes can't come back to life. */
+   if (++s_next_stamp == 0)
    {
-      if (!s_seen[i].used)
-      {
-         if (s_seen_count >= SEEN_CAPACITY * 3 / 4)
-            return; /* full enough - stop recording new tiles rather than degrade */
-         s_seen[i].used = 1;
-         s_seen[i].hash = hash;
-         memcpy(s_seen[i].rows, rows, sizeof(s_seen[i].rows));
-         s_seen_count++;
-         return;
-      }
-      if (s_seen[i].hash == hash)
-         return;
+      memset(s_fb, 0, sizeof(s_fb));
+      memset(s_have, 0, sizeof(s_have));
+      s_next_stamp = 1;
    }
+   s_stamp[fb] = s_next_stamp;
+   vbgo_tt_stamp_bits = (uint64_t)s_next_stamp << 48;
+   memcpy(s_chr[fb], chr_ram, sizeof(s_chr[fb]));
+   for (c = 0; c < 2048; c++)
+   {
+      const uint16_t *rows = &s_chr[fb][c * 8];
+      s_hash[fb][c] = HashChar(rows);
+      s_blank[fb][c] = (rows[0] | rows[1] | rows[2] | rows[3] | rows[4] | rows[5] | rows[6] | rows[7]) == 0;
+   }
+   /* (Tracking switched on mid-pass: the blocks before this one simply have
+    * no tags with this stamp.) */
+   s_have[fb] = 1;
+   s_pass_open = 1;
 }
 
 void vbgo_tiletrack_set_enabled(bool enabled)
 {
    vbgo_tt_on = enabled ? 1 : 0;
    if (!enabled)
-      s_hashes_valid = false;
+      s_pass_open = 0;
 }
 
 bool vbgo_tiletrack_is_enabled(void) { return vbgo_tt_on != 0; }
 
-const uint64_t *vbgo_tiletrack_frame(void) { return s_out; }
+void vbgo_tiletrack_set_fill_mode(int mode) { vbgo_tt_fill = mode; }
 
-const uint16_t *vbgo_tiletrack_chr_ram(void) { return s_chr; }
+int vbgo_tiletrack_fill_mode(void) { return vbgo_tt_fill; }
 
-uint32_t vbgo_tiletrack_hash_rows(const uint16_t rows[8]) { return HashChar(rows); }
-
-bool vbgo_tiletrack_tile_rows(uint32_t hash, uint16_t rows_out[8])
+void vbgo_tiletrack_set_fill_cells(const uint8_t *bits)
 {
-   unsigned i = hash & (SEEN_CAPACITY - 1);
-   unsigned probes;
-   for (probes = 0; probes < SEEN_CAPACITY; probes++, i = (i + 1) & (SEEN_CAPACITY - 1))
-   {
-      if (!s_seen[i].used)
-         return false;
-      if (s_seen[i].hash == hash)
-      {
-         memcpy(rows_out, s_seen[i].rows, sizeof(s_seen[i].rows));
-         return true;
-      }
-   }
-   return false;
+   if (bits)
+      memcpy(vbgo_tt_fill_cells, bits, sizeof(vbgo_tt_fill_cells));
+   else
+      memset(vbgo_tt_fill_cells, 0, sizeof(vbgo_tt_fill_cells));
 }
 
-void vbgo_tiletrack_begin_block(const uint8_t *drawing_buffers, const uint16_t *chr_ram, unsigned block_no)
+void vbgo_tiletrack_begin_block(const uint8_t *drawing_buffers, const uint16_t *chr_ram, unsigned block_no, unsigned fb)
 {
    if (!vbgo_tt_on)
       return;
+   fb &= 1;
+   /* Once per pass (games update tile graphics between frames), or right
+    * after tracking was switched on mid-pass. */
+   if (block_no == 0 || !s_pass_open || (int)fb != s_last_fb)
+      StartPass(fb, chr_ram);
+   s_last_fb = (int)fb;
    vbgo_tt_block_base = drawing_buffers;
-   s_chr = chr_ram;
-   /* Once per frame (games update tile graphics between frames), or right
-    * after tracking was switched on mid-frame. */
-   if (block_no == 0 || !s_hashes_valid)
-      RefreshHashes();
-   memset(vbgo_tt_block, 0, sizeof(vbgo_tt_block));
+   vbgo_tt_blank = s_blank[fb];
+   vbgo_tt_dst[0] = &s_fb[fb][0][block_no * 8];
+   vbgo_tt_dst[1] = &s_fb[fb][1][block_no * 8];
    vbgo_tt_world = 0;
-}
-
-void vbgo_tiletrack_end_block(unsigned fb, unsigned block_no)
-{
-   unsigned lr, row, x;
-   if (!vbgo_tt_on)
-      return;
-   for (lr = 0; lr < 2; lr++)
-   {
-      /* Column-major like the VB's framebuffer: a column's 8 rows of this
-       * block are 64 contiguous bytes, so go column by column. */
-      const uint32_t *src = &vbgo_tt_block[lr * 4096 + 8];
-      for (x = 0; x < 384; x++)
-      {
-         uint64_t *dst = &s_fb[fb & 1][lr][x * 256 + block_no * 8];
-         for (row = 0; row < 8; row++)
-         {
-            const uint32_t v = src[row * 512 + x];
-            uint64_t out = 0;
-            if (v >> 31)
-            {
-               const uint32_t chr = v & 0x7FF;
-               const uint32_t hash = s_char_hash[chr];
-               if (!s_char_recorded[chr])
-               {
-                  RecordTile(hash, &s_chr[chr * 8]);
-                  s_char_recorded[chr] = 1;
-               }
-               out = (uint64_t)hash
-                   | ((uint64_t)((v >> 11) & 7) << 32)   /* sub x */
-                   | ((uint64_t)((v >> 14) & 7) << 35)   /* sub y */
-                   | ((uint64_t)((v >> 17) & 3) << 38)   /* palette */
-                   | ((uint64_t)((v >> 19) & 1) << 40)   /* obj */
-                   | ((uint64_t)((v >> 20) & 3) << 41)   /* raw pixel */
-                   | ((uint64_t)((v >> 22) & 31) << 43)  /* world */
-                   | ((uint64_t)chr << 48)
-                   | ((uint64_t)1 << 63);
-            }
-            dst[row] = out;
-         }
-      }
-   }
 }
 
 void vbgo_tiletrack_display_column(unsigned fb, unsigned lr, unsigned dest_lr, unsigned column, bool display_active)
 {
-   unsigned y;
-   uint64_t *dst;
-   const uint64_t *src;
    if (!vbgo_tt_on || column >= VBGO_TT_WIDTH)
       return;
-   dst = &s_out[(dest_lr & 1) * VBGO_TT_EYE_PIXELS + column];
-   src = &s_fb[fb & 1][lr & 1][column * 256];
-   for (y = 0; y < VBGO_TT_HEIGHT; y++)
-      dst[y * VBGO_TT_WIDTH] = display_active ? src[y] : 0;
+   s_disp[dest_lr & 1][column] = display_active ? (uint8_t)((fb & 1) | ((lr & 1) << 1) | 4) : 0;
 }
 
 void vbgo_tiletrack_cpu_fb_write(unsigned fb, unsigned lr, unsigned offset, unsigned bytes)
@@ -185,9 +129,77 @@ void vbgo_tiletrack_cpu_fb_write(unsigned fb, unsigned lr, unsigned offset, unsi
    {
       const unsigned o = offset + b;
       const unsigned column = o / 64, row = (o % 64) * 4;
-      if (column >= 384)
+      if (column >= VBGO_TT_WIDTH)
          continue;
       for (p = 0; p < 4; p++)
-         s_fb[fb & 1][lr & 1][column * 256 + row + p] = 0;
+         s_fb[fb & 1][lr & 1][column * VBGO_TT_COLUMN + row + p] = 0;
    }
 }
+
+static int ShownBuffer(unsigned eye)
+{
+   /* The buffer the eye's columns came from (they all do in practice). */
+   unsigned x;
+   for (x = 0; x < VBGO_TT_WIDTH; x++)
+      if (s_disp[eye & 1][x])
+         return s_disp[eye & 1][x] & 1;
+   return -1;
+}
+
+bool vbgo_tiletrack_eye_view(unsigned eye, vbgo_tt_eye_view *view)
+{
+   unsigned x;
+   const int fb = ShownBuffer(eye);
+   if (fb < 0 || !s_have[fb])
+      return false;
+   view->stamp = s_stamp[fb];
+   view->hashes = s_hash[fb];
+   view->blank = s_blank[fb];
+   view->chr = s_chr[fb];
+   for (x = 0; x < VBGO_TT_WIDTH; x++)
+   {
+      const uint8_t d = s_disp[eye & 1][x];
+      view->columns[x] = (d & 4) && (d & 1) == (unsigned)fb ? &s_fb[fb][(d >> 1) & 1][x * VBGO_TT_COLUMN] : NULL;
+   }
+   return true;
+}
+
+bool vbgo_tiletrack_records(unsigned eye, uint64_t *records, uint32_t *cells, bool with_fills)
+{
+   vbgo_tt_eye_view view;
+   unsigned x, y;
+   if (!vbgo_tiletrack_eye_view(eye, &view))
+      return false;
+   for (x = 0; x < VBGO_TT_WIDTH; x++)
+   {
+      const uint64_t *col = view.columns[x];
+      for (y = 0; y < VBGO_TT_HEIGHT; y++)
+      {
+         const uint64_t t = col ? col[y] : 0;
+         uint64_t out = 0;
+         uint32_t cell = 0;
+         if (t && (t >> 48) == view.stamp && (with_fills || VBGO_TAG_PIXEL(t)))
+         {
+            const unsigned chr = VBGO_TAG_CHAR(t);
+            out = (uint64_t)view.hashes[chr] | ((uint64_t)VBGO_TAG_SUBX(t) << 32) | ((uint64_t)VBGO_TAG_SUBY(t) << 35) |
+                  ((uint64_t)VBGO_TAG_PALETTE(t) << 38) | ((uint64_t)VBGO_TAG_IS_OBJ(t) << 40) |
+                  ((uint64_t)VBGO_TAG_PIXEL(t) << 41) | ((uint64_t)VBGO_TAG_WORLD(t) << 43) | ((uint64_t)chr << 48) |
+                  ((uint64_t)1 << 63);
+            if (VBGO_TAG_HAS_CELL(t))
+               cell = 0x80000000u | VBGO_TAG_CELL(t);
+         }
+         records[y * VBGO_TT_WIDTH + x] = out;
+         if (cells)
+            cells[y * VBGO_TT_WIDTH + x] = cell;
+      }
+   }
+   return true;
+}
+
+const uint16_t *vbgo_tiletrack_chr_ram(void)
+{
+   const int fb = s_last_fb;
+   return fb >= 0 && s_have[fb] ? s_chr[fb] : NULL;
+}
+
+uint32_t vbgo_tiletrack_hash_rows(const uint16_t rows[8]) { return HashChar(rows); }

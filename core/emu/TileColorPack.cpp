@@ -9,11 +9,16 @@
 namespace
 {
     constexpr char kPackMagicV1[8] = {'V', 'B', 'G', 'O', 'C', 'P', '0', '1'};
-    constexpr char kPackMagic[8] = {'V', 'B', 'G', 'O', 'C', 'P', '0', '2'}; // + per-layer colors
-    constexpr char kSidecarMagic[8] = {'V', 'B', 'G', 'O', 'T', 'I', 'L', '1'};
-    constexpr char kPaletteMagic[8] = {'V', 'B', 'G', 'O', 'P', 'A', 'L', '1'};
+    constexpr char kPackMagicV2[8] = {'V', 'B', 'G', 'O', 'C', 'P', '0', '2'}; // + per-layer colors, left uncolored
+    constexpr char kPackMagic[8] = {'V', 'B', 'G', 'O', 'C', 'P', '0', '3'};   // + per-palette colors, map cells
+    constexpr char kSidecarMagicV1[8] = {'V', 'B', 'G', 'O', 'T', 'I', 'L', '1'};
+    constexpr char kSidecarMagic[8] = {'V', 'B', 'G', 'O', 'T', 'I', 'L', '2'}; // + a map cell per pixel
+    constexpr char kPaletteMagicV1[8] = {'V', 'B', 'G', 'O', 'P', 'A', 'L', '1'};
+    constexpr char kPaletteMagic[8] = {'V', 'B', 'G', 'O', 'P', 'A', 'L', '2'}; // + the brightness level
 
-    constexpr uint32_t kNoColor = 0x01000000; // a magenta vote: leave uncolored
+    constexpr uint32_t kNoColor = 0x01000000;   // a magenta vote: leave uncolored
+    constexpr uint32_t kBackground = 0x02000000; // a transparent pixel left as the background (fills only)
+    constexpr uint32_t kFillVote = 0x100;     // Vote::extra: a transparent pixel painted over
     // What captures without a palette block were made with: the Ember
     // Multicolor palette (see Settings.h), as 0-255 RGB.
     constexpr uint8_t kDefaultCapturePalette[4][3] = {{8, 3, 0}, {166, 38, 5}, {242, 140, 26}, {255, 242, 191}};
@@ -27,23 +32,94 @@ namespace
         for (int i = 0; i < bytes; ++i)
             v.push_back(static_cast<uint8_t>(x >> (i * 8)));
     }
+
+    template <typename T> void Store(T &tile, unsigned index, uint32_t rgb) // a Tile or a CellTile
+    {
+        tile.mask |= 1ull << index;
+        tile.rgb[index][0] = static_cast<uint8_t>(rgb >> 16);
+        tile.rgb[index][1] = static_cast<uint8_t>(rgb >> 8);
+        tile.rgb[index][2] = static_cast<uint8_t>(rgb);
+    }
+
+    // A pixel key's winning color: the most votes; ties go to the lower value
+    // (the same result on every platform). Votes must be sorted by (key, rgb);
+    // [begin, end) is one key's run.
+    template <typename It> uint32_t Winner(It begin, It end, uint32_t &bestVotes, uint32_t &allVotes, size_t &distinct)
+    {
+        uint32_t best = 0;
+        bestVotes = allVotes = 0;
+        distinct = 0;
+        for (It run = begin; run != end;)
+        {
+            It next = run;
+            uint32_t count = 0;
+            while (next != end && next->rgb == run->rgb)
+                ++next, ++count;
+            ++distinct;
+            allVotes += count;
+            if (count > bestVotes) // runs come in increasing rgb order, so ">" keeps the lower value on ties
+            {
+                best = run->rgb;
+                bestVotes = count;
+            }
+            run = next;
+        }
+        return best;
+    }
+
+    // Calls fn(begin, end) for every run of equal keys (sorted vector).
+    template <typename V, typename Fn> void ForEachKey(V &votes, Fn fn)
+    {
+        for (auto run = votes.begin(); run != votes.end();)
+        {
+            auto next = run;
+            while (next != votes.end() && next->key == run->key)
+                ++next;
+            fn(run, next);
+            run = next;
+        }
+    }
+
+    // Sorted (key, chosen color) list - a lookup table without a hash map.
+    struct Chosen
+    {
+        std::vector<std::pair<uint64_t, uint32_t>> entries;
+        bool Get(uint64_t key, uint32_t &rgb) const
+        {
+            const auto it = std::lower_bound(entries.begin(), entries.end(), std::make_pair(key, 0u),
+                                             [](const auto &a, const auto &b) { return a.first < b.first; });
+            if (it == entries.end() || it->first != key)
+                return false;
+            rgb = it->second;
+            return true;
+        }
+    };
 } // namespace
 
 void TileColorPack::Clear()
 {
     m_tiles.clear();
     m_layerTiles.clear();
+    m_paletteTiles.clear();
     m_leftUncolored.clear();
+    m_cellTiles.clear();
     m_votes.clear();
     m_sheetVotes.clear();
     m_layerVotes.clear();
+    m_paletteVotes.clear();
+    m_cellVotes.clear();
+    m_paintingLevels.clear();
+    m_tileRows.clear();
+    m_referenceLevel = 63;
 }
 
-void TileColorPack::AppendSidecarPalette(std::vector<uint8_t> &sidecar, const std::array<std::array<uint8_t, 3>, 4> &palette)
+void TileColorPack::AppendSidecarPalette(std::vector<uint8_t> &sidecar, const std::array<std::array<uint8_t, 3>, 4> &palette,
+                                         uint8_t brightnessLevel)
 {
     sidecar.insert(sidecar.end(), kPaletteMagic, kPaletteMagic + 8);
     for (const auto &color : palette)
         sidecar.insert(sidecar.end(), color.begin(), color.end());
+    sidecar.push_back(brightnessLevel);
 }
 
 const TileColorPack::Tile *TileColorPack::Find(uint32_t hash) const
@@ -54,11 +130,7 @@ const TileColorPack::Tile *TileColorPack::Find(uint32_t hash) const
 
 void TileColorPack::Set(uint32_t hash, unsigned index, uint8_t r, uint8_t g, uint8_t b)
 {
-    Tile &tile = m_tiles[hash];
-    tile.mask |= 1ull << index;
-    tile.rgb[index][0] = r;
-    tile.rgb[index][1] = g;
-    tile.rgb[index][2] = b;
+    Store(m_tiles[hash], index, (r << 16) | (g << 8) | b);
 }
 
 bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, int channels,
@@ -66,15 +138,18 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
 {
     // The sidecar says what the painting covers: a screen capture (384x224
     // pixels) or a tile sheet (any size, e.g. the whole tile memory).
+    // Version 2 adds a map cell per pixel after the records.
     const size_t headerSize = 16;
-    if (sidecar.size() < headerSize || std::memcmp(sidecar.data(), kSidecarMagic, 8) != 0)
+    const bool v2 = sidecar.size() >= headerSize && std::memcmp(sidecar.data(), kSidecarMagic, 8) == 0;
+    if (sidecar.size() < headerSize || (!v2 && std::memcmp(sidecar.data(), kSidecarMagicV1, 8) != 0))
     {
         stats.lastError = "missing or unreadable .tiles file";
         ++stats.rejected;
         return false;
     }
     const uint32_t w = ReadLe32(&sidecar[8]), h = ReadLe32(&sidecar[12]);
-    if (w == 0 || h == 0 || w > 4096 || h > 4096 || sidecar.size() < headerSize + static_cast<size_t>(w) * h * 8)
+    const size_t count = static_cast<size_t>(w) * h;
+    if (w == 0 || h == 0 || w > 4096 || h > 4096 || sidecar.size() < headerSize + count * (v2 ? 12 : 8))
     {
         stats.lastError = "missing or unreadable .tiles file";
         ++stats.rejected;
@@ -91,19 +166,31 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
         return false;
     }
     const bool sheet = !(w == VBGO_TT_WIDTH && h == VBGO_TT_HEIGHT);
-    auto &votes = sheet ? m_sheetVotes : m_votes;
+    const uint8_t *cells = v2 ? &sidecar[headerSize + count * 8] : nullptr;
 
     // The colors the capture showed (palette block after the tile
     // dictionary, if any): a pixel still in one of the 3 shade colors was
-    // left unpainted.
+    // left unpainted, and so was a transparent one still in the background color.
     uint8_t shown[4][3];
     std::memcpy(shown, kDefaultCapturePalette, sizeof(shown));
-    size_t offset = headerSize + static_cast<size_t>(w) * h * 8;
+    size_t offset = headerSize + count * (v2 ? 12 : 8);
     if (sidecar.size() >= offset + 4)
     {
-        offset += 4 + static_cast<size_t>(ReadLe32(&sidecar[offset])) * (4 + 16);
-        if (sidecar.size() >= offset + 8 + 12 && std::memcmp(&sidecar[offset], kPaletteMagic, 8) == 0)
+        // The tiles' pixels (fills need to know which pixels are transparent).
+        const size_t tiles = ReadLe32(&sidecar[offset]);
+        for (size_t k = 0; k < tiles && sidecar.size() >= offset + 4 + (k + 1) * 20; ++k)
+        {
+            const uint8_t *e = &sidecar[offset + 4 + k * 20];
+            std::array<uint16_t, 8> &rows = m_tileRows[ReadLe32(e)];
+            for (int r = 0; r < 8; ++r)
+                rows[r] = static_cast<uint16_t>(e[4 + r * 2] | (e[5 + r * 2] << 8));
+        }
+        offset += 4 + tiles * (4 + 16);
+        const bool v2Palette = sidecar.size() >= offset + 8 + 13 && std::memcmp(&sidecar[offset], kPaletteMagic, 8) == 0;
+        if (v2Palette || (sidecar.size() >= offset + 8 + 12 && std::memcmp(&sidecar[offset], kPaletteMagicV1, 8) == 0))
             std::memcpy(shown, &sidecar[offset + 8], sizeof(shown));
+        if (v2Palette && !sheet && sidecar[offset + 20] <= 63)
+            m_paintingLevels.push_back(sidecar[offset + 20]);
     }
     constexpr int kSameColor = 24;  // |dR|+|dG|+|dB| still counted as the capture's own color
     constexpr int kMagentaReach = 40;
@@ -115,49 +202,125 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
         const int py = std::min(height - 1, static_cast<int>((y + 0.5) * sy));
         for (uint32_t x = 0; x < w; ++x)
         {
-            const uint64_t t = ReadLe64(&sidecar[headerSize + (static_cast<size_t>(y) * w + x) * 8]);
+            const size_t i = static_cast<size_t>(y) * w + x;
+            const uint64_t t = ReadLe64(&sidecar[headerSize + i * 8]);
             if (!VBGO_TT_VALID(t))
                 continue; // background - not part of any tile
+            const uint32_t cell = cells ? ReadLe32(&cells[i * 4]) : 0;
+            const bool fill = VBGO_TT_PIXEL(t) == 0;
+            if (fill && (sheet || !VBGO_TT_CELL_VALID(cell)))
+                continue; // fills only count at their map cell
             const int px = std::min(width - 1, static_cast<int>((x + 0.5) * sx));
             const uint8_t *p = &pixels[(static_cast<size_t>(py) * width + px) * channels];
-            if (Distance(p, shown[1]) <= kSameColor || Distance(p, shown[2]) <= kSameColor ||
-                Distance(p, shown[3]) <= kSameColor)
+            if (!fill && (Distance(p, shown[1]) <= kSameColor || Distance(p, shown[2]) <= kSameColor ||
+                          Distance(p, shown[3]) <= kSameColor))
                 continue; // left as captured - not painted
-            const uint32_t rgb = Distance(p, kMagenta) <= kMagentaReach ? kNoColor : (p[0] << 16) | (p[1] << 8) | p[2];
+            // (A transparent pixel left as the background still counts: it
+            // says where a painted fill ends.)
+            const uint32_t rgb = fill && Distance(p, shown[0]) <= kSameColor ? kBackground
+                                 : Distance(p, kMagenta) <= kMagentaReach   ? kNoColor
+                                                                            : (p[0] << 16) | (p[1] << 8) | p[2];
             const uint64_t key = (static_cast<uint64_t>(VBGO_TT_HASH(t)) << 6) | (VBGO_TT_SUBY(t) * 8 + VBGO_TT_SUBX(t));
-            ++votes[key][rgb];
-            if (!sheet)
-                ++m_layerVotes[(key << 5) | VBGO_TT_WORLD(t)][rgb];
+            if (VBGO_TT_CELL_VALID(cell))
+                m_cellVotes.push_back({(static_cast<uint64_t>(VBGO_TT_CELL(cell)) << 40) |
+                                           (static_cast<uint64_t>(VBGO_TT_PALETTE(t)) << 38) | key,
+                                       rgb, VBGO_TT_WORLD(t) | (fill ? kFillVote : 0)});
+            if (fill)
+                continue;
+            if (sheet)
+            {
+                m_sheetVotes.push_back({key, rgb, 0});
+                continue;
+            }
+            m_votes.push_back({key, rgb, 0});
+            m_layerVotes.push_back({(key << 5) | VBGO_TT_WORLD(t), rgb, 0});
+            m_paletteVotes.push_back({(key << 2) | VBGO_TT_PALETTE(t), rgb, 0});
         }
     }
     ++(sheet ? stats.sheets : stats.paintings);
     return true;
 }
 
+void TileColorPack::CompleteFills(CellTile &cell, uint64_t knownBackground) const
+{
+    // A painting only shows some of a fill's pixels - a scaled layer (a court
+    // in perspective) skips texture rows in the distance, and other camera
+    // angles show the ones it skipped. Every transparent pixel nobody painted
+    // or saw left as the background takes the nearest known one's: painted
+    // color, or background.
+    const auto rows = m_tileRows.find(cell.hash);
+    if (rows == m_tileRows.end())
+        return;
+    uint64_t transparent = 0;
+    for (unsigned i = 0; i < 64; ++i)
+        if (!((rows->second[i >> 3] >> ((i & 7) * 2)) & 3))
+            transparent |= 1ull << i;
+    const uint64_t filled = cell.mask & transparent, known = filled | (knownBackground & transparent);
+    if (!filled || known == transparent)
+        return;
+    for (unsigned i = 0; i < 64; ++i)
+    {
+        if (!(transparent >> i & 1) || (known >> i & 1))
+            continue;
+        int bestDistance = 99;
+        unsigned best = 64;
+        for (unsigned j = 0; j < 64; ++j)
+            if (known >> j & 1)
+            {
+                const int d = std::abs(static_cast<int>(i & 7) - static_cast<int>(j & 7)) +
+                              std::abs(static_cast<int>(i >> 3) - static_cast<int>(j >> 3));
+                if (d < bestDistance)
+                    bestDistance = d, best = j;
+            }
+        if (best < 64 && (filled >> best & 1))
+            Store(cell, i, (cell.rgb[best][0] << 16) | (cell.rgb[best][1] << 8) | cell.rgb[best][2]);
+    }
+}
+
 void TileColorPack::FinishImport(ImportStats &stats)
 {
+    auto byKeyThenColor = [](const Vote &a, const Vote &b) { return a.key != b.key ? a.key < b.key : a.rgb < b.rgb; };
+
     // Tile sheets only fill in: a tile pixel any screen painting colored
     // keeps the screen paintings' color.
-    for (auto &entry : m_sheetVotes)
-        if (!m_votes.count(entry.first))
+    std::sort(m_votes.begin(), m_votes.end(), byKeyThenColor);
+    if (!m_sheetVotes.empty())
+    {
+        std::sort(m_sheetVotes.begin(), m_sheetVotes.end(), byKeyThenColor);
+        const size_t screenVotes = m_votes.size();
+        uint64_t lastKey = ~0ull;
+        for (const Vote &vote : m_sheetVotes)
         {
-            m_votes[entry.first] = std::move(entry.second);
-            ++stats.fromSheets;
+            const bool painted = std::binary_search(m_votes.begin(), m_votes.begin() + screenVotes, vote,
+                                                    [](const Vote &a, const Vote &b) { return a.key < b.key; });
+            if (painted)
+                continue;
+            m_votes.push_back(vote);
+            if (vote.key != lastKey)
+                ++stats.fromSheets;
+            lastKey = vote.key;
         }
-    m_sheetVotes.clear();
+        m_sheetVotes.clear();
+        std::sort(m_votes.begin(), m_votes.end(), byKeyThenColor);
+    }
 
     // Cleanup 1: merge stray near-duplicate shades (a slightly-off brush
     // color on a handful of pixels) into the closest color the painter used
     // a lot - never introduces a color that isn't already in the paintings.
     std::unordered_map<uint32_t, uint64_t> usage;
     uint64_t totalVotes = 0;
-    for (const auto &entry : m_votes)
-        for (const auto &vote : entry.second)
-            if (vote.first != kNoColor)
-            {
-                usage[vote.first] += vote.second;
-                totalVotes += vote.second;
-            }
+    auto use = [&](const Vote &vote) {
+        if (vote.rgb < kNoColor)
+        {
+            ++usage[vote.rgb];
+            ++totalVotes;
+        }
+    };
+    for (const Vote &vote : m_votes)
+        use(vote);
+    for (const Vote &vote : m_cellVotes)
+        if (vote.extra & kFillVote)
+            use(vote);
     const uint64_t rareBelow = std::max<uint64_t>(20, totalVotes / 2000);
     constexpr int kMergeDistance = 40; // sum of |dR|+|dG|+|dB|
     // The common colors, bucketed by 16x16x16 color cells, so each rare
@@ -201,97 +364,176 @@ void TileColorPack::FinishImport(ImportStats &stats)
             ++stats.mergedColors;
         }
     }
+    auto remap = [&merged](std::vector<Vote> &votes, auto order) {
+        if (!merged.empty())
+            for (Vote &vote : votes)
+            {
+                const auto m = merged.find(vote.rgb);
+                if (m != merged.end())
+                    vote.rgb = m->second;
+            }
+        std::sort(votes.begin(), votes.end(), order);
+    };
+    remap(m_votes, byKeyThenColor);
+    remap(m_layerVotes, byKeyThenColor);
+    remap(m_paletteVotes, byKeyThenColor);
+    remap(m_cellVotes, byKeyThenColor);
 
     // Cleanup 2: one color per tile pixel - the most-voted one across every
     // place the tile appears in every painting.
-    auto winner = [&merged](const std::unordered_map<uint32_t, uint32_t> &raw, uint32_t &bestVotes, uint32_t &allVotes,
-                            size_t &distinct) {
-        std::unordered_map<uint32_t, uint32_t> votes;
-        for (const auto &vote : raw)
-        {
-            const auto m = merged.find(vote.first);
-            votes[m == merged.end() ? vote.first : m->second] += vote.second;
-        }
-        uint32_t best = 0;
-        bestVotes = allVotes = 0;
-        for (const auto &vote : votes)
-        {
-            allVotes += vote.second;
-            if (vote.second > bestVotes || (vote.second == bestVotes && vote.first < best))
-            {
-                best = vote.first;
-                bestVotes = vote.second;
-            }
-        }
-        distinct = votes.size();
-        return best;
-    };
-    auto store = [](Tile &tile, unsigned index, uint32_t rgb) {
-        tile.mask |= 1ull << index;
-        tile.rgb[index][0] = static_cast<uint8_t>(rgb >> 16);
-        tile.rgb[index][1] = static_cast<uint8_t>(rgb >> 8);
-        tile.rgb[index][2] = static_cast<uint8_t>(rgb);
-    };
     m_tiles.clear();
     m_layerTiles.clear();
+    m_paletteTiles.clear();
     m_leftUncolored.clear();
-    std::unordered_map<uint64_t, uint32_t> chosen;
-    for (const auto &entry : m_votes)
-    {
-        uint32_t bestVotes = 0, allVotes = 0;
-        size_t distinct = 0;
-        const uint32_t best = winner(entry.second, bestVotes, allVotes, distinct);
-        chosen[entry.first] = best;
+    m_cellTiles.clear();
+    Chosen chosen;
+    ForEachKey(m_votes, [&](auto begin, auto end) {
+        uint32_t bestVotes, allVotes;
+        size_t distinct;
+        const uint32_t best = Winner(begin, end, bestVotes, allVotes, distinct);
+        const uint64_t key = begin->key;
+        chosen.entries.emplace_back(key, best);
         if (distinct > 1)
             ++stats.inconsistent;
         if (best == kNoColor)
         {
-            m_leftUncolored[static_cast<uint32_t>(entry.first >> 6)] |= 1ull << (entry.first & 63);
+            m_leftUncolored[static_cast<uint32_t>(key >> 6)] |= 1ull << (key & 63);
             ++stats.erased;
-            continue;
+            return;
         }
-        store(m_tiles[static_cast<uint32_t>(entry.first >> 6)], entry.first & 63, best);
+        Store(m_tiles[static_cast<uint32_t>(key >> 6)], key & 63, best);
         ++stats.tilePixels;
-    }
+    });
 
-    // Cleanup 3: a layer that consistently shows a tile pixel in another
-    // color than the overall choice (at least twice, two thirds of its
-    // votes) keeps that color for itself - tiles reused in different places.
-    for (const auto &entry : m_layerVotes)
+    // Cleanup 3: a palette or layer that consistently shows a tile pixel in
+    // another color than the overall choice (at least twice, two thirds of
+    // its votes) keeps that color for itself - a menu option drawn in its
+    // "not selected" palette, a tile reused in different places.
+    auto variants = [&](std::vector<Vote> &votes, unsigned bits, std::unordered_map<uint64_t, Tile> &into, size_t &counted,
+                        Chosen *record) {
+        ForEachKey(votes, [&](auto begin, auto end) {
+            const uint64_t key = begin->key >> bits;
+            uint32_t overall;
+            if (!chosen.Get(key, overall) || overall == kNoColor)
+                return;
+            uint32_t bestVotes, allVotes;
+            size_t distinct;
+            const uint32_t best = Winner(begin, end, bestVotes, allVotes, distinct);
+            if (best == kNoColor || best == overall || bestVotes < 2 || bestVotes * 3 < allVotes * 2)
+                return;
+            const uint64_t variant = begin->key & ((1ull << bits) - 1);
+            Store(into[((key >> 6) << bits) | variant], key & 63, best);
+            if (record)
+                record->entries.emplace_back(begin->key, best);
+            ++counted;
+        });
+        // A variant only lists the pixels that differ - fill in the rest from
+        // the overall colors, so a lookup needs just one tile.
+        for (auto &entry : into)
+        {
+            const auto base = m_tiles.find(static_cast<uint32_t>(entry.first >> bits));
+            if (base == m_tiles.end())
+                continue;
+            for (unsigned i = 0; i < 64; ++i)
+                if ((base->second.mask >> i & 1) && !(entry.second.mask >> i & 1))
+                    Store(entry.second, i, (base->second.rgb[i][0] << 16) | (base->second.rgb[i][1] << 8) | base->second.rgb[i][2]);
+        }
+    };
+    Chosen paletteChosen;
+    variants(m_paletteVotes, 2, m_paletteTiles, stats.palettePixels, &paletteChosen);
+    variants(m_layerVotes, 5, m_layerTiles, stats.layerPixels, nullptr);
+
+    // Cleanup 4: map cells. Wherever a painting shows a background tile at a
+    // fixed spot, the color painted there wins at that spot if it differs
+    // from what the tile gets anyway (palette variant, else the tile's own) -
+    // and that's the only place fills (transparent pixels painted over) live.
+    CellTile current;
+    uint64_t knownBackground = 0; // transparent pixels of the current entry seen left as the background
+    bool open = false;
+    auto flush = [&]() {
+        if (open && (current.mask || current.keep))
+        {
+            CompleteFills(current, knownBackground);
+            m_cellTiles.push_back(current);
+        }
+        open = false;
+    };
+    ForEachKey(m_cellVotes, [&](auto begin, auto end) {
+        const uint64_t key = begin->key;
+        const uint64_t tileKey = key >> 6; // cell, palette, hash
+        if (!open || (static_cast<uint64_t>(current.cell) << 34 | static_cast<uint64_t>(current.palette) << 32 | current.hash) != tileKey)
+        {
+            flush();
+            current = CellTile{};
+            knownBackground = 0;
+            current.cell = static_cast<uint16_t>(key >> 40);
+            current.palette = static_cast<uint8_t>((key >> 38) & 3);
+            current.hash = static_cast<uint32_t>(key >> 6);
+            open = true;
+        }
+        uint32_t bestVotes, allVotes;
+        size_t distinct;
+        const uint32_t best = Winner(begin, end, bestVotes, allVotes, distinct);
+        const unsigned index = key & 63;
+        if (begin->extra & kFillVote)
+        {
+            if (best == kNoColor || best == kBackground)
+                knownBackground |= 1ull << index;
+            else
+            {
+                Store(current, index, best);
+                ++stats.fillPixels;
+            }
+            return;
+        }
+        const uint64_t pixelKey = key & ((1ull << 38) - 1); // hash << 6 | pixel
+        uint32_t expected;
+        if (!paletteChosen.Get((pixelKey << 2) | current.palette, expected) && !chosen.Get(pixelKey, expected))
+            expected = kNoColor;
+        if (best == expected)
+            return;
+        if (best == kNoColor)
+            current.keep |= 1ull << index;
+        else
+            Store(current, index, best);
+        ++stats.cellPixels;
+    });
+    flush();
+
+    m_tileRows.clear();
+
+    // The paintings' usual brightness (median), if their captures said.
+    m_referenceLevel = 63;
+    if (!m_paintingLevels.empty())
     {
-        const uint64_t key = entry.first >> 5;
-        const auto overall = chosen.find(key);
-        if (overall == chosen.end() || overall->second == kNoColor)
-            continue;
-        uint32_t bestVotes = 0, allVotes = 0;
-        size_t distinct = 0;
-        const uint32_t best = winner(entry.second, bestVotes, allVotes, distinct);
-        if (best == kNoColor || best == overall->second || bestVotes < 2 || bestVotes * 3 < allVotes * 2)
-            continue;
-        store(m_layerTiles[LayerKey(static_cast<uint32_t>(key >> 6), entry.first & 31)], key & 63, best);
-        ++stats.layerPixels;
+        std::nth_element(m_paintingLevels.begin(), m_paintingLevels.begin() + m_paintingLevels.size() / 2, m_paintingLevels.end());
+        m_referenceLevel = std::max<uint8_t>(1, m_paintingLevels[m_paintingLevels.size() / 2]);
     }
-    // A layer's own colors only list the pixels that differ - fill in the
-    // rest from the overall colors, so a lookup needs just one tile.
-    for (auto &entry : m_layerTiles)
-    {
-        const auto base = m_tiles.find(static_cast<uint32_t>(entry.first >> 5));
-        if (base == m_tiles.end())
-            continue;
-        for (unsigned i = 0; i < 64; ++i)
-            if ((base->second.mask >> i & 1) && !(entry.second.mask >> i & 1))
-                store(entry.second, i, (base->second.rgb[i][0] << 16) | (base->second.rgb[i][1] << 8) | base->second.rgb[i][2]);
-    }
+    m_paintingLevels.clear();
+
     m_votes.clear();
     m_layerVotes.clear();
+    m_paletteVotes.clear();
+    m_cellVotes.clear();
+    m_votes.shrink_to_fit();
+    m_layerVotes.shrink_to_fit();
+    m_paletteVotes.shrink_to_fit();
+    m_cellVotes.shrink_to_fit();
 }
 
 std::vector<uint8_t> TileColorPack::Serialize() const
 {
-    // "VBGOCP02", tile count, then per tile: hash, mask, 64 x RGB; then the
+    // "VBGOCP03", tile count, then per tile: hash, mask, 64 x RGB; then the
     // per-layer colors: count, then per entry: hash, world, mask, 64 x RGB;
-    // then the pixels left uncolored on purpose.
-    // Sorted, so the same pack always gives the same bytes.
+    // then the pixels left uncolored on purpose: count, (hash, mask) each;
+    // then the per-palette colors: count, (hash, palette, mask, 64 x RGB)
+    // each; then the map cells: count, (cell, palette, hash, mask, keep,
+    // 64 x RGB) each; then the reference brightness level. Sorted, so the
+    // same pack always gives the same bytes.
+    auto appendTile = [](std::vector<uint8_t> &out, const Tile &tile) {
+        AppendLe(out, tile.mask, 8);
+        out.insert(out.end(), &tile.rgb[0][0], &tile.rgb[0][0] + sizeof(tile.rgb));
+    };
     std::vector<uint32_t> hashes;
     hashes.reserve(m_tiles.size());
     for (const auto &entry : m_tiles)
@@ -301,25 +543,23 @@ std::vector<uint8_t> TileColorPack::Serialize() const
     AppendLe(out, m_tiles.size(), 4);
     for (const uint32_t hash : hashes)
     {
-        const Tile &tile = m_tiles.at(hash);
         AppendLe(out, hash, 4);
-        AppendLe(out, tile.mask, 8);
-        out.insert(out.end(), &tile.rgb[0][0], &tile.rgb[0][0] + sizeof(tile.rgb));
+        appendTile(out, m_tiles.at(hash));
     }
-    std::vector<uint64_t> layerKeys;
-    for (const auto &entry : m_layerTiles)
-        layerKeys.push_back(entry.first);
-    std::sort(layerKeys.begin(), layerKeys.end());
-    AppendLe(out, layerKeys.size(), 4);
-    for (const uint64_t key : layerKeys)
-    {
-        const Tile &tile = m_layerTiles.at(key);
-        AppendLe(out, key >> 5, 4);
-        AppendLe(out, key & 31, 4);
-        AppendLe(out, tile.mask, 8);
-        out.insert(out.end(), &tile.rgb[0][0], &tile.rgb[0][0] + sizeof(tile.rgb));
-    }
-    // then the tile pixels left uncolored on purpose: count, (hash, mask) each
+    auto appendVariants = [&](const std::unordered_map<uint64_t, Tile> &variants, unsigned bits) {
+        std::vector<uint64_t> keys;
+        for (const auto &entry : variants)
+            keys.push_back(entry.first);
+        std::sort(keys.begin(), keys.end());
+        AppendLe(out, keys.size(), 4);
+        for (const uint64_t key : keys)
+        {
+            AppendLe(out, key >> bits, 4);
+            AppendLe(out, key & ((1ull << bits) - 1), 4);
+            appendTile(out, variants.at(key));
+        }
+    };
+    appendVariants(m_layerTiles, 5);
     std::vector<uint32_t> left;
     for (const auto &entry : m_leftUncolored)
         left.push_back(entry.first);
@@ -330,51 +570,105 @@ std::vector<uint8_t> TileColorPack::Serialize() const
         AppendLe(out, hash, 4);
         AppendLe(out, m_leftUncolored.at(hash), 8);
     }
+    appendVariants(m_paletteTiles, 2);
+    AppendLe(out, m_cellTiles.size(), 4);
+    for (const CellTile &cell : m_cellTiles)
+    {
+        AppendLe(out, cell.cell, 2);
+        AppendLe(out, cell.palette, 2);
+        AppendLe(out, cell.hash, 4);
+        AppendLe(out, cell.mask, 8);
+        AppendLe(out, cell.keep, 8);
+        out.insert(out.end(), &cell.rgb[0][0], &cell.rgb[0][0] + sizeof(cell.rgb));
+    }
+    AppendLe(out, m_referenceLevel, 4);
     return out;
 }
 
 bool TileColorPack::Deserialize(const std::vector<uint8_t> &bytes)
 {
     Clear();
-    constexpr size_t kEntry = 4 + 8 + 64 * 3, kLayerEntry = 4 + 4 + 8 + 64 * 3;
+    constexpr size_t kTileBytes = 8 + 64 * 3;
     if (bytes.size() < 12)
         return false;
-    const bool v2 = std::memcmp(bytes.data(), kPackMagic, 8) == 0;
-    if (!v2 && std::memcmp(bytes.data(), kPackMagicV1, 8) != 0)
+    const int version = std::memcmp(bytes.data(), kPackMagic, 8) == 0     ? 3
+                        : std::memcmp(bytes.data(), kPackMagicV2, 8) == 0 ? 2
+                        : std::memcmp(bytes.data(), kPackMagicV1, 8) == 0 ? 1
+                                                                          : 0;
+    if (!version)
         return false;
-    const uint32_t count = ReadLe32(&bytes[8]);
-    size_t offset = 12;
-    if (bytes.size() < offset + static_cast<size_t>(count) * kEntry)
+    size_t offset = 8;
+    auto have = [&](size_t n) { return bytes.size() >= offset + n; };
+    auto readTile = [&](Tile &tile) {
+        tile.mask = ReadLe64(&bytes[offset]);
+        std::memcpy(tile.rgb, &bytes[offset + 8], sizeof(tile.rgb));
+        offset += kTileBytes;
+    };
+    const uint32_t count = ReadLe32(&bytes[offset]);
+    offset += 4;
+    if (!have(static_cast<size_t>(count) * (4 + kTileBytes)))
         return false;
-    for (uint32_t i = 0; i < count; ++i, offset += kEntry)
+    for (uint32_t i = 0; i < count; ++i)
     {
-        const uint8_t *p = &bytes[offset];
-        Tile &tile = m_tiles[ReadLe32(p)];
-        tile.mask = ReadLe64(p + 4);
-        std::memcpy(tile.rgb, p + 12, sizeof(tile.rgb));
-    }
-    if (v2 && bytes.size() >= offset + 4)
-    {
-        const uint32_t layers = ReadLe32(&bytes[offset]);
+        const uint32_t hash = ReadLe32(&bytes[offset]);
         offset += 4;
-        if (bytes.size() < offset + static_cast<size_t>(layers) * kLayerEntry)
+        readTile(m_tiles[hash]);
+    }
+    auto readVariants = [&](std::unordered_map<uint64_t, Tile> &into, unsigned bits) {
+        if (!have(4))
             return false;
-        for (uint32_t i = 0; i < layers; ++i, offset += kLayerEntry)
+        const uint32_t n = ReadLe32(&bytes[offset]);
+        offset += 4;
+        if (!have(static_cast<size_t>(n) * (8 + kTileBytes)))
+            return false;
+        for (uint32_t i = 0; i < n; ++i)
         {
-            const uint8_t *p = &bytes[offset];
-            Tile &tile = m_layerTiles[LayerKey(ReadLe32(p), ReadLe32(p + 4))];
-            tile.mask = ReadLe64(p + 8);
-            std::memcpy(tile.rgb, p + 16, sizeof(tile.rgb));
+            const uint64_t key = (static_cast<uint64_t>(ReadLe32(&bytes[offset])) << bits) | ReadLe32(&bytes[offset + 4]);
+            offset += 8;
+            readTile(into[key]);
         }
-        if (bytes.size() >= offset + 4)
+        return true;
+    };
+    if (version >= 2 && have(4))
+    {
+        if (!readVariants(m_layerTiles, 5))
+            return false;
+        if (have(4))
         {
             const uint32_t left = ReadLe32(&bytes[offset]);
             offset += 4;
-            if (bytes.size() < offset + static_cast<size_t>(left) * 12)
+            if (!have(static_cast<size_t>(left) * 12))
                 return false;
             for (uint32_t i = 0; i < left; ++i, offset += 12)
                 m_leftUncolored[ReadLe32(&bytes[offset])] = ReadLe64(&bytes[offset + 4]);
         }
+    }
+    if (version >= 3)
+    {
+        if (!readVariants(m_paletteTiles, 2) || !have(4))
+            return false;
+        const uint32_t cellCount = ReadLe32(&bytes[offset]);
+        offset += 4;
+        constexpr size_t kCellBytes = 2 + 2 + 4 + 8 + 8 + 64 * 3;
+        if (!have(static_cast<size_t>(cellCount) * kCellBytes))
+            return false;
+        m_cellTiles.resize(cellCount);
+        for (CellTile &cell : m_cellTiles)
+        {
+            const uint8_t *p = &bytes[offset];
+            cell.cell = static_cast<uint16_t>(p[0] | (p[1] << 8));
+            cell.palette = static_cast<uint8_t>(p[2] & 3);
+            cell.hash = ReadLe32(p + 4);
+            cell.mask = ReadLe64(p + 8);
+            cell.keep = ReadLe64(p + 16);
+            std::memcpy(cell.rgb, p + 24, sizeof(cell.rgb));
+            offset += kCellBytes;
+        }
+        if (have(4))
+            m_referenceLevel = static_cast<uint8_t>(std::min<uint32_t>(63, std::max<uint32_t>(1, ReadLe32(&bytes[offset]))));
+        std::sort(m_cellTiles.begin(), m_cellTiles.end(), [](const CellTile &a, const CellTile &b) {
+            return a.cell != b.cell ? a.cell < b.cell : a.palette != b.palette ? a.palette < b.palette : a.hash < b.hash;
+        });
     }
     return true;
 }

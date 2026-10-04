@@ -1,6 +1,7 @@
 #pragma once
 
 #include "emu/AudioOutput.h"
+#include "emu/ColorPackRenderer.h"
 #include "emu/ShadeColorizer.h"
 #include "emu/TileColorPack.h"
 #include "emu/UncoloredCollector.h"
@@ -207,6 +208,12 @@ public:
     void SetColorPackEnabled(bool enabled);
     bool IsColorPackEnabled() const { return m_colorPackEnabled; }
 
+    // Desktop authoring tools (F10 captures, F7) need to know every
+    // transparent background pixel a painter could paint over ("fills" - see
+    // vbgo_tiletrack.h); otherwise only those the pack has colors for are
+    // tracked, which is cheaper. Off by default.
+    void SetAuthoring(bool enabled);
+
     // While on, every frame's not-yet-colored objects (whatever the pack
     // doesn't cover) are collected (see UncoloredCollector.h); turning it off
     // writes them to captures/ as paint-ready sheets, "<rom> todo NNN.png" +
@@ -251,14 +258,19 @@ private:
     // uploads it to the screen texture.
     void UploadFrame();
     void PaintTileDebugView();
-    void PaintColorPack();
+    // Tells the tracker which fills to tag (see SetAuthoring).
+    void UpdateFillTracking();
     // Next free "<rom><infix> NNN" in captures/.
     std::string NextCaptureName(const char *infix) const;
     // Writes captures/<base>.png (3x upscale of rgb, width x height RGB) and
-    // captures/<base>.tiles (the tile records, plus every tile's rows - from
-    // chr when given, else from what the tracker has seen).
+    // captures/<base>.tiles (the tile records and map cells, plus every
+    // tile's rows from chr - the character memory the records refer to - and
+    // the colors unpainted pixels show: shown + the game's brightness level
+    // for a screen, else the palette at full brightness).
     bool WriteCapture(const std::string &base, const uint8_t *rgb, const uint64_t *tiles,
-                      uint32_t width = 384, uint32_t height = 224, const uint16_t *chr = nullptr);
+                      uint32_t width = 384, uint32_t height = 224, const uint16_t *chr = nullptr,
+                      const uint32_t *cells = nullptr, const std::array<std::array<uint8_t, 3>, 4> *shown = nullptr,
+                      uint8_t brightnessLevel = 255);
     // The 4 colors uncolored pixels are shown in (Multicolor palette, else gray).
     std::array<std::array<uint8_t, 3>, 4> CapturePalette() const;
 
@@ -312,7 +324,10 @@ private:
     ShadeColorizer m_shadeColorizer;
     bool m_tileDebugView = false; // see SetTileDebugView
     TileColorPack m_colorPack;    // see ReloadColorPack
+    ColorPackRenderer m_packRenderer;
     bool m_colorPackEnabled = true;
+    bool m_authoring = false;     // see SetAuthoring
+    std::vector<uint64_t> m_records; // one eye's tile records, for the debug view / F7 collector
     UncoloredCollector m_collector; // see SetCollectingUncolored
     bool m_collecting = false;
     ShadeRgb m_shadeBackground{0.0f, 0.0f, 0.0f}; // active Multicolor palette's background - painted tiles fade toward it

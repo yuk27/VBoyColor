@@ -1,11 +1,28 @@
 /* VirtualBoyGo tile tracking - records, for every pixel the Virtual Boy's
- * VIP draws, which 8x8 character (tile) it came from and where inside that
- * tile, so a frontend can recolor by tile (per-game color packs) instead of
- * only by shade. Experimental.
+ * VIP draws, which 8x8 character (tile) it came from, where inside that
+ * tile, and which background map cell put it there, so a frontend can
+ * recolor by tile (per-game color packs) instead of only by shade.
+ * Experimental.
  *
  * Hooked into the Beetle VB core through generated copies of vip.c and
  * vip_draw.inc (see cmake/PatchBeetleVip.cmake) - the submodule itself stays
  * untouched. Plain C, shared by the core (vip.c) and the frontend.
+ *
+ * How it works: while the VIP draws a frame buffer, every drawn pixel gets a
+ * 64-bit tag (character slot, pixel inside the tile, palette, layer, map
+ * cell - see VBGO_TAG_*) written straight into a tag buffer laid out like
+ * the VB's own column-major frame buffer, double-buffered the same way. Each
+ * drawing pass has a stamp; tags from older passes simply don't match it, so
+ * nothing is cleared per frame. At the start of each pass the character
+ * memory is snapshotted and every tile hashed once, so a tag's tile is known
+ * by content (hash) even after the game has streamed new graphics in.
+ *
+ * Fills: background (non-sprite) tiles' transparent pixels can be tagged too
+ * - where nothing else is drawn, the backmost non-blank tile's transparent
+ * pixel is what the player sees there, so a color pack can color it (a court
+ * surface between its speckles, say). VBGO_TT_FILLS_ALL tags all of them
+ * (captures need to know every one); VBGO_TT_FILLS_PACK only those in map
+ * cells the pack has fill colors for (cheap enough for the headset).
  *
  * Off by default; while off, the core draws exactly as upstream (only a
  * flag check per drawn pixel). Turn on with vbgo_tiletrack_set_enabled().
@@ -21,68 +38,142 @@
 extern "C" {
 #endif
 
-/* ---- Frontend API ------------------------------------------------------ */
-
-/* Per displayed pixel, both eyes: VBGO_TT_EYE_PIXELS entries per eye, eye 0
- * (left half of the side-by-side output) first, rows of 384. Zero = no tile
- * (background color, or drawn directly into the framebuffer by the CPU). */
 #define VBGO_TT_WIDTH  384
 #define VBGO_TT_HEIGHT 224
 #define VBGO_TT_EYE_PIXELS (VBGO_TT_WIDTH * VBGO_TT_HEIGHT)
+#define VBGO_TT_COLUMN 256 /* tags per column in the tag buffer (rows 0-223 used) */
 
-/* Field layout of one entry. */
+/* ---- Tags (the tracker's own per-pixel format) -------------------------- */
+
+#define VBGO_TAG_CHAR(t)     ((unsigned)(t) & 0x7FF)          /* character slot 0-2047 */
+#define VBGO_TAG_INDEX(t)    ((unsigned)((t) >> 11) & 63)     /* pixel in the tile: y * 8 + x (tile space, flips undone) */
+#define VBGO_TAG_SUBX(t)     ((unsigned)((t) >> 11) & 7)
+#define VBGO_TAG_SUBY(t)     ((unsigned)((t) >> 14) & 7)
+#define VBGO_TAG_PALETTE(t)  ((unsigned)((t) >> 17) & 3)      /* GPLT/JPLT palette number */
+#define VBGO_TAG_IS_OBJ(t)   ((unsigned)((t) >> 19) & 1)      /* 1 = sprite (OBJ) */
+#define VBGO_TAG_PIXEL(t)    ((unsigned)((t) >> 20) & 3)      /* raw 2-bit value; 0 = a fill (transparent pixel) */
+#define VBGO_TAG_WORLD(t)    ((unsigned)((t) >> 22) & 31)     /* world (layer) that drew it */
+#define VBGO_TAG_HAS_CELL(t) ((unsigned)((t) >> 27) & 1)      /* drawn from a BG map cell (not a sprite) */
+#define VBGO_TAG_CELL(t)     ((unsigned)((t) >> 28) & 0xFFFF) /* that cell's halfword index in VIP DRAM */
+#define VBGO_TAG_STAMP(t)    ((unsigned)((t) >> 48))          /* drawing pass that wrote it */
+
+/* ---- Records (captures, .tiles files, debug tools) ----------------------- */
+
+/* Field layout of one record (a tag resolved to the tile's content hash). */
 #define VBGO_TT_HASH(v)    ((uint32_t)(v))              /* hash of the tile's 8x8 pixel data */
 #define VBGO_TT_SUBX(v)    ((unsigned)((v) >> 32) & 7)  /* x inside the tile (tile space, flips undone) */
 #define VBGO_TT_SUBY(v)    ((unsigned)((v) >> 35) & 7)  /* y inside the tile */
 #define VBGO_TT_PALETTE(v) ((unsigned)((v) >> 38) & 3)  /* GPLT/JPLT palette number used */
 #define VBGO_TT_IS_OBJ(v)  ((unsigned)((v) >> 40) & 1)  /* 1 = sprite (OBJ), 0 = background map */
-#define VBGO_TT_PIXEL(v)   ((unsigned)((v) >> 41) & 3)  /* raw 2-bit tile pixel value (1-3) */
+#define VBGO_TT_PIXEL(v)   ((unsigned)((v) >> 41) & 3)  /* raw 2-bit tile pixel value (1-3; 0 = a fill) */
 #define VBGO_TT_WORLD(v)   ((unsigned)((v) >> 43) & 31) /* world (layer) 0-31 that drew it */
 #define VBGO_TT_CHAR(v)    ((unsigned)((v) >> 48) & 0x7FF) /* character slot (debug only - slots get reused) */
 #define VBGO_TT_VALID(v)   ((unsigned)((v) >> 63) & 1)
+/* Map cells, stored beside records (a uint32 each): bit 31 set = drawn
+ * from that BG map cell (halfword index in VIP DRAM, low 16 bits). */
+#define VBGO_TT_CELL_VALID(c) ((unsigned)((c) >> 31) & 1)
+#define VBGO_TT_CELL(c)       ((unsigned)(c) & 0xFFFF)
+
+/* ---- Frontend API ------------------------------------------------------ */
 
 void vbgo_tiletrack_set_enabled(bool enabled);
 bool vbgo_tiletrack_is_enabled(void);
 
-/* Tile info for the frame most recently output by retro_run(), laid out as
- * described above (2 * VBGO_TT_EYE_PIXELS entries). Contents are only
- * meaningful while tracking is enabled. */
-const uint64_t *vbgo_tiletrack_frame(void);
+#define VBGO_TT_FILLS_NONE 0
+#define VBGO_TT_FILLS_PACK 1 /* only in cells marked with vbgo_tiletrack_set_fill_cells */
+#define VBGO_TT_FILLS_ALL  2
+void vbgo_tiletrack_set_fill_mode(int mode);
+int vbgo_tiletrack_fill_mode(void);
+/* 65536-bit map (8 KB): bit n set = BG map cell n has fill colors. Copied. */
+void vbgo_tiletrack_set_fill_cells(const uint8_t *bits);
 
-/* The 8 rows (2 bits per pixel, pixel 0 in the low bits) of the tile with
- * this hash, as last seen while tracking. False if never seen. */
-bool vbgo_tiletrack_tile_rows(uint32_t hash, uint16_t rows_out[8]);
+/* What one eye showed in the frame most recently output by retro_run():
+ * per column, the 224 tags of that column (NULL if the column was blank),
+ * plus the stamp tags must carry to belong to it and the drawing pass's
+ * tile hashes / character memory (index by VBGO_TAG_CHAR). */
+typedef struct
+{
+   const uint64_t *columns[VBGO_TT_WIDTH];
+   uint64_t stamp; /* compare with (tag >> 48) */
+   const uint32_t *hashes;   /* 2048 */
+   const uint8_t *blank;     /* 2048: 1 = all 64 pixels transparent */
+   const uint16_t *chr;      /* 2048 * 8 rows (2 bits per pixel, pixel 0 in the low bits) */
+} vbgo_tt_eye_view;
 
-/* The VB's character memory as of the last frame drawn while tracking: 2048
- * tiles of 8 rows (2 bits per pixel, pixel 0 in the low bits), everything
- * the game has loaded at the moment - shown on screen or not. NULL until a
- * frame was drawn with tracking on. */
+/* False if that eye has shown nothing tracked yet. */
+bool vbgo_tiletrack_eye_view(unsigned eye, vbgo_tt_eye_view *view);
+
+/* The eye's frame as records (row-major, VBGO_TT_EYE_PIXELS) and, if cells
+ * isn't NULL, their map cells. Fills are included only if with_fills. */
+bool vbgo_tiletrack_records(unsigned eye, uint64_t *records, uint32_t *cells, bool with_fills);
+
+/* Character memory as of the last drawing pass (2048 tiles of 8 rows),
+ * everything the game had loaded - on screen or not. NULL until a frame was
+ * drawn with tracking on. */
 const uint16_t *vbgo_tiletrack_chr_ram(void);
 
-/* The hash tile records use for a tile with these 8 rows. */
+/* The hash records use for a tile with these 8 rows. */
 uint32_t vbgo_tiletrack_hash_rows(const uint16_t rows[8]);
 
 /* ---- Core hooks (called from the patched vip.c / vip_draw.inc only) ---- */
 
 extern int vbgo_tt_on;
+extern int vbgo_tt_fill;
 extern uint32_t vbgo_tt_world;
 extern const uint8_t *vbgo_tt_block_base;
-extern uint32_t vbgo_tt_block[2 * 512 * 8];
+extern uint64_t *vbgo_tt_dst[2];
+extern uint64_t vbgo_tt_stamp_bits;
+extern const uint8_t *vbgo_tt_blank;
+extern uint8_t vbgo_tt_fill_cells[8192];
 
-/* Packed per drawn pixel while a block of 8 lines is being drawn; converted
- * to the 64-bit form (with the tile hash) when the block is stored. */
-#define VBGO_TT_TAG(target_ptr, chr, sx, sy, pal, obj, pv)                                          \
-   do                                                                                             \
-   {                                                                                              \
-      if (vbgo_tt_on)                                                                             \
-         vbgo_tt_block[(const uint8_t *)(target_ptr) - vbgo_tt_block_base] =                       \
-            0x80000000u | (uint32_t)(chr) | ((uint32_t)(sx) << 11) | ((uint32_t)(sy) << 14) |    \
-            ((uint32_t)(pal) << 17) | ((uint32_t)(obj) << 19) | ((uint32_t)(pv) << 20) |         \
-            (vbgo_tt_world << 22);                                                                \
+/* Where a pixel the core writes at target_ptr (inside the block's drawing
+ * buffers) goes in the tag buffer, or NULL if it's off screen. */
+static inline uint64_t *vbgo_tt_slot(const void *target_ptr)
+{
+   const ptrdiff_t i = (const uint8_t *)target_ptr - vbgo_tt_block_base;
+   const unsigned x = (unsigned)((i & 511) - 8);
+   return x < VBGO_TT_WIDTH ? &vbgo_tt_dst[(i >> 12) & 1][x * VBGO_TT_COLUMN + ((i >> 9) & 7)] : (uint64_t *)0;
+}
+
+#define VBGO_TT_CELL_BITS(cell) (((uint64_t)1 << 27) | ((uint64_t)(cell) << 28))
+
+/* A drawn (non-transparent) pixel. cell_bits: VBGO_TT_CELL_BITS(cell), or 0
+ * for sprites. */
+#define VBGO_TT_TAG(target_ptr, chr, sx, sy, pal, obj, pv, cell_bits)                                         \
+   do                                                                                                       \
+   {                                                                                                        \
+      if (vbgo_tt_on)                                                                                       \
+      {                                                                                                     \
+         uint64_t *vbgo_d_ = vbgo_tt_slot(target_ptr);                                                      \
+         if (vbgo_d_)                                                                                       \
+            *vbgo_d_ = vbgo_tt_stamp_bits | (cell_bits) |                                                   \
+                       (uint64_t)((uint32_t)(chr) | ((uint32_t)(sx) << 11) | ((uint32_t)(sy) << 14) |       \
+                                  ((uint32_t)(pal) << 17) | ((uint32_t)(obj) << 19) | ((uint32_t)(pv) << 20) | \
+                                  (vbgo_tt_world << 22));                                                    \
+      }                                                                                                     \
    } while (0)
 
-void vbgo_tiletrack_begin_block(const uint8_t *drawing_buffers, const uint16_t *chr_ram, unsigned block_no);
-void vbgo_tiletrack_end_block(unsigned fb, unsigned block_no);
+/* Whether a BG tile drawn from this cell may leave fills: non-blank tiles
+ * only, and in VBGO_TT_FILLS_PACK mode only cells the pack fills. */
+static inline int vbgo_tt_fills_from(unsigned chr, unsigned cell)
+{
+   return vbgo_tt_fill && !vbgo_tt_blank[chr] &&
+          (vbgo_tt_fill == 2 || ((vbgo_tt_fill_cells[cell >> 3] >> (cell & 7)) & 1));
+}
+
+/* A transparent pixel of a BG tile (call only if vbgo_tt_fills_from):
+ * tagged as a fill unless something was already drawn or filled there this
+ * pass - the backmost tile wins, drawn pixels always win. */
+static inline void vbgo_tt_fill_px(const void *target_ptr, unsigned chr, unsigned sx, unsigned sy, unsigned pal,
+                                   unsigned cell)
+{
+   uint64_t *d = vbgo_tt_slot(target_ptr);
+   if (d && (*d >> 48) != (vbgo_tt_stamp_bits >> 48))
+      *d = vbgo_tt_stamp_bits | VBGO_TT_CELL_BITS(cell) |
+           (uint64_t)(chr | (sx << 11) | (sy << 14) | (pal << 17) | (vbgo_tt_world << 22));
+}
+
+void vbgo_tiletrack_begin_block(const uint8_t *drawing_buffers, const uint16_t *chr_ram, unsigned block_no, unsigned fb);
 void vbgo_tiletrack_display_column(unsigned fb, unsigned lr, unsigned dest_lr, unsigned column, bool display_active);
 void vbgo_tiletrack_cpu_fb_write(unsigned fb, unsigned lr, unsigned offset, unsigned bytes);
 

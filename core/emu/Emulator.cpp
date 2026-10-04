@@ -179,6 +179,7 @@ void Emulator::Initialize(UiRenderer &ui, Platform &platform)
     m_screenTexture = ui.CreateStreamingImage(kFbWidth, kFbHeight, VK_FORMAT_B8G8R8A8_SRGB);
     m_frameBufferRgba.resize(static_cast<size_t>(kFbWidth) * kFbHeight * 4);
     m_rawFrame.resize(m_frameBufferRgba.size());
+    m_records.resize(VBGO_TT_EYE_PIXELS);
 }
 
 bool Emulator::LoadRom(const std::string &romPath, const std::string &displayName)
@@ -266,8 +267,9 @@ void Emulator::RunFrame(float deltaSeconds)
     {
         std::memcpy(m_rawFrame.data(), g_pendingFrame, m_rawFrame.size());
         m_hasFrame = true;
-        if (m_collecting && vbgo_tiletrack_is_enabled())
-            m_collector.AddFrame(vbgo_tiletrack_frame(), m_rawFrame.data(), kFbWidth, m_colorPack, CapturePalette());
+        if (m_collecting && vbgo_tiletrack_is_enabled() &&
+            vbgo_tiletrack_records(0, m_records.data(), nullptr, false))
+            m_collector.AddFrame(m_records.data(), m_rawFrame.data(), kFbWidth, m_colorPack, CapturePalette());
         UploadFrame();
         m_lastFrameWidth = g_pendingWidth > 0 ? g_pendingWidth : kSideBySideWidth;
         m_lastFrameHeight = g_pendingHeight > 0 ? g_pendingHeight : kSideBySideHeight;
@@ -304,31 +306,38 @@ void Emulator::SetShadePalette(int paletteIndex)
 
 void Emulator::UploadFrame()
 {
-    const size_t pixelCount = m_rawFrame.size() / 4;
-    if (m_shadePaletteIndex >= 0)
+    // Only the part of the core's (bigger, fixed-size) buffer this frame
+    // uses - both eyes side by side - is converted and uploaded.
+    const uint32_t width = std::min<uint32_t>(m_lastFrameWidth, kFbWidth);
+    const uint32_t height = std::min<uint32_t>(m_lastFrameHeight, kFbHeight);
+    const size_t stride = static_cast<size_t>(kFbWidth) * 4;
+    for (uint32_t y = 0; y < height; ++y)
     {
-        m_shadeColorizer.Colorize(m_rawFrame.data(), m_frameBufferRgba.data(), pixelCount);
-        if (m_colorPackEnabled && !m_colorPack.Empty())
-            PaintColorPack();
+        const uint8_t *src = &m_rawFrame[y * stride];
+        uint8_t *dst = &m_frameBufferRgba[y * stride];
+        if (m_shadePaletteIndex >= 0)
+            m_shadeColorizer.Colorize(src, dst, width);
+        else
+            // Force alpha to opaque while copying - see m_frameBufferRgba's
+            // doc comment for why the core's own buffer can't be uploaded
+            // directly. (Its top byte also carries the shade index tag, which
+            // this mode doesn't need.)
+            for (uint32_t x = 0; x < width * 4; x += 4)
+            {
+                dst[x + 0] = src[x + 0];
+                dst[x + 1] = src[x + 1];
+                dst[x + 2] = src[x + 2];
+                dst[x + 3] = 0xFF;
+            }
     }
-    else
+    if (m_shadePaletteIndex >= 0 && m_colorPackEnabled && m_packRenderer.Active() && vbgo_tiletrack_is_enabled())
     {
-        // Force alpha to opaque while copying - see m_frameBufferRgba's doc
-        // comment for why the core's own buffer can't be uploaded directly.
-        // (Its top byte also carries the shade index tag, which this mode
-        // doesn't need.)
-        const uint8_t *src = m_rawFrame.data();
-        for (size_t i = 0; i < m_frameBufferRgba.size(); i += 4)
-        {
-            m_frameBufferRgba[i + 0] = src[i + 0];
-            m_frameBufferRgba[i + 1] = src[i + 1];
-            m_frameBufferRgba[i + 2] = src[i + 2];
-            m_frameBufferRgba[i + 3] = 0xFF;
-        }
+        const uint32_t eyeOffset[2] = {0, m_lastFrameWidth - VBGO_TT_WIDTH};
+        m_packRenderer.Paint(m_frameBufferRgba.data(), m_rawFrame.data(), kFbWidth, eyeOffset, m_shadeBackground);
     }
     if (m_tileDebugView)
         PaintTileDebugView();
-    m_ui->UpdateStreamingImage(m_screenTexture, m_frameBufferRgba.data(), m_frameBufferRgba.size());
+    m_ui->UpdateStreamingImage(m_screenTexture, m_frameBufferRgba.data(), height * stride);
 }
 
 namespace
@@ -359,17 +368,18 @@ void Emulator::PaintTileDebugView()
 {
     if (!vbgo_tiletrack_is_enabled())
         return;
-    const uint64_t *tiles = vbgo_tiletrack_frame();
     // Side-by-side frame: left eye at x 0, right eye after it (plus any
     // separation the core was configured with - none by default).
     const uint32_t eyeOffset[2] = {0, m_lastFrameWidth - VBGO_TT_WIDTH};
-    for (int eye = 0; eye < 2; ++eye)
+    for (unsigned eye = 0; eye < 2; ++eye)
     {
+        if (!vbgo_tiletrack_records(eye, m_records.data(), nullptr, false))
+            continue;
         for (uint32_t y = 0; y < VBGO_TT_HEIGHT; ++y)
         {
             for (uint32_t x = 0; x < VBGO_TT_WIDTH; ++x)
             {
-                const uint64_t t = tiles[eye * VBGO_TT_EYE_PIXELS + y * VBGO_TT_WIDTH + x];
+                const uint64_t t = m_records[y * VBGO_TT_WIDTH + x];
                 uint8_t *px = &m_frameBufferRgba[(static_cast<size_t>(y) * kFbWidth + eyeOffset[eye] + x) * 4];
                 uint8_t rgb[3] = {0, 0, 0};
                 if (VBGO_TT_VALID(t))
@@ -399,63 +409,6 @@ void Emulator::SetTileDebugView(bool enabled)
     m_tileDebugView = enabled;
     if (m_hasFrame && m_ui)
         UploadFrame(); // show/hide it right away, even while paused
-}
-
-void Emulator::PaintColorPack()
-{
-    if (!vbgo_tiletrack_is_enabled())
-        return;
-    // Same fade as the Multicolor palette (see ShadeColorizer): the brightest
-    // shade's level from the core's tag byte, through the core's gamma.
-    float fadeLut[64];
-    for (int i = 0; i < 64; ++i)
-        fadeLut[i] = std::pow(i / 63.0f, 1.0f / 2.2f);
-    const float bg[3] = {m_shadeBackground.b * 255.0f, m_shadeBackground.g * 255.0f, m_shadeBackground.r * 255.0f};
-
-    const uint64_t *tiles = vbgo_tiletrack_frame();
-    const uint32_t eyeOffset[2] = {0, m_lastFrameWidth - VBGO_TT_WIDTH};
-    const bool layerColors = m_colorPack.HasLayerColors();
-    uint32_t lastHash = 0, lastWorld = 0;
-    bool haveLast = false;
-    const TileColorPack::Tile *lastTile = nullptr;
-    for (int eye = 0; eye < 2; ++eye)
-    {
-        for (uint32_t y = 0; y < VBGO_TT_HEIGHT; ++y)
-        {
-            for (uint32_t x = 0; x < VBGO_TT_WIDTH; ++x)
-            {
-                const uint64_t t = tiles[eye * VBGO_TT_EYE_PIXELS + y * VBGO_TT_WIDTH + x];
-                if (!VBGO_TT_VALID(t))
-                    continue;
-                const size_t i = (static_cast<size_t>(y) * kFbWidth + eyeOffset[eye] + x) * 4;
-                const uint8_t *raw = &m_rawFrame[i];
-                if ((raw[0] | raw[1] | raw[2]) == 0)
-                    continue; // shade switched off by the game - stays background
-                const uint32_t hash = VBGO_TT_HASH(t), world = VBGO_TT_WORLD(t);
-                if (!haveLast || hash != lastHash || world != lastWorld) // neighbors are usually the same tile - skip the lookup
-                {
-                    // the layer's own colors for this tile, if it has any (reused tiles), else the tile's
-                    lastTile = layerColors ? m_colorPack.FindLayer(hash, world) : nullptr;
-                    if (!lastTile)
-                        lastTile = m_colorPack.Find(hash);
-                    lastHash = hash;
-                    lastWorld = world;
-                    haveLast = true;
-                }
-                if (!lastTile)
-                    continue; // tile not in the pack - keeps the Multicolor palette's colors
-                const unsigned index = VBGO_TT_SUBY(t) * 8 + VBGO_TT_SUBX(t);
-                if (!(lastTile->mask >> index & 1))
-                    continue; // unpainted pixel - keeps the Multicolor palette's color
-                const float fade = fadeLut[raw[3] >> 2];
-                uint8_t *dst = &m_frameBufferRgba[i];
-                const uint8_t *rgb = lastTile->rgb[index];
-                dst[0] = static_cast<uint8_t>(bg[0] + (rgb[2] - bg[0]) * fade + 0.5f);
-                dst[1] = static_cast<uint8_t>(bg[1] + (rgb[1] - bg[1]) * fade + 0.5f);
-                dst[2] = static_cast<uint8_t>(bg[2] + (rgb[0] - bg[2]) * fade + 0.5f);
-            }
-        }
-    }
 }
 
 std::string Emulator::ReloadColorPack()
@@ -497,12 +450,13 @@ std::string Emulator::ReloadColorPack()
         m_platform->WriteRomsFile(m_romBaseName + ".vbcp", false, bytes.data(), bytes.size());
         std::snprintf(summary, sizeof(summary),
                       "Color pack: imported %d painting(s) + %d tile sheet(s) -> %zu tiles (%zu tile pixels, %zu only "
-                      "from tile sheets, %zu left uncolored (magenta), %zu with their own colors on a layer; %zu "
-                      "painted differently in different places, majority used; %zu stray shades merged)%s%s, saved %s.vbcp",
+                      "from tile sheets, %zu left uncolored (magenta); own colors: %zu per palette, %zu per layer, %zu "
+                      "per map cell, %zu fills; %zu painted differently in different places, majority used; %zu stray "
+                      "shades merged)%s%s, saved %s.vbcp",
                       stats.paintings, stats.sheets, m_colorPack.TileCount(), stats.tilePixels, stats.fromSheets,
-                      stats.erased, stats.layerPixels, stats.inconsistent, stats.mergedColors,
-                      stats.rejected ? "; skipped: " : "", stats.rejected ? stats.lastError.c_str() : "",
-                      m_romBaseName.c_str());
+                      stats.erased, stats.palettePixels, stats.layerPixels, stats.cellPixels, stats.fillPixels,
+                      stats.inconsistent, stats.mergedColors, stats.rejected ? "; skipped: " : "",
+                      stats.rejected ? stats.lastError.c_str() : "", m_romBaseName.c_str());
     }
     else if (m_colorPack.Deserialize(m_platform->ReadRomsFile(m_romBaseName + ".vbcp", false)))
         std::snprintf(summary, sizeof(summary), "Color pack: loaded %s.vbcp (%zu tiles)", m_romBaseName.c_str(),
@@ -511,11 +465,28 @@ std::string Emulator::ReloadColorPack()
         std::snprintf(summary, sizeof(summary), "Color pack: none for \"%s\"%s%s", m_romBaseName.c_str(),
                       stats.rejected ? " - skipped: " : "", stats.rejected ? stats.lastError.c_str() : "");
 
+    m_packRenderer.SetPack(&m_colorPack);
     if (!m_colorPack.Empty())
         vbgo_tiletrack_set_enabled(true);
+    UpdateFillTracking();
     if (m_hasFrame && m_ui)
         UploadFrame();
     return summary;
+}
+
+void Emulator::SetAuthoring(bool enabled)
+{
+    m_authoring = enabled;
+    UpdateFillTracking();
+}
+
+void Emulator::UpdateFillTracking()
+{
+    // Captures need every fill the painter could paint; otherwise only the
+    // map cells the pack has fills for are worth tagging.
+    const std::vector<uint8_t> &cells = m_packRenderer.FillCells();
+    vbgo_tiletrack_set_fill_cells(cells.empty() ? nullptr : cells.data());
+    vbgo_tiletrack_set_fill_mode(m_authoring ? VBGO_TT_FILLS_ALL : cells.empty() ? VBGO_TT_FILLS_NONE : VBGO_TT_FILLS_PACK);
 }
 
 void Emulator::SetColorPackEnabled(bool enabled)
@@ -539,7 +510,8 @@ std::string Emulator::NextCaptureName(const char *infix) const
 }
 
 bool Emulator::WriteCapture(const std::string &base, const uint8_t *rgb, const uint64_t *tiles, uint32_t width,
-                            uint32_t height, const uint16_t *chr)
+                            uint32_t height, const uint16_t *chr, const uint32_t *cells,
+                            const std::array<std::array<uint8_t, 3>, 4> *shown, uint8_t brightnessLevel)
 {
     // 3x nearest-neighbor upscale, so single pixels are easy to hit with a brush.
     constexpr uint32_t kUp = 3;
@@ -556,42 +528,43 @@ bool Emulator::WriteCapture(const std::string &base, const uint8_t *rgb, const u
                            },
                            &png, static_cast<int>(w), static_cast<int>(h), 3, up.data(), static_cast<int>(w) * 3);
 
-    // Sidecar: "VBGOTIL1", width, height, one 64-bit tile entry per pixel
-    // (see vbgo_tiletrack.h for the fields), then every tile used: count,
-    // (hash, 8 rows of 2bpp pixels) each.
-    std::vector<uint8_t> sidecar = {'V', 'B', 'G', 'O', 'T', 'I', 'L', '1'};
+    // Sidecar: "VBGOTIL2", width, height, one 64-bit tile record per pixel
+    // (see vbgo_tiletrack.h for the fields), one 32-bit map cell per pixel,
+    // then every tile used: count, (hash, 8 rows of 2bpp pixels) each.
+    std::vector<uint8_t> sidecar = {'V', 'B', 'G', 'O', 'T', 'I', 'L', '2'};
     AppendLe32(sidecar, width);
     AppendLe32(sidecar, height);
+    const size_t count = static_cast<size_t>(width) * height;
     std::unordered_map<uint32_t, uint32_t> used; // hash -> character slot
-    for (size_t i = 0; i < static_cast<size_t>(width) * height; ++i)
+    sidecar.reserve(sidecar.size() + count * 12);
+    for (size_t i = 0; i < count; ++i)
     {
         for (int b = 0; b < 8; ++b)
             sidecar.push_back(static_cast<uint8_t>(tiles[i] >> (b * 8)));
         if (VBGO_TT_VALID(tiles[i]))
             used[VBGO_TT_HASH(tiles[i])] = VBGO_TT_CHAR(tiles[i]);
     }
+    for (size_t i = 0; i < count; ++i)
+        AppendLe32(sidecar, cells ? cells[i] : 0);
     std::vector<uint8_t> dictionary;
-    uint32_t count = 0;
+    uint32_t tileCount = 0;
     for (const auto &entry : used)
     {
-        uint16_t rows[8];
-        if (chr)
-            std::memcpy(rows, &chr[entry.second * 8], sizeof(rows));
-        else if (!vbgo_tiletrack_tile_rows(entry.first, rows))
-            continue;
+        if (!chr)
+            break;
         AppendLe32(dictionary, entry.first);
-        for (uint16_t row : rows)
+        for (int row = 0; row < 8; ++row)
         {
-            dictionary.push_back(static_cast<uint8_t>(row));
-            dictionary.push_back(static_cast<uint8_t>(row >> 8));
+            dictionary.push_back(static_cast<uint8_t>(chr[entry.second * 8 + row]));
+            dictionary.push_back(static_cast<uint8_t>(chr[entry.second * 8 + row] >> 8));
         }
-        ++count;
+        ++tileCount;
     }
-    AppendLe32(sidecar, count);
+    AppendLe32(sidecar, tileCount);
     sidecar.insert(sidecar.end(), dictionary.begin(), dictionary.end());
     // The colors this capture shows unpainted pixels in, so the importer can
-    // tell what was left unpainted.
-    TileColorPack::AppendSidecarPalette(sidecar, CapturePalette());
+    // tell what was left unpainted (and, for a screen, the game's brightness).
+    TileColorPack::AppendSidecarPalette(sidecar, shown ? *shown : CapturePalette(), shown ? brightnessLevel : 255);
 
     return !png.empty() && m_platform->WriteRomsFile("captures/" + base + ".png", false, png.data(), png.size()) &&
            m_platform->WriteRomsFile("captures/" + base + ".tiles", false, sidecar.data(), sidecar.size());
@@ -646,19 +619,49 @@ std::string Emulator::CaptureTileReference()
             dst[2] = src[0];
         }
 
-    // Only visible pixels: the game also draws tiles in a shade it has
-    // switched off (shown as background) - those must not take the painted
-    // background color.
-    std::vector<uint64_t> tiles(vbgo_tiletrack_frame(), vbgo_tiletrack_frame() + VBGO_TT_EYE_PIXELS);
+    // Every pixel's tile record and map cell, fills (transparent background
+    // pixels the painter can paint over) included - but only visible
+    // pixels: the game also draws tiles in a shade it has switched off
+    // (shown as background), and those must not take the painted background
+    // color.
+    vbgo_tt_eye_view view;
+    std::vector<uint64_t> tiles(VBGO_TT_EYE_PIXELS);
+    std::vector<uint32_t> cells(VBGO_TT_EYE_PIXELS);
+    if (!vbgo_tiletrack_eye_view(0, &view) || !vbgo_tiletrack_records(0, tiles.data(), cells.data(), true))
+        return "";
     for (int y = 0; y < VBGO_TT_HEIGHT; ++y)
         for (int x = 0; x < VBGO_TT_WIDTH; ++x)
         {
+            const size_t i = static_cast<size_t>(y) * VBGO_TT_WIDTH + x;
             const uint8_t *raw = &m_rawFrame[(static_cast<size_t>(y) * kFbWidth + x) * 4];
-            if ((raw[0] | raw[1] | raw[2]) == 0)
-                tiles[static_cast<size_t>(y) * VBGO_TT_WIDTH + x] = 0;
+            if (VBGO_TT_PIXEL(tiles[i]) && (raw[0] | raw[1] | raw[2]) == 0)
+                tiles[i] = 0, cells[i] = 0;
         }
+    // The game's brightness right now (every pixel carries it - see
+    // cmake/PatchBeetleVip.cmake; the most common value, in case it changed
+    // mid-frame) and the colors unpainted pixels show at it.
+    uint32_t levels[64] = {};
+    for (int y = 0; y < VBGO_TT_HEIGHT; ++y)
+        for (int x = 0; x < VBGO_TT_WIDTH; ++x)
+            ++levels[m_rawFrame[(static_cast<size_t>(y) * kFbWidth + x) * 4 + 3] >> 2];
+    const uint8_t level = static_cast<uint8_t>(std::max_element(levels, levels + 64) - levels);
+    std::array<std::array<uint8_t, 3>, 4> shown = CapturePalette();
+    if (m_shadePaletteIndex >= 0)
+    {
+        const float fade = std::pow(level / 63.0f, 1.0f / 2.2f); // as ShadeColorizer
+        for (int i = 1; i < 4; ++i)
+            for (int c = 0; c < 3; ++c)
+                shown[i][c] = static_cast<uint8_t>(std::lround(shown[0][c] + (shown[i][c] - shown[0][c]) * fade));
+    }
+    else // grayscale: the core's own output for each shade
+        for (int y = 0; y < VBGO_TT_HEIGHT; ++y)
+            for (int x = 0; x < VBGO_TT_WIDTH; ++x)
+            {
+                const uint8_t *raw = &m_rawFrame[(static_cast<size_t>(y) * kFbWidth + x) * 4];
+                shown[raw[3] & 3] = {raw[2], raw[1], raw[0]};
+            }
     const std::string base = NextCaptureName("");
-    if (!WriteCapture(base, rgb.data(), tiles.data()))
+    if (!WriteCapture(base, rgb.data(), tiles.data(), VBGO_TT_WIDTH, VBGO_TT_HEIGHT, view.chr, cells.data(), &shown, level))
         return "";
     std::fprintf(stderr, "[Emulator] Captured tile reference \"%s\"\n", base.c_str());
     return base;

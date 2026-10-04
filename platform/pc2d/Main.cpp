@@ -289,6 +289,7 @@ int main()
                               renderer.GetQueueFamilyIndex(), renderer.GetCommandPool(), renderer.GetCommandBuffer());
         emulator.Initialize(uiRenderer, platform);
         emulator.SetTileTracking(true); // see the F9/F10 tools below
+        emulator.SetAuthoring(true);    // captures know every fill a painter can paint
         appMenu.Initialize(uiRenderer, chosen.format, emulator, settings, platform, ButtonMappingProfile::Desktop);
 
         VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};

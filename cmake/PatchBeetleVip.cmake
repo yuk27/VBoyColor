@@ -7,9 +7,11 @@
 #    brightest shade - what Multicolor palettes need. Explained below.
 # 2. Tile tracking hooks (experimental, off unless the frontend enables it):
 #    calls into core/emu/vbgo_tiletrack.c from the ~6 places vip_draw.inc
-#    puts a tile pixel on screen, plus where blocks are stored, displayed or
-#    overwritten by the CPU - so per-tile color packs know which tile and
-#    which pixel of it every screen pixel came from. See vbgo_tiletrack.h.
+#    puts a tile pixel on screen (and, for background tiles, where it leaves
+#    one transparent - "fills"), plus where blocks are drawn, displayed or
+#    overwritten by the CPU - so per-tile color packs know which tile, which
+#    pixel of it and which BG map cell every screen pixel came from. See
+#    vbgo_tiletrack.h.
 #
 # Why: per-shade color palettes (Red Viper-style colorization - see
 # core/emu/ShadeColorizer.h) need to know *which* of the VB's 4 shades each
@@ -87,13 +89,12 @@ function(vbgo_generate_patched_vip VB_CORE_DIR OUT_DIR)
         [=[#include "vip.h"
 #include "vbgo_tiletrack.h" /* VirtualBoyGo */]=]
         "vip.c (includes)")
-    # Each block of 8 lines: give the tracker the scratch buffers before
-    # drawing, store its per-pixel tags alongside the framebuffer after.
+    # Each block of 8 lines: tell the tracker where the block's pixels go
+    # (it writes its tags straight into its own frame buffer copy).
     _vbgo_replace_once(VIP
         [=[               VIP_DrawBlock(DrawingBlock, DrawingBuffers[0] + 8, DrawingBuffers[1] + 8);]=]
-        [=[               vbgo_tiletrack_begin_block(DrawingBuffers[0], CHR_RAM, DrawingBlock); /* VirtualBoyGo */
-               VIP_DrawBlock(DrawingBlock, DrawingBuffers[0] + 8, DrawingBuffers[1] + 8);
-               vbgo_tiletrack_end_block(DrawingFB, DrawingBlock); /* VirtualBoyGo */]=]
+        [=[               vbgo_tiletrack_begin_block(DrawingBuffers[0], CHR_RAM, DrawingBlock, DrawingFB); /* VirtualBoyGo */
+               VIP_DrawBlock(DrawingBlock, DrawingBuffers[0] + 8, DrawingBuffers[1] + 8);]=]
         "vip.c (VIP_DrawBlock call)")
     # Displayed column -> output tags (side-by-side is the only 3D mode the
     # frontend uses; this function is what writes it).
@@ -126,21 +127,45 @@ function(vbgo_generate_patched_vip VB_CORE_DIR OUT_DIR)
         "vip.c (VIP_Write16 framebuffer store)")
 
     # ---- 2. Tile tracking hooks: vip_draw.inc ---------------------------------
-    # Background maps: the unrolled 8-pixel path (a whole character row at
-    # once) tags its 8 pixels afterwards - pixel k shows in-tile x k, or 7 - k
-    # when the character is flipped horizontally.
+    # Normal BG maps: remember which map cell (halfword index in DRAM) each
+    # character comes from - the overplane character when outside the map.
+    _vbgo_replace_once(DRAW
+        [=[ uint32 BGMap_Base = bgmap_base_raw << 12;]=]
+        [=[ uint32 BGMap_Base = bgmap_base_raw << 12;
+ unsigned vbgo_cell = 0; /* VirtualBoyGo */]=]
+        "vip_draw.inc (DrawBG locals)")
+    _vbgo_replace_once(DRAW
+        [=[  bgsc = bgsc_overplane;
+
+  if(SourceX < SourceX_Size && SourceY < SourceY_Size)
+   bgsc = BGMap[(BGMap_Base | ((SourceX << 3) & ~0xFFF) | ((SourceX >> 3) & 0x3F)) & 0xFFFF];]=]
+        [=[  bgsc = bgsc_overplane;
+  vbgo_cell = overplane_char & 0xFFFF; /* VirtualBoyGo */
+
+  if(SourceX < SourceX_Size && SourceY < SourceY_Size)
+  {
+   vbgo_cell = (BGMap_Base | ((SourceX << 3) & ~0xFFF) | ((SourceX >> 3) & 0x3F)) & 0xFFFF; /* VirtualBoyGo */
+   bgsc = BGMap[vbgo_cell];
+  }]=]
+        "vip_draw.inc (DrawBG map read)")
+    # The unrolled 8-pixel path (a whole character row at once) tags its 8
+    # pixels afterwards - pixel k shows in-tile x k, or 7 - k when the
+    # character is flipped horizontally; transparent ones may become fills.
     _vbgo_replace_once(DRAW
         [=[   x += 7;
    SourceX += 8;]=]
         [=[   if(vbgo_tt_on) /* VirtualBoyGo */
    {
     unsigned int k;
+    const int vbgo_fills = vbgo_tt_fills_from(char_no, vbgo_cell);
     for(k = 0; k < 8; k++)
     {
      const unsigned int sub_x = (bgsc & 0x2000) ? 7 - k : k;
      const unsigned int pv = (pixels >> (sub_x * 2)) & 3;
      if(pv)
-      VBGO_TT_TAG(&target[x + k], char_no, sub_x, char_sub_y, palette_selector, 0, pv);
+      VBGO_TT_TAG(&target[x + k], char_no, sub_x, char_sub_y, palette_selector, 0, pv, VBGO_TT_CELL_BITS(vbgo_cell));
+     else if(vbgo_fills)
+      vbgo_tt_fill_px(&target[x + k], char_no, sub_x, char_sub_y, palette_selector, vbgo_cell);
     }
    }
 
@@ -154,21 +179,53 @@ function(vbgo_generate_patched_vip VB_CORE_DIR OUT_DIR)
         [=[   if(pixel)
    {
     target[x] = GPLT_Cache[palette_selector][pixel];
-    VBGO_TT_TAG(&target[x], char_no, char_sub_x, char_sub_y, palette_selector, 0, pixel); /* VirtualBoyGo */
+    VBGO_TT_TAG(&target[x], char_no, char_sub_x, char_sub_y, palette_selector, 0, pixel, VBGO_TT_CELL_BITS(vbgo_cell)); /* VirtualBoyGo */
    }
+   else if(vbgo_tt_on && vbgo_tt_fills_from(char_no, vbgo_cell)) /* VirtualBoyGo */
+    vbgo_tt_fill_px(&target[x], char_no, char_sub_x, char_sub_y, palette_selector, vbgo_cell);
    SourceX++;]=]
         "vip_draw.inc (DrawBG per-pixel store)")
     # Affine (scaled/rotated) maps - no-rotation path, where char_sub_x is a
     # bit offset (2 bits per pixel), and the general path.
+    _vbgo_replace_once(DRAW
+        [=[ const uint16 *param_ptr = &DRAM[(ParamBase + 8 * (RealY - DestY)) & 0xFFFF];]=]
+        [=[ const uint16 *param_ptr = &DRAM[(ParamBase + 8 * (RealY - DestY)) & 0xFFFF];
+ unsigned vbgo_cell = 0; /* VirtualBoyGo */]=]
+        "vip_draw.inc (DrawAffine locals)")
+    _vbgo_replace_once(DRAW
+        [=[  bgsc = bgsc_overplane;
+
+  if(SourceX < (SourceX_Size << 9))
+   bgsc = BGMap[(BGMap_Base | ((SourceX >> 6) & ~0xFFF) | ((SourceX >> 12) & 0x3F)) & 0xFFFF];]=]
+        [=[  bgsc = bgsc_overplane;
+  vbgo_cell = OverplaneChar & 0xFFFF; /* VirtualBoyGo */
+
+  if(SourceX < (SourceX_Size << 9))
+  {
+   vbgo_cell = (BGMap_Base | ((SourceX >> 6) & ~0xFFF) | ((SourceX >> 12) & 0x3F)) & 0xFFFF; /* VirtualBoyGo */
+   bgsc = BGMap[vbgo_cell];
+  }]=]
+        "vip_draw.inc (DrawAffine no-rotation map read)")
     _vbgo_replace_once(DRAW
         [=[  if(pixel)
    target[x] = GPLT_Cache[bgsc >> 14][pixel];]=]
         [=[  if(pixel)
   {
    target[x] = GPLT_Cache[bgsc >> 14][pixel];
-   VBGO_TT_TAG(&target[x], bgsc & 0x7FF, char_sub_x >> 1, char_sub_y, bgsc >> 14, 0, pixel); /* VirtualBoyGo */
-  }]=]
+   VBGO_TT_TAG(&target[x], bgsc & 0x7FF, char_sub_x >> 1, char_sub_y, bgsc >> 14, 0, pixel, VBGO_TT_CELL_BITS(vbgo_cell)); /* VirtualBoyGo */
+  }
+  else if(vbgo_tt_on && vbgo_tt_fills_from(bgsc & 0x7FF, vbgo_cell)) /* VirtualBoyGo */
+   vbgo_tt_fill_px(&target[x], bgsc & 0x7FF, char_sub_x >> 1, char_sub_y, bgsc >> 14, vbgo_cell);]=]
         "vip_draw.inc (DrawAffine no-rotation store)")
+    _vbgo_replace_once(DRAW
+        [=[   bgsc = BGMap[(BGMap_Base | m_index | sub_index) & 0xFFFF];
+  }]=]
+        [=[   vbgo_cell = (BGMap_Base | m_index | sub_index) & 0xFFFF; /* VirtualBoyGo */
+   bgsc = BGMap[vbgo_cell];
+  }
+  else
+   vbgo_cell = OverplaneChar & 0xFFFF; /* VirtualBoyGo */]=]
+        "vip_draw.inc (DrawAffine general map read)")
     _vbgo_replace_once(DRAW
         [=[  if(pixel)
    target[x] = GPLT_Cache[palette_selector][pixel];
@@ -178,14 +235,17 @@ function(vbgo_generate_patched_vip VB_CORE_DIR OUT_DIR)
         [=[  if(pixel)
   {
    target[x] = GPLT_Cache[palette_selector][pixel];
-   VBGO_TT_TAG(&target[x], char_no, char_sub_x, char_sub_y, palette_selector, 0, pixel); /* VirtualBoyGo */
+   VBGO_TT_TAG(&target[x], char_no, char_sub_x, char_sub_y, palette_selector, 0, pixel, VBGO_TT_CELL_BITS(vbgo_cell)); /* VirtualBoyGo */
   }
+  else if(vbgo_tt_on && vbgo_tt_fills_from(char_no, vbgo_cell)) /* VirtualBoyGo */
+   vbgo_tt_fill_px(&target[x], char_no, char_sub_x, char_sub_y, palette_selector, vbgo_cell);
 
   SourceX += dx;
   SourceY += dy;]=]
         "vip_draw.inc (DrawAffine general store)")
     # Sprites: pixel i of the char row is stored on loop iteration i (8 - meow),
-    # whichever direction the target walks for horizontal flip.
+    # whichever direction the target walks for horizontal flip. No map cell,
+    # no fills (a sprite's transparent pixels aren't part of it).
     _vbgo_replace_once(DRAW
         [=[      if(pixels & 3)
        *target = JPLT_Cache[palette_selector][pixels & 3];
@@ -193,7 +253,7 @@ function(vbgo_generate_patched_vip VB_CORE_DIR OUT_DIR)
         [=[      if(pixels & 3)
       {
        *target = JPLT_Cache[palette_selector][pixels & 3];
-       VBGO_TT_TAG(target, char_no, 8 - meow, char_sub_y, palette_selector, 1, pixels & 3); /* VirtualBoyGo */
+       VBGO_TT_TAG(target, char_no, 8 - meow, char_sub_y, palette_selector, 1, pixels & 3, 0); /* VirtualBoyGo */
       }
       target--;]=]
         "vip_draw.inc (DrawOBJ flipped store)")
@@ -204,7 +264,7 @@ function(vbgo_generate_patched_vip VB_CORE_DIR OUT_DIR)
         [=[      if(pixels & 3)
       {
        *target = JPLT_Cache[palette_selector][pixels & 3];
-       VBGO_TT_TAG(target, char_no, 8 - meow, char_sub_y, palette_selector, 1, pixels & 3); /* VirtualBoyGo */
+       VBGO_TT_TAG(target, char_no, 8 - meow, char_sub_y, palette_selector, 1, pixels & 3, 0); /* VirtualBoyGo */
       }
       target++;]=]
         "vip_draw.inc (DrawOBJ store)")

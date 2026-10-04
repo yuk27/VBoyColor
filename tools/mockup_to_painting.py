@@ -58,10 +58,11 @@ def main():
     cap = cap[cs // 2::cs, cs // 2::cs][:H, :W]
     ref = cap.astype(np.float32).mean(-1)
     data = open(args.tiles, "rb").read()
-    if data[:8] != b"VBGOTIL1":
+    if data[:8] not in (b"VBGOTIL1", b"VBGOTIL2"):  # (2 adds map cells after the records)
         raise SystemExit(f"{args.tiles}: not a VirtualBoyGo .tiles file")
     t = np.frombuffer(data, np.uint64, W * H, 16).reshape(H, W)
-    lit = ((t >> np.uint64(63)) == 1) & (ref > 25) # visible tile pixels
+    drawn = ((t >> np.uint64(41)) & np.uint64(3)) != 0  # not a fill (transparent pixel of a background tile)
+    lit = ((t >> np.uint64(63)) == 1) & drawn & (ref > 25)  # visible tile pixels
     world = ((t >> np.uint64(43)) & np.uint64(31)).astype(int)
     # tile pixel + layer
     key = ((t & np.uint64(0xFFFFFFFF)) << np.uint64(11)) | ((

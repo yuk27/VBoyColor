@@ -218,9 +218,28 @@ the pack for comparison.
 own colors are ignored, so a capture can be painted a bit at a time. Paint
 **magenta (#FF00FF)** over anything that should keep the Multicolor palette's
 colors - it overrides whatever else (a tile sheet, say) would color those
-tiles. When the game reuses a tile in different places (a cloud tile inside a
-mountain) and one layer is consistently painted differently, that layer keeps
-its own colors for it.
+tiles. Paint what you want to see: captures record the game's brightness, so
+a game that normally runs dimmed (Mario's Tennis runs at about 90%) shows
+exactly the painted colors, and fades follow the game from there.
+
+**Same tile, different colors.** Games reuse tiles, so a tile's colors are
+looked up from the most specific to the most general, each only where the
+paintings consistently ask for it:
+
+1. *Map cell* - a background tile at a fixed spot painted differently there
+   than elsewhere (the same letter yellow in one heading and white in the
+   next, a selected menu entry) keeps that spot's colors.
+2. *Palette* - the game shows a tile in another palette to mark something (an
+   option that isn't selected), and that palette is painted differently.
+3. *Layer* - a tile reused on another layer (a cloud tile inside a mountain).
+4. The tile's own colors.
+
+**Painting the background.** Transparent parts of background tiles can be
+painted too ("fills" - a court's surface between its speckles, a sky behind a
+logo): they get that color at that spot of the map, even where the game
+scales or scrolls the layer. A fill only needs to be painted once per spot;
+pixels another capture shows that the paintings don't are filled in from
+their nearest painted neighbor in the tile.
 
 **Finding what's still uncolored.** In the desktop build, **F7** starts
 collecting: play normally, and every object the pack doesn't color yet (a new
@@ -244,9 +263,20 @@ Land streams Wario's poses, for example), so sheets and F7 complement each
 other: a sheet per area for most things, F7 for what only appears briefly.
 
 **Cost.** Tile tracking is only switched on for games that have a pack (or in
-the desktop debug build). On a 2.1 GHz desktop core it adds about 1.3 ms per
-emulated frame to the core's 1.8 ms, and painting the pack adds ~0.1 ms per
-eye; output is otherwise identical.
+the desktop debug build). The core tags each pixel with one 64-bit store
+while it draws (tile, pixel, palette, layer and map cell together), and the
+pack is painted from those tags with a few table reads per pixel - a tile's
+colors are looked up when its graphics change, not per pixel. Measured on one
+desktop core, against the core's ~1.9 ms per emulated frame: tracking adds
+~0.25 ms (fills only where the pack has some), and painting a full pack with
+map cells and fills ~0.2-0.35 ms per eye. Output is otherwise identical.
+
+**Formats.** `.tiles` version 2 (`VBGOTIL2`) adds the map cell of every
+pixel after the per-pixel records (version 1 files from older captures still
+import, just without cell colors or fills), and the palette block
+(`VBGOPAL2`) adds the game's brightness level. `.vbcp` version 3 adds the
+palette and map cell colors and the reference brightness; older packs load
+as before.
 
 A loose mockup that doesn't line up with a capture (different size, shifted,
 partly redrawn) can be turned into a painting with
@@ -254,6 +284,13 @@ partly redrawn) can be turned into a painting with
 capture's pixels layer by layer, gives every tile pixel the color it shows most
 often, and writes a 3x painting to touch up and drop into the pack folder. It's
 pixel-exact when the capture shows the same moment as the mockup.
+
+`tools/export_sprite_map.py` (numpy + Pillow) does the same as F6 for
+Mario's Tennis straight from the ROM, which keeps nearly all of its graphics
+compressed: it decodes every character's animation frames, the screens and
+every tile set into an overview plus paint sheets (tile sheets - they fill in
+what the screen paintings don't), drawing whatever the game's `.vbcp`
+already colors in its colors so what's left stands out.
 
 ## Credits
 

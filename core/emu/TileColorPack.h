@@ -20,9 +20,19 @@
 //  - Pixels still in the capture's own colors (left unpainted) don't vote.
 //  - Magenta (#FF00FF) votes for "no color": that tile pixel keeps the
 //    Multicolor palette's color, whatever else colors it.
-//  - Games reuse tiles in different places (a cloud tile inside a mountain);
-//    when one layer (world) consistently shows a tile in different colors
-//    than the rest, that layer gets its own colors for it.
+//  - Variants, most specific first - what the runtime looks up:
+//    1. Map cell: where a painting shows a background tile at a fixed spot
+//       in a different color than the tile gets elsewhere (the same letter
+//       yellow in one heading and white in the next, a stripe tile on the lit
+//       and the shaded side of a pyramid), that spot keeps the painted color.
+//       Also where transparent parts of background tiles were painted over
+//       ("fills" - a court surface between its speckles).
+//    2. Palette: games show a tile in another palette to mark it (a menu
+//       option that isn't selected); when a palette consistently shows a tile
+//       in other colors, it gets its own.
+//    3. Layer (world): a tile reused on another layer (a cloud tile inside a
+//       mountain) that's consistently painted differently there.
+//    4. The tile itself.
 // Tile sheets (F6: everything in the game's tile memory, laid out like a
 // tile viewer) import the same way, but only fill in tile pixels no screen
 // painting colors.
@@ -38,6 +48,18 @@ public:
         uint8_t rgb[64][3] = {}; // indexed the same way
     };
 
+    // Colors one map cell gives the tile it shows (in one palette): only
+    // where they differ from the tile's own, plus fills.
+    struct CellTile
+    {
+        uint16_t cell = 0;    // BG map cell (halfword index in VIP DRAM)
+        uint8_t palette = 0;  // the palette the cell shows the tile in
+        uint32_t hash = 0;    // the tile
+        uint64_t mask = 0;    // pixels with a color here (drawn or fill)
+        uint64_t keep = 0;    // pixels left uncolored here on purpose (magenta)
+        uint8_t rgb[64][3] = {};
+    };
+
     struct ImportStats
     {
         int paintings = 0;          // screen paintings accepted
@@ -49,11 +71,14 @@ public:
         size_t fromSheets = 0;      // tile pixels only a tile sheet colored
         size_t erased = 0;          // tile pixels painted magenta - left uncolored
         size_t layerPixels = 0;     // tile pixels with their own colors on some layer
+        size_t palettePixels = 0;   // tile pixels with their own colors in some palette
+        size_t cellPixels = 0;      // tile pixels with their own colors at some map cell
+        size_t fillPixels = 0;      // transparent tile pixels painted (fills)
         std::string lastError;      // why the last rejected painting was rejected
     };
 
     void Clear();
-    bool Empty() const { return m_tiles.empty(); }
+    bool Empty() const { return m_tiles.empty() && m_cellTiles.empty(); }
     size_t TileCount() const { return m_tiles.size(); }
     const Tile *Find(uint32_t hash) const;
     // The tile's colors for one layer (world 0-31) if that layer has its own,
@@ -65,8 +90,19 @@ public:
         const auto it = m_layerTiles.find(LayerKey(hash, world));
         return it == m_layerTiles.end() ? nullptr : &it->second;
     }
+    // Same for a palette (0-3).
+    const Tile *FindPalette(uint32_t hash, unsigned palette) const
+    {
+        if (m_paletteTiles.empty())
+            return nullptr;
+        const auto it = m_paletteTiles.find(PaletteKey(hash, palette));
+        return it == m_paletteTiles.end() ? nullptr : &it->second;
+    }
     bool HasLayerColors() const { return !m_layerTiles.empty(); }
+    bool HasPaletteColors() const { return !m_paletteTiles.empty(); }
     const std::unordered_map<uint32_t, Tile> &Tiles() const { return m_tiles; }
+    // Sorted by cell, then palette, then hash.
+    const std::vector<CellTile> &CellTiles() const { return m_cellTiles; }
 
     // True if that tile pixel has a color.
     bool Has(uint32_t hash, unsigned index) const
@@ -99,18 +135,39 @@ public:
 
     // Optional block a .tiles sidecar ends with: the colors the capture showed
     // for the background and the 3 shades, so the importer knows which
-    // pixels were left unpainted.
-    static void AppendSidecarPalette(std::vector<uint8_t> &sidecar, const std::array<std::array<uint8_t, 3>, 4> &palette);
+    // pixels were left unpainted - and the game's brightness level at the
+    // time (0-63, see ShadeColorizer; 255 = not a screen capture, e.g. a
+    // sheet drawn at full brightness).
+    static void AppendSidecarPalette(std::vector<uint8_t> &sidecar, const std::array<std::array<uint8_t, 3>, 4> &palette,
+                                     uint8_t brightnessLevel = 255);
+
+    // The game's usual brightness level (0-63) in the screen paintings: the
+    // painted colors are what the painter wants to see at that brightness,
+    // so the runtime fades them relative to it (63 if unknown).
+    uint8_t ReferenceLevel() const { return m_referenceLevel; }
 
 private:
     static uint64_t LayerKey(uint32_t hash, unsigned world) { return (static_cast<uint64_t>(hash) << 5) | (world & 31); }
+    static uint64_t PaletteKey(uint32_t hash, unsigned palette) { return (static_cast<uint64_t>(hash) << 2) | (palette & 3); }
+
+    struct Vote
+    {
+        uint64_t key;
+        uint32_t rgb; // 0xRRGGBB, or the "no color" marker
+        uint32_t extra; // cell votes: the world (bits 0-4) and whether it's a fill (bit 8)
+    };
 
     std::unordered_map<uint32_t, Tile> m_tiles;
-    std::unordered_map<uint64_t, Tile> m_layerTiles; // LayerKey -> that layer's own colors (only where they differ)
+    std::unordered_map<uint64_t, Tile> m_layerTiles;   // LayerKey -> that layer's own colors (only where they differ)
+    std::unordered_map<uint64_t, Tile> m_paletteTiles; // PaletteKey -> that palette's own colors (only where they differ)
     std::unordered_map<uint32_t, uint64_t> m_leftUncolored; // hash -> tile pixels painted magenta
-    // (hash << 6 | pixel index) -> (0xRRGGBB, or kNoColor -> votes); screen
-    // paintings and tile sheets apart, since sheets only fill in
-    std::unordered_map<uint64_t, std::unordered_map<uint32_t, uint32_t>> m_votes, m_sheetVotes;
-    // ((hash << 6 | pixel index) << 5 | world) -> votes, screen paintings only
-    std::unordered_map<uint64_t, std::unordered_map<uint32_t, uint32_t>> m_layerVotes;
+    std::vector<CellTile> m_cellTiles;
+    uint8_t m_referenceLevel = 63;
+    std::unordered_map<uint32_t, std::array<uint16_t, 8>> m_tileRows; // tiles' pixels, from the sidecars being imported
+    void CompleteFills(CellTile &cell, uint64_t knownBackground) const;
+    std::vector<uint8_t> m_paintingLevels; // known brightness levels of the screen paintings being imported
+    // Pending votes, by kind - (hash << 6 | pixel) keys, extended by world /
+    // palette / cell. Screen paintings and tile sheets apart, since sheets
+    // only fill in.
+    std::vector<Vote> m_votes, m_sheetVotes, m_layerVotes, m_paletteVotes, m_cellVotes;
 };
