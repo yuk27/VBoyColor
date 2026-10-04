@@ -181,6 +181,15 @@ public:
     // Returns the base name used ("<rom> NNN"), or "" on failure.
     std::string CaptureTileReference();
 
+    // Saves everything in the game's tile memory right now - loaded for the
+    // current area, on screen or not - as a paint-ready tile sheet:
+    // captures/"<rom> tiles NNN.png" (32 tiles wide, like a tile viewer, 3x;
+    // tiles the pack already colors in its colors, the rest in the active
+    // Multicolor palette) plus its .tiles file. A painted sheet in the pack
+    // folder fills in whatever the screen paintings don't color. Returns the
+    // base name used, or "" on failure.
+    std::string CaptureTileSheet();
+
     // --- Experimental per-game color packs (see TileColorPack.h) ---------
     //
     // (Re)builds the loaded ROM's pack: if the ROMs folder has
@@ -245,9 +254,11 @@ private:
     void PaintColorPack();
     // Next free "<rom><infix> NNN" in captures/.
     std::string NextCaptureName(const char *infix) const;
-    // Writes captures/<base>.png (3x upscale of rgb, 384x224 RGB) and
-    // captures/<base>.tiles (the tile records, 384x224, plus every tile's rows).
-    bool WriteCapture(const std::string &base, const uint8_t *rgb, const uint64_t *tiles);
+    // Writes captures/<base>.png (3x upscale of rgb, width x height RGB) and
+    // captures/<base>.tiles (the tile records, plus every tile's rows - from
+    // chr when given, else from what the tracker has seen).
+    bool WriteCapture(const std::string &base, const uint8_t *rgb, const uint64_t *tiles,
+                      uint32_t width = 384, uint32_t height = 224, const uint16_t *chr = nullptr);
     // The 4 colors uncolored pixels are shown in (Multicolor palette, else gray).
     std::array<std::array<uint8_t, 3>, 4> CapturePalette() const;
 

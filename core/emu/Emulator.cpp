@@ -485,17 +485,18 @@ std::string Emulator::ReloadColorPack()
     }
 
     char summary[512];
-    if (stats.paintings > 0)
+    if (stats.paintings + stats.sheets > 0)
     {
         m_colorPack.FinishImport(stats);
         const std::vector<uint8_t> bytes = m_colorPack.Serialize();
         m_platform->WriteRomsFile(m_romBaseName + ".vbcp", false, bytes.data(), bytes.size());
         std::snprintf(summary, sizeof(summary),
-                      "Color pack: imported %d painting(s) -> %zu tiles (%zu tile pixels; %zu painted differently in "
-                      "different places, majority used; %zu stray shades merged)%s%s, saved %s.vbcp",
-                      stats.paintings, m_colorPack.TileCount(), stats.tilePixels, stats.inconsistent, stats.mergedColors,
-                      stats.rejected ? "; skipped: " : "", stats.rejected ? stats.lastError.c_str() : "",
-                      m_romBaseName.c_str());
+                      "Color pack: imported %d painting(s) + %d tile sheet(s) -> %zu tiles (%zu tile pixels, %zu only "
+                      "from tile sheets; %zu painted differently in different places, majority used; %zu stray shades "
+                      "merged)%s%s, saved %s.vbcp",
+                      stats.paintings, stats.sheets, m_colorPack.TileCount(), stats.tilePixels, stats.fromSheets,
+                      stats.inconsistent, stats.mergedColors, stats.rejected ? "; skipped: " : "",
+                      stats.rejected ? stats.lastError.c_str() : "", m_romBaseName.c_str());
     }
     else if (m_colorPack.Deserialize(m_platform->ReadRomsFile(m_romBaseName + ".vbcp", false)))
         std::snprintf(summary, sizeof(summary), "Color pack: loaded %s.vbcp (%zu tiles)", m_romBaseName.c_str(),
@@ -531,44 +532,46 @@ std::string Emulator::NextCaptureName(const char *infix) const
     return m_romBaseName + infix + " 999";
 }
 
-bool Emulator::WriteCapture(const std::string &base, const uint8_t *rgb, const uint64_t *tiles)
+bool Emulator::WriteCapture(const std::string &base, const uint8_t *rgb, const uint64_t *tiles, uint32_t width,
+                            uint32_t height, const uint16_t *chr)
 {
     // 3x nearest-neighbor upscale, so single pixels are easy to hit with a brush.
-    constexpr int kUp = 3;
-    const int w = VBGO_TT_WIDTH * kUp, h = VBGO_TT_HEIGHT * kUp;
+    constexpr uint32_t kUp = 3;
+    const uint32_t w = width * kUp, h = height * kUp;
     std::vector<uint8_t> up(static_cast<size_t>(w) * h * 3);
-    for (int y = 0; y < h; ++y)
-        for (int x = 0; x < w; ++x)
-            std::memcpy(&up[(static_cast<size_t>(y) * w + x) * 3],
-                        &rgb[(static_cast<size_t>(y / kUp) * VBGO_TT_WIDTH + x / kUp) * 3], 3);
+    for (uint32_t y = 0; y < h; ++y)
+        for (uint32_t x = 0; x < w; ++x)
+            std::memcpy(&up[(static_cast<size_t>(y) * w + x) * 3], &rgb[(static_cast<size_t>(y / kUp) * width + x / kUp) * 3], 3);
     std::vector<uint8_t> png;
     stbi_write_png_to_func([](void *ctx, void *data, int size)
                            {
                                auto *out = static_cast<std::vector<uint8_t> *>(ctx);
                                out->insert(out->end(), static_cast<uint8_t *>(data), static_cast<uint8_t *>(data) + size);
                            },
-                           &png, w, h, 3, up.data(), w * 3);
+                           &png, static_cast<int>(w), static_cast<int>(h), 3, up.data(), static_cast<int>(w) * 3);
 
     // Sidecar: "VBGOTIL1", width, height, one 64-bit tile entry per pixel
     // (see vbgo_tiletrack.h for the fields), then every tile used: count,
     // (hash, 8 rows of 2bpp pixels) each.
     std::vector<uint8_t> sidecar = {'V', 'B', 'G', 'O', 'T', 'I', 'L', '1'};
-    AppendLe32(sidecar, VBGO_TT_WIDTH);
-    AppendLe32(sidecar, VBGO_TT_HEIGHT);
-    std::unordered_map<uint32_t, bool> used;
-    for (int i = 0; i < VBGO_TT_EYE_PIXELS; ++i)
+    AppendLe32(sidecar, width);
+    AppendLe32(sidecar, height);
+    std::unordered_map<uint32_t, uint32_t> used; // hash -> character slot
+    for (size_t i = 0; i < static_cast<size_t>(width) * height; ++i)
     {
         for (int b = 0; b < 8; ++b)
             sidecar.push_back(static_cast<uint8_t>(tiles[i] >> (b * 8)));
         if (VBGO_TT_VALID(tiles[i]))
-            used[VBGO_TT_HASH(tiles[i])] = true;
+            used[VBGO_TT_HASH(tiles[i])] = VBGO_TT_CHAR(tiles[i]);
     }
     std::vector<uint8_t> dictionary;
     uint32_t count = 0;
     for (const auto &entry : used)
     {
         uint16_t rows[8];
-        if (!vbgo_tiletrack_tile_rows(entry.first, rows))
+        if (chr)
+            std::memcpy(rows, &chr[entry.second * 8], sizeof(rows));
+        else if (!vbgo_tiletrack_tile_rows(entry.first, rows))
             continue;
         AppendLe32(dictionary, entry.first);
         for (uint16_t row : rows)
@@ -638,6 +641,45 @@ std::string Emulator::CaptureTileReference()
     if (!WriteCapture(base, rgb.data(), vbgo_tiletrack_frame()))
         return "";
     std::fprintf(stderr, "[Emulator] Captured tile reference \"%s\"\n", base.c_str());
+    return base;
+}
+
+std::string Emulator::CaptureTileSheet()
+{
+    const uint16_t *chr = vbgo_tiletrack_chr_ram();
+    if (!m_romLoaded || !m_hasFrame || !vbgo_tiletrack_is_enabled() || !chr)
+        return "";
+
+    // All 2048 tiles, 32 per row, in memory order - pieces the game stores
+    // together (a big sprite, a block) mostly stay together.
+    constexpr uint32_t kColumns = 32, kWidth = kColumns * 8, kHeight = 2048 / kColumns * 8;
+    const std::array<std::array<uint8_t, 3>, 4> palette = CapturePalette();
+    std::vector<uint8_t> rgb(static_cast<size_t>(kWidth) * kHeight * 3);
+    std::vector<uint64_t> tiles(static_cast<size_t>(kWidth) * kHeight, 0);
+    for (uint32_t slot = 0; slot < 2048; ++slot)
+    {
+        const uint16_t *rows = &chr[slot * 8];
+        const uint32_t hash = vbgo_tiletrack_hash_rows(rows);
+        const TileColorPack::Tile *tile = m_colorPack.Find(hash);
+        for (uint32_t sy = 0; sy < 8; ++sy)
+            for (uint32_t sx = 0; sx < 8; ++sx)
+            {
+                const size_t i = static_cast<size_t>((slot / kColumns) * 8 + sy) * kWidth + (slot % kColumns) * 8 + sx;
+                const unsigned value = (rows[sy] >> (sx * 2)) & 3;
+                const unsigned index = sy * 8 + sx;
+                const uint8_t *color = palette[value].data(); // the raw value as a shade - the usual palette setup
+                if (value && tile && (tile->mask >> index & 1))
+                    color = tile->rgb[index];
+                std::memcpy(&rgb[i * 3], color, 3);
+                if (value) // value 0 is transparent - not part of the tile's picture
+                    tiles[i] = hash | static_cast<uint64_t>(sx) << 32 | static_cast<uint64_t>(sy) << 35 |
+                               static_cast<uint64_t>(value) << 41 | static_cast<uint64_t>(slot) << 48 | 1ull << 63;
+            }
+    }
+    const std::string base = NextCaptureName(" tiles");
+    if (!WriteCapture(base, rgb.data(), tiles.data(), kWidth, kHeight, chr))
+        return "";
+    std::fprintf(stderr, "[Emulator] Saved tile sheet \"%s\"\n", base.c_str());
     return base;
 }
 

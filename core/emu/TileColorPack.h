@@ -16,6 +16,9 @@
 // over without moving any pixels. Every painted pixel votes for the color of
 // the tile pixel it shows; the most-voted color wins, so a tile painted
 // slightly differently in two places still gets one consistent result.
+// Tile sheets (F6: everything in the game's tile memory, laid out like a
+// tile viewer) import the same way, but only fill in tile pixels no screen
+// painting colors.
 //
 // Saved as "<rom>.vbcp" next to the ROM, so a finished pack can be copied to
 // any platform without the paintings.
@@ -30,11 +33,13 @@ public:
 
     struct ImportStats
     {
-        int paintings = 0;          // accepted
+        int paintings = 0;          // screen paintings accepted
+        int sheets = 0;             // tile sheets accepted (F6 - fill in what the screen paintings don't color)
         int rejected = 0;           // wrong size / bad sidecar
         size_t tilePixels = 0;      // distinct (tile, pixel) colors resolved
         size_t inconsistent = 0;    // of those, painted differently in different places (majority wins)
         size_t mergedColors = 0;    // stray near-duplicate shades folded into a main color
+        size_t fromSheets = 0;      // tile pixels only a tile sheet colored
         std::string lastError;      // why the last rejected painting was rejected
     };
 
@@ -52,9 +57,10 @@ public:
     }
     void Set(uint32_t hash, unsigned index, uint8_t r, uint8_t g, uint8_t b);
 
-    // Import, step 1 (call per painting): pixels = 8-bit RGB/RGBA rows,
-    // exactly an integer multiple (1x, 2x, 3x...) of the 384x224 VB screen,
-    // with the .tiles sidecar its reference was captured with. False (and
+    // Import, step 1 (call per painting): pixels = 8-bit RGB/RGBA rows of a
+    // painted capture, with the .tiles sidecar the capture was saved with -
+    // a screen (F10, F7 sheets: 384x224) or a tile sheet (F6: the whole tile
+    // memory). Any size with the capture's shape (normally 3x). False (and
     // stats.lastError) if they don't fit together.
     bool AddPainting(const uint8_t *pixels, int width, int height, int channels, const std::vector<uint8_t> &sidecar,
                      ImportStats &stats);
@@ -66,6 +72,7 @@ public:
 
 private:
     std::unordered_map<uint32_t, Tile> m_tiles;
-    // (hash << 6 | pixel index) -> (0xRRGGBB -> votes)
-    std::unordered_map<uint64_t, std::unordered_map<uint32_t, uint32_t>> m_votes;
+    // (hash << 6 | pixel index) -> (0xRRGGBB -> votes); screen paintings and
+    // tile sheets apart, since sheets only fill in
+    std::unordered_map<uint64_t, std::unordered_map<uint32_t, uint32_t>> m_votes, m_sheetVotes;
 };

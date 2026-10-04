@@ -313,9 +313,10 @@ int main()
         // F8 toggles the game's color pack (if any) for comparison, F11
         // re-imports its paintings (roms/colorpacks/<rom>/) after editing.
         // F7 starts/stops collecting what the pack doesn't color yet into
-        // paint sheets (roms/captures/<rom> todo NNN).
+        // paint sheets (roms/captures/<rom> todo NNN); F6 saves the whole tile
+        // memory as a tile sheet (roms/captures/<rom> tiles NNN).
         bool f9WasPressed = false, f10WasPressed = false, f8WasPressed = false, f11WasPressed = false,
-             f7WasPressed = false;
+             f7WasPressed = false, f6WasPressed = false;
         bool keyboardWasDown[GLFW_KEY_LAST + 1]{};
 
         while (!glfwWindowShouldClose(window))
@@ -379,6 +380,15 @@ int main()
             if (f7Pressed && !f7WasPressed)
                 std::printf("%s\n", emulator.SetCollectingUncolored(!emulator.IsCollectingUncolored()).c_str());
             f7WasPressed = f7Pressed;
+            const bool f6Pressed = glfwGetKey(window, GLFW_KEY_F6) == GLFW_PRESS;
+            if (f6Pressed && !f6WasPressed)
+            {
+                const std::string saved = emulator.CaptureTileSheet();
+                std::printf(saved.empty() ? "Tile sheet capture failed (no game running?)\n"
+                                          : "Saved roms/captures/%s.png + .tiles\n",
+                            saved.c_str());
+            }
+            f6WasPressed = f6Pressed;
 
             std::memcpy(lastButtonStates, buttonStates, sizeof(buttonStates));
             PollDesktopButtonState(window, buttonStates);

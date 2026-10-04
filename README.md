@@ -224,6 +224,17 @@ palette. Paint the rest, drop the sheet into the pack folder like any other
 painting, and repeat until nothing new turns up. A whole new area is kept as a
 full screen instead of pieces, so it's easier to recognize.
 
+**Tile sheets.** **F6** saves everything in the game's tile memory at that
+moment - the graphics loaded for the current area, on screen or not - as
+`roms/captures/<rom name> tiles NNN.png` + `.tiles`, laid out 32 tiles wide
+like a tile viewer (tiles the pack already colors in its colors). Paint it and
+drop it into the pack folder: it fills in every tile pixel the screen
+paintings don't color (screen paintings always win, since they show tiles in
+context). Paintings and sheets may be resized by an editor as long as the
+shape stays the same. Games load some graphics only while they're shown (Wario
+Land streams Wario's poses, for example), so sheets and F7 complement each
+other: a sheet per area for most things, F7 for what only appears briefly.
+
 **Cost.** Tile tracking is only switched on for games that have a pack (or in
 the desktop debug build). On a 2.1 GHz desktop core it adds about 1.3 ms per
 emulated frame to the core's 1.8 ms, and painting the pack adds ~0.1 ms per

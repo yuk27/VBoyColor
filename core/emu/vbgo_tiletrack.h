@@ -53,6 +53,15 @@ const uint64_t *vbgo_tiletrack_frame(void);
  * this hash, as last seen while tracking. False if never seen. */
 bool vbgo_tiletrack_tile_rows(uint32_t hash, uint16_t rows_out[8]);
 
+/* The VB's character memory as of the last frame drawn while tracking: 2048
+ * tiles of 8 rows (2 bits per pixel, pixel 0 in the low bits), everything
+ * the game has loaded at the moment - shown on screen or not. NULL until a
+ * frame was drawn with tracking on. */
+const uint16_t *vbgo_tiletrack_chr_ram(void);
+
+/* The hash tile records use for a tile with these 8 rows. */
+uint32_t vbgo_tiletrack_hash_rows(const uint16_t rows[8]);
+
 /* ---- Core hooks (called from the patched vip.c / vip_draw.inc only) ---- */
 
 extern int vbgo_tt_on;

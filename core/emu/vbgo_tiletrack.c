@@ -83,6 +83,10 @@ bool vbgo_tiletrack_is_enabled(void) { return vbgo_tt_on != 0; }
 
 const uint64_t *vbgo_tiletrack_frame(void) { return s_out; }
 
+const uint16_t *vbgo_tiletrack_chr_ram(void) { return s_chr; }
+
+uint32_t vbgo_tiletrack_hash_rows(const uint16_t rows[8]) { return HashChar(rows); }
+
 bool vbgo_tiletrack_tile_rows(uint32_t hash, uint16_t rows_out[8])
 {
    unsigned i = hash & (SEEN_CAPACITY - 1);
