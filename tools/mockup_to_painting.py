@@ -28,7 +28,9 @@ to the capture's .tiles file in roms/colorpacks/<rom name>/ (same base name).
 
 Options: --colors N (palette size, default 40), --max-shift N (largest layer
 offset searched, in VB pixels; default 200 for wide layers, 24 for small ones -
-use 2 when capture and mockup show the same moment).
+use 2 when capture and mockup show the same moment), --per-pixel (keep each
+pixel's color instead of one per tile pixel: for screens that reuse a tile in
+different colors, like a portrait's solid tiles - map cells keep them apart).
 
 Requires numpy and Pillow.
 """
@@ -48,6 +50,10 @@ def main():
     ap.add_argument("out", help="painting to write (3x PNG)")
     ap.add_argument("--colors", type=int, default=40, help="palette size (default 40)")
     ap.add_argument("--max-shift", type=int, default=None, help="largest layer offset searched, VB pixels")
+    ap.add_argument("--per-pixel", action="store_true",
+                    help="keep every pixel's own color instead of one color per tile pixel - for screens whose "
+                         "background reuses a tile in different colors (a portrait's solid tiles); the importer "
+                         "keeps those apart by map cell")
     args = ap.parse_args()
 
     mock = np.array(Image.open(args.mockup).convert("RGB")).astype(np.float32)
@@ -153,8 +159,11 @@ def main():
     out = cap.astype(np.float32).copy() # unlit pixels keep the capture
     ys, xs = np.nonzero(lit)
     missing = 0
+    if args.per_pixel:
+        own = np.full((H, W), -1)
+        own[np.nonzero(sampled)] = lab
     for y, x in zip(ys.tolist(), xs.tolist()):
-        c = choice.get(int(key[y, x]))
+        c = (own[y, x] if own[y, x] >= 0 else None) if args.per_pixel else choice.get(int(key[y, x]))
         if c is None:
             missing += 1
         else:
