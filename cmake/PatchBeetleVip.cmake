@@ -1,7 +1,8 @@
 # --------------------------------------------------------------------------
 # Generates a patched copy of the Beetle VB core's VIP (video) source that
 # tags every output pixel with the Virtual Boy shade index (0-3) it was drawn
-# with, and returns its path in VBGO_PATCHED_VIP_SOURCE.
+# with, plus the current brightness of the brightest shade, and returns its
+# path in VBGO_PATCHED_VIP_SOURCE.
 #
 # Why: per-shade color palettes (Red Viper-style colorization - see
 # core/emu/ShadeColorizer.h) need to know *which* of the VB's 4 shades each
@@ -11,12 +12,16 @@
 # same output value. The core knows the index at exactly one point - its
 # 4-entry BrightCLUT (shade index -> output color), rebuilt by
 # RecalcBrightnessCache() on every brightness change - so that's where the
-# tag goes.
+# tag goes. The brightest shade's level (BrightnessCache[3]) rides along so
+# the colorizer can apply a game's fades as one uniform dim of the whole
+# palette, rather than dimming each shade against a guess of what that
+# particular game's "normal" brightness is.
 #
 # The tag lives in the top ("X") byte of the core's XRGB8888 output, which
-# the libretro API defines as unused - the RGB the core outputs is byte-for-
-# byte unchanged, so any code that ignores the tag sees the exact same frame
-# as before. Emulator::RunFrame always overwrites that byte with opaque alpha
+# the libretro API defines as unused - bits 0-1 the shade index, bits 2-7
+# BrightnessCache[3] >> 2 (0-63). The RGB the core outputs is byte-for-byte
+# unchanged, so any code that ignores the tag sees the exact same frame as
+# before. Emulator::RunFrame always overwrites that byte with opaque alpha
 # before uploading anyway.
 #
 # Done as a one-line generated copy (rather than editing the submodule, or a
@@ -37,7 +42,7 @@ function(vbgo_generate_patched_vip VB_CORE_DIR OUT_DIR)
     file(READ "${VIP_SOURCE}" VIP_TEXT)
 
     set(ANCHOR "BrightCLUT[lr][i] = ColorLUT[lr][BrightnessCache[i]];")
-    set(REPLACEMENT "BrightCLUT[lr][i] = ColorLUT[lr][BrightnessCache[i]] | ((uint32)i << 24); /* VirtualBoyGo: shade index tag, see cmake/PatchBeetleVip.cmake */")
+    set(REPLACEMENT "BrightCLUT[lr][i] = ColorLUT[lr][BrightnessCache[i]] | ((uint32)i << 24) | ((uint32)(BrightnessCache[3] >> 2) << 26); /* VirtualBoyGo: shade index + fade tag, see cmake/PatchBeetleVip.cmake */")
 
     string(FIND "${VIP_TEXT}" "${ANCHOR}" FIRST_HIT)
     string(FIND "${VIP_TEXT}" "${ANCHOR}" LAST_HIT REVERSE)

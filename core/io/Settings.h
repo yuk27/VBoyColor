@@ -132,34 +132,54 @@ namespace SettingsDetail
     {
         return {((rgb >> 16) & 0xFF) / 255.0f, ((rgb >> 8) & 0xFF) / 255.0f, (rgb & 0xFF) / 255.0f, 1.0f};
     }
+
+    constexpr std::array<XrColor4f, 4> Hex4(uint32_t bg, uint32_t dark, uint32_t light, uint32_t lightest)
+    {
+        return {{Hex(bg), Hex(dark), Hex(light), Hex(lightest)}};
+    }
+
+    // A gradient pattern's per-shade equivalent: its darkest stop as the
+    // background and its 3 brightest stops for the 3 drawn shades - about
+    // what the gradient itself shows at a typical game's full brightness
+    // (e.g. Virtual Boy Wario Land's), but held steady through fades. Read
+    // straight from kScreenPatterns, so the two can't drift apart.
+    constexpr std::array<XrColor4f, 4> FromPattern(int pattern)
+    {
+        const auto &stops = kScreenPatterns[pattern];
+        return {{stops[0], stops[2], stops[3], stops[4]}};
+    }
 } // namespace SettingsDetail
 
-// Per-shade palettes (AppSettings::selectedShadePalette) - one color for
-// each of the VB's 4 shades: background (the VB's black), then the dark,
-// light and lightest drawn shades (BRTA, BRTB, BRTA+BRTB+BRTC). Unlike the
-// tint/patterns above, which recolor the finished frame by brightness, these
-// color each pixel by which shade it is (core/emu/ShadeColorizer.h) - the
-// colorization approach Red Viper (github.com/skyfloogle/red-viper)
-// introduced, which keeps each layer's hue stable through fades. Shown at a
-// typical game's brightness, each shade appears as exactly the color listed.
-inline constexpr std::array<std::array<XrColor4f, 4>, 9> kShadePalettes = {{
-    // Handheld LCD green, light background (classic pea-soup look)
-    {{SettingsDetail::Hex(0x9BBC0F), SettingsDetail::Hex(0x8BAC0F), SettingsDetail::Hex(0x306230), SettingsDetail::Hex(0x0F380F)}},
-    // Handheld LCD green, dark background
-    {{SettingsDetail::Hex(0x0F380F), SettingsDetail::Hex(0x306230), SettingsDetail::Hex(0x8BAC0F), SettingsDetail::Hex(0x9BBC0F)}},
-    // Warm cream / orange / red / plum, light background (Super-style)
-    {{SettingsDetail::Hex(0xF8E8C8), SettingsDetail::Hex(0xD89048), SettingsDetail::Hex(0xA82820), SettingsDetail::Hex(0x301850)}},
-    // Evenly spaced grayscale
-    {{SettingsDetail::Hex(0x000000), SettingsDetail::Hex(0x555555), SettingsDetail::Hex(0xAAAAAA), SettingsDetail::Hex(0xFFFFFF)}},
-    // Fire & leaf - rust / green / gold on near-black (after Red Viper's multicolour default)
-    {{SettingsDetail::Hex(0x080200), SettingsDetail::Hex(0x8C2A0A), SettingsDetail::Hex(0x1DBB00), SettingsDetail::Hex(0xFFD800)}},
-    // Neon - purple / cyan / lime on near-black violet
-    {{SettingsDetail::Hex(0x0B0614), SettingsDetail::Hex(0x7A1FA2), SettingsDetail::Hex(0x00B8D4), SettingsDetail::Hex(0xF4FF81)}},
-    // Deep sea - navy / azure / ice on near-black blue
-    {{SettingsDetail::Hex(0x020814), SettingsDetail::Hex(0x0D3B66), SettingsDetail::Hex(0x3A86C8), SettingsDetail::Hex(0xBFE6FF)}},
-    // Sepia
-    {{SettingsDetail::Hex(0x1A0F07), SettingsDetail::Hex(0x5C3A1E), SettingsDetail::Hex(0xA87B4F), SettingsDetail::Hex(0xF2DEB8)}},
-    // Paper - inverted: dark ink on off-white (brighter VB shades print darker)
-    {{SettingsDetail::Hex(0xF4EFE1), SettingsDetail::Hex(0x8C877B), SettingsDetail::Hex(0x4A463F), SettingsDetail::Hex(0x141414)}},
+// Per-shade ("Multicolor") palettes (AppSettings::selectedShadePalette) -
+// one color for each of the VB's 4 shades: background (the VB's black), then
+// the dark, light and lightest drawn shades (BRTA, BRTB, BRTA+BRTB+BRTC).
+// Unlike the tint/patterns above, which recolor the finished frame by
+// brightness, these color each pixel by which shade it is
+// (core/emu/ShadeColorizer.h) - the colorization approach Red Viper
+// (github.com/skyfloogle/red-viper) introduced, which keeps each layer's hue
+// stable through fades. At full brightness each shade appears as exactly the
+// color listed, in every game. Order matters only for the Color Palette
+// cycle (index 0 is what Multicolor mode starts on); the index is what's
+// saved to settings.dat.
+inline constexpr std::array<std::array<XrColor4f, 4>, 16> kShadePalettes = {{
+    // --- Vivid multi-hue ---
+    SettingsDetail::Hex4(0x050A24, 0xE0301E, 0x2E7DF0, 0xFFE14D), // Arcade - red / blue / yellow on navy
+    SettingsDetail::Hex4(0x0B0614, 0x7A1FA2, 0x00B8D4, 0xF4FF81), // Neon - purple / cyan / lime
+    SettingsDetail::Hex4(0x160A1C, 0x6A3FB5, 0xFF5FA2, 0xB8F4FF), // Candy - violet / pink / ice
+    SettingsDetail::Hex4(0x080200, 0x8C2A0A, 0x1DBB00, 0xFFD800), // Fire & leaf - rust / green / gold (after Red Viper's multicolour default)
+    SettingsDetail::Hex4(0x03141A, 0x8E2C6B, 0x1FB3A6, 0xFFD9A0), // Tropical - plum / teal / peach
+    SettingsDetail::Hex4(0x000000, 0xAA00AA, 0x00AAAA, 0xFFFFFF), // Retro PC - magenta / cyan / white
+    // --- The gradient patterns, per shade ---
+    SettingsDetail::FromPattern(0), // Jade
+    SettingsDetail::FromPattern(1), // Ocean
+    SettingsDetail::FromPattern(2), // Sunset
+    SettingsDetail::FromPattern(3), // Ember
+    SettingsDetail::FromPattern(4), // Frost
+    SettingsDetail::FromPattern(5), // Toxic
+    // --- Classic handheld looks (light ones fade toward their light background) ---
+    SettingsDetail::Hex4(0x9BBC0F, 0x6A8F1C, 0x306230, 0x0F380F), // LCD green, light background (dark shade spaced off the background so it stays readable)
+    SettingsDetail::Hex4(0x0F380F, 0x306230, 0x8BAC0F, 0x9BBC0F), // LCD green, dark background
+    SettingsDetail::Hex4(0xF8E8C8, 0xD89048, 0xA82820, 0x301850), // Super warm - cream / orange / red / plum
+    SettingsDetail::Hex4(0xF4EFE1, 0x8C877B, 0x4A463F, 0x141414), // Paper - dark ink on off-white
 }};
 inline constexpr int kShadePaletteCount = static_cast<int>(kShadePalettes.size());

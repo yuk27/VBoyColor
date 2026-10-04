@@ -13,44 +13,42 @@ struct ShadeRgb
     float r, g, b;
 };
 
-// Gamma-encoded output brightness of each VB shade (0 = black, 1-3 = the
-// BRTA / BRTB / BRTA+BRTB+BRTC shades) at a typical game's brightness
-// settings. A shade drawn at exactly this brightness shows its palette
-// color exactly - dimmer (fades, flashes, darker games) blends toward the
-// background color, brighter clamps at the palette color. Also what the
-// Settings page's Color Palette preview swatches use, so the preview
-// matches what's on screen.
-inline constexpr float kVbNominalShadeLevels[4] = {0.0f, 0x63 / 255.0f, 0x87 / 255.0f, 1.0f};
-
 // Red Viper-style per-shade colorization ("multicolour" mode in Red Viper,
 // github.com/skyfloogle/red-viper): instead of tinting the finished image by
 // brightness, every pixel is colored by WHICH of the VB's 4 shades the game
-// drew it with, then dimmed by that shade's current brightness:
+// drew it with, so a game's dark/light/lightest layers each keep their own
+// hue regardless of the brightness the game happens to use.
 //
-//     color = lerp(palette[0], palette[shade], brightness / nominal[shade])
+// Brightness then only drives fades, as one uniform dim of the whole palette
+// toward the background color, taken from the brightest shade's current
+// level (games fade by scaling all 3 shade brightnesses together):
 //
-// so a game's dark/light/lightest layers each keep their own hue through
-// fades and brightness changes, rather than sliding through a gradient.
-// (Red Viper's own math is the same lerp; the brightness normalization is
-// VirtualBoyGo's, so the 4 palette colors are what a typical game actually
-// shows instead of needing per-shade scale factors.)
+//     color = lerp(palette[0], palette[shade], fade)
 //
-// Reads the shade index the patched core stores in each pixel's unused top
-// byte - see cmake/PatchBeetleVip.cmake.
+// so the 4 palette colors are exactly what's on screen at full brightness,
+// in every game, and stay in proportion through fades. (Red Viper instead
+// dims each shade by its own brightness register, which needs per-shade
+// scale factors tuned to a game's brightness settings.) One exception: a
+// shade a game has switched fully off (brightness 0 - sometimes used to hide
+// a layer) shows as background.
+//
+// Reads the shade index and fade level the patched core stores in each
+// pixel's unused top byte - see cmake/PatchBeetleVip.cmake.
 class ShadeColorizer
 {
 public:
     // palette[0] = background (the VB's black), [1..3] = darkest to lightest
-    // drawn shade. Rebuilds the lookup table - cheap (1024 entries), but no
+    // drawn shade. Rebuilds the lookup table - cheap (256 entries), but no
     // need to call it every frame.
     void SetPalette(const std::array<ShadeRgb, 4> &palette);
 
-    // src: the core's XRGB8888 frame (bytes B,G,R,tag per pixel, tag = shade
-    // index 0-3). dst: B,G,R,A bytes ready for the B8G8R8A8 screen texture,
-    // A forced opaque. src and dst may not overlap.
+    // src: the core's XRGB8888 frame (bytes B,G,R,tag per pixel - tag bits
+    // 0-1 shade index, 2-7 fade level). dst: B,G,R,A bytes ready for the
+    // B8G8R8A8 screen texture, A forced opaque. src and dst may not overlap.
     void Colorize(const uint8_t *src, uint8_t *dst, size_t pixelCount) const;
 
 private:
-    // [shade][brightness byte] -> B,G,R,A bytes.
-    std::array<std::array<std::array<uint8_t, 4>, 256>, 4> m_lut{};
+    // Indexed by the whole tag byte ([fade level][shade]) -> B,G,R,A bytes.
+    std::array<std::array<uint8_t, 4>, 256> m_lut{};
+    std::array<uint8_t, 4> m_background{};
 };
