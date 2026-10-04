@@ -2,10 +2,12 @@
 
 #include "emu/ShadeColorizer.h"
 #include "emu/TileColorPack.h"
+#include "emu/vbgo_tiletrack.h"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -45,9 +47,22 @@ private:
         bool layered = false;                        // the tile has per-layer colors - look them up
         const TileColorPack::Tile *base = nullptr;   // the tile's own colors
         const TileColorPack::Tile *palette[4] = {};  // per palette: its own colors, else base
+        uint64_t markerBits = 0;                     // context groups this tile is a marker of
+        uint32_t contextFirst = 0, contextCount = 0; // its context variants in the pack's ContextTiles()
     };
 
     void ResolveSlots(const uint32_t *hashes);
+
+    // Context (see TileColorPack.h): where markers were drawn, per eye, on a
+    // grid of 8x8-pixel screen cells - the last frame's and the one being
+    // painted. A shared tile takes a group's colors if one of its markers
+    // is within kContextReach cells.
+    static constexpr int kGridW = VBGO_TT_WIDTH / 8, kGridH = VBGO_TT_HEIGHT / 8, kContextReach = 4;
+    std::unordered_map<uint32_t, uint64_t> m_markerBits;
+    std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>> m_contextRange; // hash -> (first, count)
+    std::vector<uint64_t> m_markerGrid[2][2];
+    unsigned m_gridCurrent[2] = {};
+    uint64_t Near(unsigned eye, int x, int y) const;
 
     const TileColorPack *m_pack = nullptr;
     std::vector<uint32_t> m_cellStart;  // 65537 entries: cell n's CellTiles are [m_cellStart[n], m_cellStart[n + 1])

@@ -33,6 +33,14 @@
 //    3. Layer (world): a tile reused on another layer (a cloud tile inside a
 //       mountain) that's consistently painted differently there.
 //    4. The tile itself.
+//  - Context (before 2-4): games reuse the very same tiles in different
+//    characters (Jack Bros.' Lantern and Skelton share their hat brims,
+//    Mario's Tennis gives Mario and Luigi one cap emblem). Where objects
+//    painted differently share a tile, each one that differs from the
+//    tile's usual colors gets its own colors, switched on by "marker" tiles
+//    only that object uses (Skelton's skull): if a marker was drawn near the
+//    tile in the last frame, its colors apply. Found automatically - an
+//    object is a connected group of sprite pixels in a painting.
 // Tile sheets (F6: everything in the game's tile memory, laid out like a
 // tile viewer) import the same way, but only fill in tile pixels no screen
 // painting colors.
@@ -74,11 +82,13 @@ public:
         size_t palettePixels = 0;   // tile pixels with their own colors in some palette
         size_t cellPixels = 0;      // tile pixels with their own colors at some map cell
         size_t fillPixels = 0;      // transparent tile pixels painted (fills)
+        size_t contextTiles = 0;    // shared tiles with an object's own colors (context variants)
+        size_t contextGroups = 0;   // objects telling them apart (marker sets)
         std::string lastError;      // why the last rejected painting was rejected
     };
 
     void Clear();
-    bool Empty() const { return m_tiles.empty() && m_cellTiles.empty(); }
+    bool Empty() const { return m_tiles.empty() && m_cellTiles.empty() && m_contextTiles.empty(); }
     size_t TileCount() const { return m_tiles.size(); }
     const Tile *Find(uint32_t hash) const;
     // The tile's colors for one layer (world 0-31) if that layer has its own,
@@ -98,6 +108,20 @@ public:
         const auto it = m_paletteTiles.find(PaletteKey(hash, palette));
         return it == m_paletteTiles.end() ? nullptr : &it->second;
     }
+    // A shared tile's colors in one object (see "Context" above): they apply
+    // where any of the group's marker tiles was drawn nearby.
+    struct ContextTile
+    {
+        uint32_t hash = 0;
+        uint32_t group = 0; // index into ContextGroups()
+        Tile tile;
+    };
+    // Per group, its marker tiles (sorted); at most kMaxContextGroups groups.
+    static constexpr size_t kMaxContextGroups = 64;
+    const std::vector<std::vector<uint32_t>> &ContextGroups() const { return m_contextGroups; }
+    // Sorted by hash, then group.
+    const std::vector<ContextTile> &ContextTiles() const { return m_contextTiles; }
+
     bool HasLayerColors() const { return !m_layerTiles.empty(); }
     bool HasPaletteColors() const { return !m_paletteTiles.empty(); }
     const std::unordered_map<uint32_t, Tile> &Tiles() const { return m_tiles; }
@@ -162,7 +186,16 @@ private:
     std::unordered_map<uint64_t, Tile> m_paletteTiles; // PaletteKey -> that palette's own colors (only where they differ)
     std::unordered_map<uint32_t, uint64_t> m_leftUncolored; // hash -> tile pixels painted magenta
     std::vector<CellTile> m_cellTiles;
+    std::vector<std::vector<uint32_t>> m_contextGroups;
+    std::vector<ContextTile> m_contextTiles;
     uint8_t m_referenceLevel = 63;
+    // Objects in the screen paintings being imported (connected tile pixels
+    // of one layer): the tiles each one is made of. Context votes carry the
+    // object's index in Vote::extra.
+    std::vector<std::vector<uint32_t>> m_objectTiles;
+    std::vector<Vote> m_contextVotes;
+    std::unordered_map<uint32_t, std::array<uint8_t, 64>> m_tileShades; // their tiles' pixel values (1-3; 0xFF unknown)
+    void ResolveContexts(ImportStats &stats);
     std::unordered_map<uint32_t, std::array<uint16_t, 8>> m_tileRows; // tiles' pixels, from the sidecars being imported
     void CompleteFills(CellTile &cell, uint64_t knownBackground) const;
     std::vector<uint8_t> m_paintingLevels; // known brightness levels of the screen paintings being imported

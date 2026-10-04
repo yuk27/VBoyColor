@@ -451,11 +451,12 @@ std::string Emulator::ReloadColorPack()
         std::snprintf(summary, sizeof(summary),
                       "Color pack: imported %d painting(s) + %d tile sheet(s) -> %zu tiles (%zu tile pixels, %zu only "
                       "from tile sheets, %zu left uncolored (magenta); own colors: %zu per palette, %zu per layer, %zu "
-                      "per map cell, %zu fills; %zu painted differently in different places, majority used; %zu stray "
-                      "shades merged)%s%s, saved %s.vbcp",
+                      "per map cell, %zu fills, %zu shared tiles per object (%zu objects); %zu painted differently in "
+                      "different places, majority used; %zu stray shades merged)%s%s, saved %s.vbcp",
                       stats.paintings, stats.sheets, m_colorPack.TileCount(), stats.tilePixels, stats.fromSheets,
                       stats.erased, stats.palettePixels, stats.layerPixels, stats.cellPixels, stats.fillPixels,
-                      stats.inconsistent, stats.mergedColors, stats.rejected ? "; skipped: " : "",
+                      stats.contextTiles, stats.contextGroups, stats.inconsistent, stats.mergedColors,
+                      stats.rejected ? "; skipped: " : "",
                       stats.rejected ? stats.lastError.c_str() : "", m_romBaseName.c_str());
     }
     else if (m_colorPack.Deserialize(m_platform->ReadRomsFile(m_romBaseName + ".vbcp", false)))

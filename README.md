@@ -234,6 +234,14 @@ paintings consistently ask for it:
 3. *Layer* - a tile reused on another layer (a cloud tile inside a mountain).
 4. The tile's own colors.
 
+**Same tile, different characters.** Games also reuse the very same sprite
+tiles in different characters (Jack Bros.' Lantern and Skelton share their hat
+brims). When sprites painted differently share a tile, the importer finds
+tiles only one of them has (Skelton's skull - "markers"), and the shared tile
+takes that character's colors wherever one of its markers was drawn nearby in
+the last frame - so both can even stand side by side. Nothing to do: it comes
+from the paintings (a sprite is a connected group of sprite pixels).
+
 **Painting the background.** Transparent parts of background tiles can be
 painted too ("fills" - a court's surface between its speckles, a sky behind a
 logo): they get that color at that spot of the map, even where the game
@@ -275,8 +283,9 @@ map cells and fills ~0.2-0.35 ms per eye. Output is otherwise identical.
 pixel after the per-pixel records (version 1 files from older captures still
 import, just without cell colors or fills), and the palette block
 (`VBGOPAL2`) adds the game's brightness level. `.vbcp` version 3 adds the
-palette and map cell colors and the reference brightness; older packs load
-as before.
+palette and map cell colors and the reference brightness, optionally followed
+by the per-character colors (`VBGOCTX1`, which older builds skip); older packs
+load as before.
 
 A loose mockup that doesn't line up with a capture (different size, shifted,
 partly redrawn) can be turned into a painting with

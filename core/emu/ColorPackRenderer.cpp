@@ -10,11 +10,33 @@ void ColorPackRenderer::SetPack(const TileColorPack *pack)
     m_cellStart.clear();
     m_fillCells.clear();
     m_layered.clear();
+    m_markerBits.clear();
+    m_contextRange.clear();
     for (Slot &slot : m_slots)
         slot = Slot{};
     m_resolvedFor = nullptr;
+    for (auto &eye : m_markerGrid)
+        for (auto &grid : eye)
+            grid.clear();
     if (!m_pack)
         return;
+    const auto &groups = m_pack->ContextGroups();
+    const auto &contexts = m_pack->ContextTiles(); // sorted by hash
+    for (size_t g = 0; g < groups.size() && g < 64; ++g)
+        for (const uint32_t marker : groups[g])
+            m_markerBits[marker] |= 1ull << g;
+    for (uint32_t i = 0; i < contexts.size();)
+    {
+        uint32_t j = i;
+        while (j < contexts.size() && contexts[j].hash == contexts[i].hash)
+            ++j;
+        m_contextRange[contexts[i].hash] = {i, j - i};
+        i = j;
+    }
+    if (!contexts.empty())
+        for (auto &eye : m_markerGrid)
+            for (auto &grid : eye)
+                grid.assign(kGridW * kGridH, 0);
     // Same fade as the Multicolor palette (see ShadeColorizer): the brightest
     // shade's level from the core's tag byte, through the core's gamma -
     // relative to the brightness the paintings were made at, so a game that
@@ -67,8 +89,33 @@ void ColorPackRenderer::ResolveSlots(const uint32_t *hashes)
             slot.palette[p] = variant ? variant : slot.base;
         }
         slot.layered = !m_layered.empty() && m_layered.count(slot.hash) != 0;
+        slot.markerBits = 0;
+        slot.contextCount = 0;
+        if (!m_markerBits.empty())
+        {
+            const auto marker = m_markerBits.find(slot.hash);
+            if (marker != m_markerBits.end())
+                slot.markerBits = marker->second;
+            const auto range = m_contextRange.find(slot.hash);
+            if (range != m_contextRange.end())
+                slot.contextFirst = range->second.first, slot.contextCount = range->second.second;
+        }
     }
     m_resolvedFor = hashes;
+}
+
+uint64_t ColorPackRenderer::Near(unsigned eye, int x, int y) const
+{
+    // Markers drawn within reach - last frame, or already this frame.
+    const int cx = x >> 3, cy = y >> 3;
+    uint64_t bits = 0;
+    for (int gy = std::max(0, cy - kContextReach); gy <= std::min(kGridH - 1, cy + kContextReach); ++gy)
+        for (int gx = std::max(0, cx - kContextReach); gx <= std::min(kGridW - 1, cx + kContextReach); ++gx)
+        {
+            const int i = gy * kGridW + gx;
+            bits |= m_markerGrid[eye][0][i] | m_markerGrid[eye][1][i];
+        }
+    return bits;
 }
 
 void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWidth, const uint32_t eyeOffset[2],
@@ -80,6 +127,8 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
                        static_cast<int>(background.r * 255.0f + 0.5f)};
     const TileColorPack::CellTile *cellTiles = m_pack->CellTiles().data();
     const bool haveCells = !m_cellStart.empty();
+    const TileColorPack::ContextTile *contexts = m_pack->ContextTiles().data();
+    const bool haveContexts = !m_markerGrid[0][0].empty();
 
     for (unsigned eye = 0; eye < 2; ++eye)
     {
@@ -87,6 +136,13 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
         if (!vbgo_tiletrack_eye_view(eye, &view))
             continue;
         ResolveSlots(view.hashes);
+        uint64_t *markers = nullptr; // this frame's marker grid (the other one keeps the last frame's)
+        if (haveContexts)
+        {
+            m_gridCurrent[eye] ^= 1;
+            markers = m_markerGrid[eye][m_gridCurrent[eye]].data();
+            std::fill(markers, markers + kGridW * kGridH, 0);
+        }
         const uint64_t stamp = view.stamp;
         for (uint32_t x = 0; x < VBGO_TT_WIDTH; ++x)
         {
@@ -98,6 +154,8 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
             // remember the last one's lookup.
             uint32_t lastCellKey = ~0u;
             const TileColorPack::CellTile *lastCell = nullptr;
+            int nearCell = -1; // the same for markers nearby
+            uint64_t nearBits = 0;
             for (uint32_t y = 0; y < VBGO_TT_HEIGHT; ++y)
             {
                 const uint64_t t = column[y];
@@ -110,6 +168,8 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
                     continue; // drawn in a shade the game switched off - stays background
                 const unsigned chr = VBGO_TAG_CHAR(t), index = VBGO_TAG_INDEX(t), palette = VBGO_TAG_PALETTE(t);
                 const uint8_t *rgb = nullptr;
+                if (markers && pixel && m_slots[chr].markerBits)
+                    markers[(y >> 3) * kGridW + (x >> 3)] |= m_slots[chr].markerBits;
 
                 // 1. The map cell's own colors for this tile (and fills).
                 if (haveCells && VBGO_TAG_HAS_CELL(t))
@@ -139,12 +199,35 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
                 {
                     if (!pixel)
                         continue; // a fill nobody painted
-                    // 2-4. The palette's, the layer's, or the tile's own colors.
                     const Slot &slot = m_slots[chr];
-                    const TileColorPack::Tile *tile = slot.palette[palette];
-                    if (slot.layered && tile == slot.base)
-                        if (const TileColorPack::Tile *layer = m_pack->FindLayer(slot.hash, VBGO_TAG_WORLD(t)))
-                            tile = layer;
+                    const TileColorPack::Tile *tile = nullptr;
+                    // Context: a shared tile in an object whose marker is nearby.
+                    if (slot.contextCount)
+                    {
+                        const int cell = static_cast<int>((y >> 3) * kGridW + (x >> 3));
+                        if (cell != nearCell)
+                        {
+                            nearCell = cell;
+                            nearBits = Near(eye, static_cast<int>(x), static_cast<int>(y));
+                        }
+                        for (uint32_t k = 0; nearBits && k < slot.contextCount; ++k)
+                        {
+                            const TileColorPack::ContextTile &c = contexts[slot.contextFirst + k];
+                            if (nearBits >> c.group & 1)
+                            {
+                                tile = &c.tile;
+                                break;
+                            }
+                        }
+                    }
+                    // 2-4. The palette's, the layer's, or the tile's own colors.
+                    if (!tile)
+                    {
+                        tile = slot.palette[palette];
+                        if (slot.layered && tile == slot.base)
+                            if (const TileColorPack::Tile *layer = m_pack->FindLayer(slot.hash, VBGO_TAG_WORLD(t)))
+                                tile = layer;
+                    }
                     if (!tile || !(tile->mask >> index & 1))
                         continue; // unpainted - keeps the Multicolor palette's color
                     rgb = tile->rgb[index];
