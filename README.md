@@ -22,7 +22,8 @@ are planned for the future.
 - Configurable VB screen color palette, including a custom R/G/B tint
 - Per-shade color palettes (Red Viper-style colorization): each of the
   Virtual Boy's 4 shades gets its own color, so a game's layers keep their
-  own hues through fades - found at the end of Settings → Color Palette
+  own hues through fades - Settings → Color Mode → Multicolor, then pick a
+  palette with Color Palette
 
 ## Opening the menu
 
