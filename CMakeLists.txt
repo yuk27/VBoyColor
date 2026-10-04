@@ -160,8 +160,9 @@ endif()
 # --------------------------------------------------------------------------
 set(VB_CORE_DIR ${CMAKE_SOURCE_DIR}/third_party/beetle-vb-libretro)
 
-# vip.c is compiled from a generated copy that tags each output pixel with
-# its VB shade index (for per-shade color palettes) - see
+# vip.c (and the vip_draw.inc it includes) are compiled from generated
+# copies that tag each output pixel with its VB shade index (for per-shade
+# color palettes) and hook in the experimental tile tracker - see
 # cmake/PatchBeetleVip.cmake. Everything else is compiled straight from the
 # untouched submodule.
 include(${CMAKE_SOURCE_DIR}/cmake/PatchBeetleVip.cmake)
@@ -181,6 +182,7 @@ add_library(vb_core STATIC
     ${VB_CORE_DIR}/mednafen/settings.c
     ${VB_CORE_DIR}/libretro-common/compat/compat_strl.c
     ${VB_CORE_DIR}/libretro-common/compat/compat_snprintf.c
+    core/emu/vbgo_tiletrack.c
 )
 target_include_directories(vb_core PUBLIC
     ${VB_CORE_DIR}
@@ -191,7 +193,7 @@ target_include_directories(vb_core PUBLIC
 # The generated vip.c lives outside the submodule, so its quoted includes
 # ("vb.h", "vip_draw.inc", "../math_ops.h", ...) can no longer resolve
 # relative to its own folder - point them at the original one instead.
-target_include_directories(vb_core PRIVATE ${VB_CORE_DIR}/mednafen/vb)
+target_include_directories(vb_core PRIVATE ${VB_CORE_DIR}/mednafen/vb ${CMAKE_SOURCE_DIR}/core/emu)
 # Matches upstream's own Makefile flags (see Makefile/Makefile.common) for a
 # WANT_32BPP, non-static-linking, non-HAVE_GRIFFIN build.
 target_compile_definitions(vb_core PRIVATE

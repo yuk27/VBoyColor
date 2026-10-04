@@ -1,13 +1,19 @@
 #include "emu/Emulator.h"
+#include "emu/vbgo_tiletrack.h"
 #include "io/Settings.h"
 
 #include <libretro.h>
+
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#define STBI_WRITE_NO_STDIO // only the in-memory writer is used (platform file I/O does the rest)
+#include <stb_image_write.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <unordered_map>
 
 namespace
 {
@@ -304,7 +310,158 @@ void Emulator::UploadFrame()
             m_frameBufferRgba[i + 3] = 0xFF;
         }
     }
+    if (m_tileDebugView)
+        PaintTileDebugView();
     m_ui->UpdateStreamingImage(m_screenTexture, m_frameBufferRgba.data(), m_frameBufferRgba.size());
+}
+
+namespace
+{
+    // Stable pseudo-random color per tile hash (murmur3 finalizer), kept
+    // away from black so tiles never vanish into the background.
+    void TileDebugColor(uint32_t hash, unsigned rawPixel, uint8_t out[3])
+    {
+        uint32_t h = hash;
+        h ^= h >> 16;
+        h *= 0x85EBCA6Bu;
+        h ^= h >> 13;
+        h *= 0xC2B2AE35u;
+        h ^= h >> 16;
+        const float shade = 0.45f + 0.55f * (rawPixel / 3.0f);
+        for (int c = 0; c < 3; ++c)
+            out[c] = static_cast<uint8_t>((50.0f + 0.75f * ((h >> (c * 8)) & 0xFF)) * shade);
+    }
+
+    void AppendLe32(std::vector<uint8_t> &v, uint32_t x)
+    {
+        for (int i = 0; i < 4; ++i)
+            v.push_back(static_cast<uint8_t>(x >> (i * 8)));
+    }
+} // namespace
+
+void Emulator::PaintTileDebugView()
+{
+    if (!vbgo_tiletrack_is_enabled())
+        return;
+    const uint64_t *tiles = vbgo_tiletrack_frame();
+    // Side-by-side frame: left eye at x 0, right eye after it (plus any
+    // separation the core was configured with - none by default).
+    const uint32_t eyeOffset[2] = {0, m_lastFrameWidth - VBGO_TT_WIDTH};
+    for (int eye = 0; eye < 2; ++eye)
+    {
+        for (uint32_t y = 0; y < VBGO_TT_HEIGHT; ++y)
+        {
+            for (uint32_t x = 0; x < VBGO_TT_WIDTH; ++x)
+            {
+                const uint64_t t = tiles[eye * VBGO_TT_EYE_PIXELS + y * VBGO_TT_WIDTH + x];
+                uint8_t *px = &m_frameBufferRgba[(static_cast<size_t>(y) * kFbWidth + eyeOffset[eye] + x) * 4];
+                uint8_t rgb[3] = {0, 0, 0};
+                if (VBGO_TT_VALID(t))
+                    TileDebugColor(VBGO_TT_HASH(t), VBGO_TT_PIXEL(t), rgb);
+                px[0] = rgb[2]; // B,G,R,A
+                px[1] = rgb[1];
+                px[2] = rgb[0];
+                px[3] = 0xFF;
+            }
+        }
+    }
+}
+
+void Emulator::SetTileTracking(bool enabled)
+{
+    vbgo_tiletrack_set_enabled(enabled);
+    if (!enabled && m_tileDebugView)
+        SetTileDebugView(false);
+}
+
+bool Emulator::IsTileTracking() const { return vbgo_tiletrack_is_enabled(); }
+
+void Emulator::SetTileDebugView(bool enabled)
+{
+    if (enabled)
+        vbgo_tiletrack_set_enabled(true);
+    m_tileDebugView = enabled;
+    if (m_hasFrame && m_ui)
+        UploadFrame(); // show/hide it right away, even while paused
+}
+
+std::string Emulator::CaptureTileReference()
+{
+    if (!m_romLoaded || !m_hasFrame || !vbgo_tiletrack_is_enabled())
+        return "";
+
+    // Next free "<rom> NNN" in captures/.
+    std::string base;
+    for (int n = 1; n < 1000; ++n)
+    {
+        char suffix[8];
+        std::snprintf(suffix, sizeof(suffix), " %03d", n);
+        base = m_romBaseName + suffix;
+        if (!m_platform->RomsFileExists("captures/" + base + ".tiles", false))
+            break;
+    }
+
+    // Left eye, grayscale core output (shade structure only - whatever
+    // palette is active is irrelevant to painting), 3x upscaled.
+    constexpr int kUp = 3;
+    const int w = VBGO_TT_WIDTH * kUp, h = VBGO_TT_HEIGHT * kUp;
+    std::vector<uint8_t> rgb(static_cast<size_t>(w) * h * 3);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x)
+        {
+            const uint8_t *src = &m_rawFrame[(static_cast<size_t>(y / kUp) * kFbWidth + x / kUp) * 4];
+            uint8_t *dst = &rgb[(static_cast<size_t>(y) * w + x) * 3];
+            dst[0] = src[2];
+            dst[1] = src[1];
+            dst[2] = src[0];
+        }
+    std::vector<uint8_t> png;
+    stbi_write_png_to_func([](void *ctx, void *data, int size)
+                           {
+                               auto *out = static_cast<std::vector<uint8_t> *>(ctx);
+                               out->insert(out->end(), static_cast<uint8_t *>(data), static_cast<uint8_t *>(data) + size);
+                           },
+                           &png, w, h, 3, rgb.data(), w * 3);
+
+    // Sidecar: "VBGOTIL1", width, height, one 64-bit tile entry per left-eye
+    // pixel (see vbgo_tiletrack.h for the fields), then every tile used:
+    // count, (hash, 8 rows of 2bpp pixels) each.
+    std::vector<uint8_t> sidecar = {'V', 'B', 'G', 'O', 'T', 'I', 'L', '1'};
+    AppendLe32(sidecar, VBGO_TT_WIDTH);
+    AppendLe32(sidecar, VBGO_TT_HEIGHT);
+    const uint64_t *tiles = vbgo_tiletrack_frame();
+    std::unordered_map<uint32_t, bool> used;
+    for (int i = 0; i < VBGO_TT_EYE_PIXELS; ++i)
+    {
+        for (int b = 0; b < 8; ++b)
+            sidecar.push_back(static_cast<uint8_t>(tiles[i] >> (b * 8)));
+        if (VBGO_TT_VALID(tiles[i]))
+            used[VBGO_TT_HASH(tiles[i])] = true;
+    }
+    std::vector<uint8_t> dictionary;
+    uint32_t count = 0;
+    for (const auto &entry : used)
+    {
+        uint16_t rows[8];
+        if (!vbgo_tiletrack_tile_rows(entry.first, rows))
+            continue;
+        AppendLe32(dictionary, entry.first);
+        for (uint16_t row : rows)
+        {
+            dictionary.push_back(static_cast<uint8_t>(row));
+            dictionary.push_back(static_cast<uint8_t>(row >> 8));
+        }
+        ++count;
+    }
+    AppendLe32(sidecar, count);
+    sidecar.insert(sidecar.end(), dictionary.begin(), dictionary.end());
+
+    if (png.empty() ||
+        !m_platform->WriteRomsFile("captures/" + base + ".png", false, png.data(), png.size()) ||
+        !m_platform->WriteRomsFile("captures/" + base + ".tiles", false, sidecar.data(), sidecar.size()))
+        return "";
+    std::fprintf(stderr, "[Emulator] Captured tile reference \"%s\" (%u tiles)\n", base.c_str(), count);
+    return base;
 }
 
 void Emulator::DrawScreen(UiRenderer &ui, float x, float y, float w, float h, Eye eye, const XrColor4f &tint,

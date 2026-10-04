@@ -1,8 +1,15 @@
 # --------------------------------------------------------------------------
-# Generates a patched copy of the Beetle VB core's VIP (video) source that
-# tags every output pixel with the Virtual Boy shade index (0-3) it was drawn
-# with, plus the current brightness of the brightest shade, and returns its
-# path in VBGO_PATCHED_VIP_SOURCE.
+# Generates patched copies of the Beetle VB core's VIP (video) sources and
+# returns the vip.c path in VBGO_PATCHED_VIP_SOURCE. Two independent changes:
+#
+# 1. Shade tag (always on): every output pixel carries the Virtual Boy shade
+#    index (0-3) it was drawn with, plus the current brightness of the
+#    brightest shade - what Multicolor palettes need. Explained below.
+# 2. Tile tracking hooks (experimental, off unless the frontend enables it):
+#    calls into core/emu/vbgo_tiletrack.c from the ~6 places vip_draw.inc
+#    puts a tile pixel on screen, plus where blocks are stored, displayed or
+#    overwritten by the CPU - so per-tile color packs know which tile and
+#    which pixel of it every screen pixel came from. See vbgo_tiletrack.h.
 #
 # Why: per-shade color palettes (Red Viper-style colorization - see
 # core/emu/ShadeColorizer.h) need to know *which* of the VB's 4 shades each
@@ -24,42 +31,185 @@
 # before. Emulator::RunFrame always overwrites that byte with opaque alpha
 # before uploading anyway.
 #
-# Done as a one-line generated copy (rather than editing the submodule, or a
-# .patch file applied with git) so the submodule stays pristine and nothing
-# beyond CMake itself is needed at build time - Android Studio's CMake runs
-# this exactly like the desktop build does. If a future submodule bump
-# changes the line below, configuration fails loudly here instead of the
-# feature silently turning into a no-op.
+# Done as generated copies with exact-text replacements (rather than editing
+# the submodule, or a .patch file applied with git) so the submodule stays
+# pristine and nothing beyond CMake itself is needed at build time - Android
+# Studio's CMake runs this exactly like the desktop build does. Line endings
+# are normalized first, so a CRLF checkout (git autocrlf on Windows) matches
+# too. Every anchor must match exactly once: if a future submodule bump
+# changes one, configuration fails loudly here instead of a feature silently
+# turning into a no-op.
 # --------------------------------------------------------------------------
-function(vbgo_generate_patched_vip VB_CORE_DIR OUT_DIR)
-    set(VIP_SOURCE "${VB_CORE_DIR}/mednafen/vb/vip.c")
-    set(VIP_PATCHED "${OUT_DIR}/vip.c")
-
-    # Re-run configure (and so this function) whenever upstream's file changes,
-    # e.g. after a submodule bump.
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${VIP_SOURCE}")
-
-    file(READ "${VIP_SOURCE}" VIP_TEXT)
-
-    set(ANCHOR "BrightCLUT[lr][i] = ColorLUT[lr][BrightnessCache[i]];")
-    set(REPLACEMENT "BrightCLUT[lr][i] = ColorLUT[lr][BrightnessCache[i]] | ((uint32)i << 24) | ((uint32)(BrightnessCache[3] >> 2) << 26); /* VirtualBoyGo: shade index + fade tag, see cmake/PatchBeetleVip.cmake */")
-
-    string(FIND "${VIP_TEXT}" "${ANCHOR}" FIRST_HIT)
-    string(FIND "${VIP_TEXT}" "${ANCHOR}" LAST_HIT REVERSE)
+# Replaces the single occurrence of ANCHOR in the variable named VAR.
+function(_vbgo_replace_once VAR ANCHOR REPLACEMENT WHERE)
+    string(FIND "${${VAR}}" "${ANCHOR}" FIRST_HIT)
+    string(FIND "${${VAR}}" "${ANCHOR}" LAST_HIT REVERSE)
     if(FIRST_HIT EQUAL -1 OR NOT FIRST_HIT EQUAL LAST_HIT)
         message(FATAL_ERROR
-            "PatchBeetleVip: expected exactly one occurrence of\n  ${ANCHOR}\nin ${VIP_SOURCE}. "
-            "The beetle-vb-libretro submodule has probably changed - update the anchor in "
-            "cmake/PatchBeetleVip.cmake to match RecalcBrightnessCache()'s BrightCLUT assignment.")
+            "PatchBeetleVip: expected exactly one occurrence of\n${ANCHOR}\nin ${WHERE}. "
+            "The beetle-vb-libretro submodule has probably changed - update this anchor in "
+            "cmake/PatchBeetleVip.cmake to match.")
     endif()
+    string(REPLACE "${ANCHOR}" "${REPLACEMENT}" RESULT "${${VAR}}")
+    set(${VAR} "${RESULT}" PARENT_SCOPE)
+endfunction()
 
-    string(REPLACE "${ANCHOR}" "${REPLACEMENT}" VIP_TEXT "${VIP_TEXT}")
+# Writes TEXT to PATH via a temp file + configure_file(COPYONLY), so the
+# generated source's timestamp only changes when its content does - otherwise
+# every configure would force the (large) VIP translation unit to recompile.
+function(_vbgo_write_if_changed PATH TEXT)
+    file(WRITE "${PATH}.tmp" "${TEXT}")
+    configure_file("${PATH}.tmp" "${PATH}" COPYONLY)
+endfunction()
 
-    # Write via a temp file + configure_file(COPYONLY) so the generated source's
-    # timestamp only changes when its content does - otherwise every configure
-    # would force the (large) VIP translation unit to recompile.
-    file(WRITE "${VIP_PATCHED}.tmp" "${VIP_TEXT}")
-    configure_file("${VIP_PATCHED}.tmp" "${VIP_PATCHED}" COPYONLY)
+function(vbgo_generate_patched_vip VB_CORE_DIR OUT_DIR)
+    set(VIP_SOURCE "${VB_CORE_DIR}/mednafen/vb/vip.c")
+    set(DRAW_SOURCE "${VB_CORE_DIR}/mednafen/vb/vip_draw.inc")
 
-    set(VBGO_PATCHED_VIP_SOURCE "${VIP_PATCHED}" PARENT_SCOPE)
+    # Re-run configure (and so this function) whenever upstream's files change,
+    # e.g. after a submodule bump.
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${VIP_SOURCE}" "${DRAW_SOURCE}")
+
+    file(READ "${VIP_SOURCE}" VIP)
+    file(READ "${DRAW_SOURCE}" DRAW)
+    string(REPLACE "\r\n" "\n" VIP "${VIP}")
+    string(REPLACE "\r\n" "\n" DRAW "${DRAW}")
+
+    # ---- 1. Shade tag ------------------------------------------------------
+    _vbgo_replace_once(VIP
+        [=[BrightCLUT[lr][i] = ColorLUT[lr][BrightnessCache[i]];]=]
+        [=[BrightCLUT[lr][i] = ColorLUT[lr][BrightnessCache[i]] | ((uint32)i << 24) | ((uint32)(BrightnessCache[3] >> 2) << 26); /* VirtualBoyGo: shade index + fade tag, see cmake/PatchBeetleVip.cmake */]=]
+        "vip.c (RecalcBrightnessCache's BrightCLUT assignment)")
+
+    # ---- 2. Tile tracking hooks: vip.c ---------------------------------------
+    _vbgo_replace_once(VIP
+        [=[#include "vip.h"]=]
+        [=[#include "vip.h"
+#include "vbgo_tiletrack.h" /* VirtualBoyGo */]=]
+        "vip.c (includes)")
+    # Each block of 8 lines: give the tracker the scratch buffers before
+    # drawing, store its per-pixel tags alongside the framebuffer after.
+    _vbgo_replace_once(VIP
+        [=[               VIP_DrawBlock(DrawingBlock, DrawingBuffers[0] + 8, DrawingBuffers[1] + 8);]=]
+        [=[               vbgo_tiletrack_begin_block(DrawingBuffers[0], CHR_RAM, DrawingBlock); /* VirtualBoyGo */
+               VIP_DrawBlock(DrawingBlock, DrawingBuffers[0] + 8, DrawingBuffers[1] + 8);
+               vbgo_tiletrack_end_block(DrawingFB, DrawingBlock); /* VirtualBoyGo */]=]
+        "vip.c (VIP_DrawBlock call)")
+    # Displayed column -> output tags (side-by-side is the only 3D mode the
+    # frontend uses; this function is what writes it).
+    _vbgo_replace_once(VIP
+        [=[   uint32 *target = surface->pixels + Column + (dest_lr ? (384 + VBSBS_Separation) : 0);
+   const int32 pitch32 = surface->pitch32;
+   const uint8 *fb_source = &FB[fb][lr][64 * Column];
+]=]
+        [=[   uint32 *target = surface->pixels + Column + (dest_lr ? (384 + VBSBS_Separation) : 0);
+   const int32 pitch32 = surface->pitch32;
+   const uint8 *fb_source = &FB[fb][lr][64 * Column];
+
+   vbgo_tiletrack_display_column(fb, lr, dest_lr, Column, DisplayActive_arg); /* VirtualBoyGo */
+]=]
+        "vip.c (CopyFBColumnToTarget_SideBySide_BASE)")
+    # Games drawing straight into the framebuffer with the CPU: no tile there.
+    _vbgo_replace_once(VIP
+        [=[            FB[(A >> 15) & 1][(A >> 16) & 1][A & 0x7FFF] = V;]=]
+        [=[         {
+            FB[(A >> 15) & 1][(A >> 16) & 1][A & 0x7FFF] = V;
+            vbgo_tiletrack_cpu_fb_write((A >> 15) & 1, (A >> 16) & 1, A & 0x7FFF, 1); /* VirtualBoyGo */
+         }]=]
+        "vip.c (VIP_Write8 framebuffer store)")
+    _vbgo_replace_once(VIP
+        [=[            StoreU16_LE((uint16 *)&FB[(A >> 15) & 1][(A >> 16) & 1][A & 0x7FFF], V);]=]
+        [=[         {
+            StoreU16_LE((uint16 *)&FB[(A >> 15) & 1][(A >> 16) & 1][A & 0x7FFF], V);
+            vbgo_tiletrack_cpu_fb_write((A >> 15) & 1, (A >> 16) & 1, A & 0x7FFF, 2); /* VirtualBoyGo */
+         }]=]
+        "vip.c (VIP_Write16 framebuffer store)")
+
+    # ---- 2. Tile tracking hooks: vip_draw.inc ---------------------------------
+    # Background maps: while tracking, route every pixel through the per-pixel
+    # path (which knows the in-tile x) instead of the unrolled 8-pixel one.
+    _vbgo_replace_once(DRAW
+        [=[  if(!(SourceX & 7) && (x + 7) <= final_x)]=]
+        [=[  if(!vbgo_tt_on && !(SourceX & 7) && (x + 7) <= final_x) /* VirtualBoyGo: per-pixel path while tile tracking */]=]
+        "vip_draw.inc (DrawBG fast path)")
+    _vbgo_replace_once(DRAW
+        [=[   if(pixel)
+    target[x] = GPLT_Cache[palette_selector][pixel];
+   SourceX++;]=]
+        [=[   if(pixel)
+   {
+    target[x] = GPLT_Cache[palette_selector][pixel];
+    VBGO_TT_TAG(&target[x], char_no, char_sub_x, char_sub_y, palette_selector, 0, pixel); /* VirtualBoyGo */
+   }
+   SourceX++;]=]
+        "vip_draw.inc (DrawBG per-pixel store)")
+    # Affine (scaled/rotated) maps - no-rotation path, where char_sub_x is a
+    # bit offset (2 bits per pixel), and the general path.
+    _vbgo_replace_once(DRAW
+        [=[  if(pixel)
+   target[x] = GPLT_Cache[bgsc >> 14][pixel];]=]
+        [=[  if(pixel)
+  {
+   target[x] = GPLT_Cache[bgsc >> 14][pixel];
+   VBGO_TT_TAG(&target[x], bgsc & 0x7FF, char_sub_x >> 1, char_sub_y, bgsc >> 14, 0, pixel); /* VirtualBoyGo */
+  }]=]
+        "vip_draw.inc (DrawAffine no-rotation store)")
+    _vbgo_replace_once(DRAW
+        [=[  if(pixel)
+   target[x] = GPLT_Cache[palette_selector][pixel];
+
+  SourceX += dx;
+  SourceY += dy;]=]
+        [=[  if(pixel)
+  {
+   target[x] = GPLT_Cache[palette_selector][pixel];
+   VBGO_TT_TAG(&target[x], char_no, char_sub_x, char_sub_y, palette_selector, 0, pixel); /* VirtualBoyGo */
+  }
+
+  SourceX += dx;
+  SourceY += dy;]=]
+        "vip_draw.inc (DrawAffine general store)")
+    # Sprites: pixel i of the char row is stored on loop iteration i (8 - meow),
+    # whichever direction the target walks for horizontal flip.
+    _vbgo_replace_once(DRAW
+        [=[      if(pixels & 3)
+       *target = JPLT_Cache[palette_selector][pixels & 3];
+      target--;]=]
+        [=[      if(pixels & 3)
+      {
+       *target = JPLT_Cache[palette_selector][pixels & 3];
+       VBGO_TT_TAG(target, char_no, 8 - meow, char_sub_y, palette_selector, 1, pixels & 3); /* VirtualBoyGo */
+      }
+      target--;]=]
+        "vip_draw.inc (DrawOBJ flipped store)")
+    _vbgo_replace_once(DRAW
+        [=[      if(pixels & 3)
+       *target = JPLT_Cache[palette_selector][pixels & 3];
+      target++;]=]
+        [=[      if(pixels & 3)
+      {
+       *target = JPLT_Cache[palette_selector][pixels & 3];
+       VBGO_TT_TAG(target, char_no, 8 - meow, char_sub_y, palette_selector, 1, pixels & 3); /* VirtualBoyGo */
+      }
+      target++;]=]
+        "vip_draw.inc (DrawOBJ store)")
+    # Which world (layer) is drawing.
+    _vbgo_replace_once(DRAW
+        [=[  if(end)
+   break;
+]=]
+        [=[  if(end)
+   break;
+
+  vbgo_tt_world = world; /* VirtualBoyGo */
+]=]
+        "vip_draw.inc (VIP_DrawBlock world loop)")
+
+    # vip.c #includes "vip_draw.inc"; a quoted include resolves next to the
+    # including file first, so the generated vip.c picks up the generated
+    # vip_draw.inc beside it.
+    _vbgo_write_if_changed("${OUT_DIR}/vip.c" "${VIP}")
+    _vbgo_write_if_changed("${OUT_DIR}/vip_draw.inc" "${DRAW}")
+
+    set(VBGO_PATCHED_VIP_SOURCE "${OUT_DIR}/vip.c" PARENT_SCOPE)
 endfunction()

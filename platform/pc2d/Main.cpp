@@ -288,6 +288,7 @@ int main()
         uiRenderer.Initialize(renderer.GetDevice(), renderer.GetPhysicalDevice(), renderer.GetQueue(),
                               renderer.GetQueueFamilyIndex(), renderer.GetCommandPool(), renderer.GetCommandBuffer());
         emulator.Initialize(uiRenderer, platform);
+        emulator.SetTileTracking(true); // see the F9/F10 tools below
         appMenu.Initialize(uiRenderer, chosen.format, emulator, settings, platform, ButtonMappingProfile::Desktop);
 
         VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
@@ -305,6 +306,11 @@ int main()
         // doesn't read input for (see AppMenu::Show/Hide/ToggleOpen).
         // Edge-triggered so holding the key doesn't spam-toggle every frame.
         bool tabWasPressed = false;
+        // Experimental tile colorization tools (see Emulator::SetTileDebugView /
+        // CaptureTileReference): F9 toggles the per-tile debug view, F10 saves
+        // a paint-ready reference of the current frame. Tracking stays on in
+        // this desktop debug build so captures always have tile data.
+        bool f9WasPressed = false, f10WasPressed = false;
         bool keyboardWasDown[GLFW_KEY_LAST + 1]{};
 
         while (!glfwWindowShouldClose(window))
@@ -335,6 +341,23 @@ int main()
             if (tabPressed && !tabWasPressed)
                 appMenu.ToggleOpen();
             tabWasPressed = tabPressed;
+
+            const bool f9Pressed = glfwGetKey(window, GLFW_KEY_F9) == GLFW_PRESS;
+            if (f9Pressed && !f9WasPressed)
+            {
+                emulator.SetTileDebugView(!emulator.IsTileDebugView());
+                std::printf("Tile debug view %s\n", emulator.IsTileDebugView() ? "on" : "off");
+            }
+            f9WasPressed = f9Pressed;
+            const bool f10Pressed = glfwGetKey(window, GLFW_KEY_F10) == GLFW_PRESS;
+            if (f10Pressed && !f10WasPressed)
+            {
+                const std::string captured = emulator.CaptureTileReference();
+                std::printf(captured.empty() ? "Tile reference capture failed (no game running?)\n"
+                                             : "Saved roms/captures/%s.png + .tiles\n",
+                            captured.c_str());
+            }
+            f10WasPressed = f10Pressed;
 
             std::memcpy(lastButtonStates, buttonStates, sizeof(buttonStates));
             PollDesktopButtonState(window, buttonStates);

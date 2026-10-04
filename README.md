@@ -189,6 +189,18 @@ target. No OpenXR runtime or headset required at all:
 build-pc\Debug\VirtualBoyGoPC2D.exe
 ```
 
+## Experimental: tile colorization (work in progress)
+
+Groundwork for per-game color packs, where each 8x8 tile of a game gets its
+own colors. The core can record which tile, and which pixel of it, every
+screen pixel comes from (`core/emu/vbgo_tiletrack.h`, hooked in through
+`cmake/PatchBeetleVip.cmake`; off by default). In the desktop 2D build:
+
+- **F9** toggles a debug view: one random color per distinct tile.
+- **F10** saves the current frame to `roms/captures/` as a paint-ready
+  grayscale PNG (3x) plus a `.tiles` file mapping every pixel to its tile, so
+  a painted copy can later be turned into tile colors.
+
 ## Credits
 
 - **Beetle VB** ([libretro/beetle-vb-libretro](https://github.com/libretro/beetle-vb-libretro)),

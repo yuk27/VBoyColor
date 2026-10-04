@@ -155,6 +155,28 @@ public:
     // unchanged; call once per app frame with the current setting.
     void SetShadePalette(int paletteIndex);
 
+    // --- Experimental tile colorization groundwork (see vbgo_tiletrack.h) ---
+    //
+    // Tracking makes the core record, per displayed pixel, which 8x8 tile and
+    // which pixel of it was drawn there. Off by default (costs a little per
+    // drawn pixel); the debug view and captures need it on.
+    void SetTileTracking(bool enabled);
+    bool IsTileTracking() const;
+
+    // Replaces the screen with one random color per distinct tile (shaded
+    // by the tile's raw pixel value; black where no tile was drawn) - a
+    // visual check that tiles are identified correctly. Enables tracking.
+    void SetTileDebugView(bool enabled);
+    bool IsTileDebugView() const { return m_tileDebugView; }
+
+    // Saves the current frame's left eye as a paint-ready reference into the
+    // ROMs folder's captures/ subfolder: "<rom> NNN.png" (grayscale core
+    // output, 3x nearest-neighbor upscale) plus "<rom> NNN.tiles" (which tile
+    // and in-tile pixel every screen pixel is, for reading a painted copy
+    // back later). Needs tracking on for at least one emulated frame first.
+    // Returns the base name used ("<rom> NNN"), or "" on failure.
+    std::string CaptureTileReference();
+
     // UI slots are 0-9 (10 total, matching FrontendGo's saveStates[10]) -
     // slot 0 is unsuffixed on disk, same as FrontendGo's slot 0 (see
     // StateFilePath). Raw retro_serialize dump, binary-compatible with
@@ -190,6 +212,7 @@ private:
     // palette is active, otherwise a straight copy with opaque alpha) and
     // uploads it to the screen texture.
     void UploadFrame();
+    void PaintTileDebugView();
 
     // Cart battery-save, matches FrontendGo's <romDir>/<stem>.srm. Must run
     // before retro_unload_game() - the SRAM pointer isn't valid after.
@@ -239,6 +262,7 @@ private:
 
     int m_shadePaletteIndex = -1; // see SetShadePalette
     ShadeColorizer m_shadeColorizer;
+    bool m_tileDebugView = false; // see SetTileDebugView
 
     // Plays whatever the audio_sample_batch callback forwards to it - see
     // Emulator.cpp's RetroAudioSampleBatch. Owned here (not a global) since
