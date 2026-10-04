@@ -2,6 +2,7 @@
 
 #include "emu/AudioOutput.h"
 #include "emu/ShadeColorizer.h"
+#include "emu/TileColorPack.h"
 #include "gfx/UiRenderer.h"
 #include "io/Platform.h"
 
@@ -178,6 +179,23 @@ public:
     // Returns the base name used ("<rom> NNN"), or "" on failure.
     std::string CaptureTileReference();
 
+    // --- Experimental per-game color packs (see TileColorPack.h) ---------
+    //
+    // (Re)builds the loaded ROM's pack: if the ROMs folder has
+    // colorpacks/<rom>/ with paintings (each "<name>.png" beside the
+    // "<name>.tiles" its reference was captured with - desktop only, needs
+    // folder listing), imports them and saves the result as <rom>.vbcp next
+    // to the ROM; otherwise loads an existing <rom>.vbcp (any platform).
+    // Called by LoadRom; call again to pick up edited paintings. Turns tile
+    // tracking on when a pack is present. Returns a one-line summary.
+    std::string ReloadColorPack();
+    bool HasColorPack() const { return !m_colorPack.Empty(); }
+    // Painted tiles are drawn while a Multicolor palette is active (the
+    // palette then colors everything the pack doesn't cover); this switches
+    // the pack off/on for comparison. On by default.
+    void SetColorPackEnabled(bool enabled);
+    bool IsColorPackEnabled() const { return m_colorPackEnabled; }
+
     // UI slots are 0-9 (10 total, matching FrontendGo's saveStates[10]) -
     // slot 0 is unsuffixed on disk, same as FrontendGo's slot 0 (see
     // StateFilePath). Raw retro_serialize dump, binary-compatible with
@@ -214,6 +232,7 @@ private:
     // uploads it to the screen texture.
     void UploadFrame();
     void PaintTileDebugView();
+    void PaintColorPack();
 
     // Cart battery-save, matches FrontendGo's <romDir>/<stem>.srm. Must run
     // before retro_unload_game() - the SRAM pointer isn't valid after.
@@ -264,6 +283,9 @@ private:
     int m_shadePaletteIndex = -1; // see SetShadePalette
     ShadeColorizer m_shadeColorizer;
     bool m_tileDebugView = false; // see SetTileDebugView
+    TileColorPack m_colorPack;    // see ReloadColorPack
+    bool m_colorPackEnabled = true;
+    ShadeRgb m_shadeBackground{0.0f, 0.0f, 0.0f}; // active Multicolor palette's background - painted tiles fade toward it
 
     // Plays whatever the audio_sample_batch callback forwards to it - see
     // Emulator.cpp's RetroAudioSampleBatch. Owned here (not a global) since

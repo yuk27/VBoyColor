@@ -121,6 +121,24 @@ bool DesktopPlatform::RomsFileExists(const std::string &fileName, bool inStatesD
     return std::filesystem::exists(RomsPath(fileName, inStatesDir), ec) && !ec;
 }
 
+std::vector<std::string> DesktopPlatform::ListRomsSubfolder(const std::string &subfolder) const
+{
+    std::vector<std::string> names;
+    std::error_code ec;
+    const std::filesystem::path dir = std::filesystem::path(RomDirectory()) / subfolder;
+    if (!std::filesystem::is_directory(dir, ec) || ec)
+        return names;
+    for (const auto &entry : std::filesystem::directory_iterator(dir, ec))
+    {
+        if (ec)
+            break;
+        if (entry.is_regular_file(ec))
+            names.push_back(entry.path().filename().string());
+    }
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
 #if defined(_WIN32)
 std::vector<uint8_t> DesktopPlatform::LoadAssetBytes(const std::string &name)
 {

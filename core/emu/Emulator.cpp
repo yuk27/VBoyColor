@@ -4,6 +4,8 @@
 
 #include <libretro.h>
 
+#include <stb_image.h> // decoder for color-pack paintings (implementation in VulkanRenderer.cpp)
+
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #define STBI_WRITE_NO_STDIO // only the in-memory writer is used (platform file I/O does the rest)
 #include <stb_image_write.h>
@@ -211,6 +213,7 @@ bool Emulator::LoadRom(const std::string &romPath, const std::string &displayNam
     {
         m_romBaseName = displayName.empty() ? "rom" : displayName;
         LoadRam();
+        std::fprintf(stderr, "[Emulator] %s\n", ReloadColorPack().c_str());
     }
 
     return m_romLoaded;
@@ -279,6 +282,7 @@ void Emulator::SetShadePalette(int paletteIndex)
             palette[i] = ShadeRgb{c.r, c.g, c.b};
         }
         m_shadeColorizer.SetPalette(palette);
+        m_shadeBackground = palette[0];
     }
 
     // Emulation is paused while the menu is open, so RunFrame won't upload
@@ -294,6 +298,8 @@ void Emulator::UploadFrame()
     if (m_shadePaletteIndex >= 0)
     {
         m_shadeColorizer.Colorize(m_rawFrame.data(), m_frameBufferRgba.data(), pixelCount);
+        if (m_colorPackEnabled && !m_colorPack.Empty())
+            PaintColorPack();
     }
     else
     {
@@ -385,6 +391,123 @@ void Emulator::SetTileDebugView(bool enabled)
         UploadFrame(); // show/hide it right away, even while paused
 }
 
+void Emulator::PaintColorPack()
+{
+    if (!vbgo_tiletrack_is_enabled())
+        return;
+    // Same fade as the Multicolor palette (see ShadeColorizer): the brightest
+    // shade's level from the core's tag byte, through the core's gamma.
+    float fadeLut[64];
+    for (int i = 0; i < 64; ++i)
+        fadeLut[i] = std::pow(i / 63.0f, 1.0f / 2.2f);
+    const float bg[3] = {m_shadeBackground.b * 255.0f, m_shadeBackground.g * 255.0f, m_shadeBackground.r * 255.0f};
+
+    const uint64_t *tiles = vbgo_tiletrack_frame();
+    const uint32_t eyeOffset[2] = {0, m_lastFrameWidth - VBGO_TT_WIDTH};
+    uint32_t lastHash = 0;
+    bool haveLast = false;
+    const TileColorPack::Tile *lastTile = nullptr;
+    for (int eye = 0; eye < 2; ++eye)
+    {
+        for (uint32_t y = 0; y < VBGO_TT_HEIGHT; ++y)
+        {
+            for (uint32_t x = 0; x < VBGO_TT_WIDTH; ++x)
+            {
+                const uint64_t t = tiles[eye * VBGO_TT_EYE_PIXELS + y * VBGO_TT_WIDTH + x];
+                if (!VBGO_TT_VALID(t))
+                    continue;
+                const size_t i = (static_cast<size_t>(y) * kFbWidth + eyeOffset[eye] + x) * 4;
+                const uint8_t *raw = &m_rawFrame[i];
+                if ((raw[0] | raw[1] | raw[2]) == 0)
+                    continue; // shade switched off by the game - stays background
+                const uint32_t hash = VBGO_TT_HASH(t);
+                if (!haveLast || hash != lastHash) // neighbors are usually the same tile - skip the lookup
+                {
+                    lastTile = m_colorPack.Find(hash);
+                    lastHash = hash;
+                    haveLast = true;
+                }
+                if (!lastTile)
+                    continue; // tile not in the pack - keeps the Multicolor palette's colors
+                const unsigned index = VBGO_TT_SUBY(t) * 8 + VBGO_TT_SUBX(t);
+                if (!(lastTile->mask >> index & 1))
+                    continue; // unpainted pixel - keeps the Multicolor palette's color
+                const float fade = fadeLut[raw[3] >> 2];
+                uint8_t *dst = &m_frameBufferRgba[i];
+                const uint8_t *rgb = lastTile->rgb[index];
+                dst[0] = static_cast<uint8_t>(bg[0] + (rgb[2] - bg[0]) * fade + 0.5f);
+                dst[1] = static_cast<uint8_t>(bg[1] + (rgb[1] - bg[1]) * fade + 0.5f);
+                dst[2] = static_cast<uint8_t>(bg[2] + (rgb[0] - bg[2]) * fade + 0.5f);
+            }
+        }
+    }
+}
+
+std::string Emulator::ReloadColorPack()
+{
+    m_colorPack.Clear();
+    if (!m_romLoaded)
+        return "No ROM loaded";
+
+    const std::string folder = "colorpacks/" + m_romBaseName;
+    const std::vector<std::string> files = m_platform->ListRomsSubfolder(folder);
+    TileColorPack::ImportStats stats;
+    for (const std::string &name : files)
+    {
+        if (name.size() < 5 || name.compare(name.size() - 4, 4, ".png") != 0)
+            continue;
+        const std::string base = name.substr(0, name.size() - 4);
+        if (std::find(files.begin(), files.end(), base + ".tiles") == files.end())
+        {
+            ++stats.rejected;
+            stats.lastError = "\"" + name + "\" has no matching .tiles file";
+            continue;
+        }
+        const std::vector<uint8_t> png = m_platform->ReadRomsFile(folder + "/" + name, false);
+        const std::vector<uint8_t> sidecar = m_platform->ReadRomsFile(folder + "/" + base + ".tiles", false);
+        int w = 0, h = 0, channels = 0;
+        stbi_uc *pixels = png.empty() ? nullptr
+                                      : stbi_load_from_memory(png.data(), static_cast<int>(png.size()), &w, &h, &channels, 3);
+        if (!m_colorPack.AddPainting(pixels, w, h, 3, sidecar, stats))
+            stats.lastError = "\"" + name + "\": " + stats.lastError;
+        if (pixels)
+            stbi_image_free(pixels);
+    }
+
+    char summary[512];
+    if (stats.paintings > 0)
+    {
+        m_colorPack.FinishImport(stats);
+        const std::vector<uint8_t> bytes = m_colorPack.Serialize();
+        m_platform->WriteRomsFile(m_romBaseName + ".vbcp", false, bytes.data(), bytes.size());
+        std::snprintf(summary, sizeof(summary),
+                      "Color pack: imported %d painting(s) -> %zu tiles (%zu tile pixels; %zu painted differently in "
+                      "different places, majority used; %zu stray shades merged)%s%s, saved %s.vbcp",
+                      stats.paintings, m_colorPack.TileCount(), stats.tilePixels, stats.inconsistent, stats.mergedColors,
+                      stats.rejected ? "; skipped: " : "", stats.rejected ? stats.lastError.c_str() : "",
+                      m_romBaseName.c_str());
+    }
+    else if (m_colorPack.Deserialize(m_platform->ReadRomsFile(m_romBaseName + ".vbcp", false)))
+        std::snprintf(summary, sizeof(summary), "Color pack: loaded %s.vbcp (%zu tiles)", m_romBaseName.c_str(),
+                      m_colorPack.TileCount());
+    else
+        std::snprintf(summary, sizeof(summary), "Color pack: none for \"%s\"%s%s", m_romBaseName.c_str(),
+                      stats.rejected ? " - skipped: " : "", stats.rejected ? stats.lastError.c_str() : "");
+
+    if (!m_colorPack.Empty())
+        vbgo_tiletrack_set_enabled(true);
+    if (m_hasFrame && m_ui)
+        UploadFrame();
+    return summary;
+}
+
+void Emulator::SetColorPackEnabled(bool enabled)
+{
+    m_colorPackEnabled = enabled;
+    if (m_hasFrame && m_ui)
+        UploadFrame();
+}
+
 std::string Emulator::CaptureTileReference()
 {
     if (!m_romLoaded || !m_hasFrame || !vbgo_tiletrack_is_enabled())
@@ -408,8 +531,12 @@ std::string Emulator::CaptureTileReference()
     // tile debug view's colors.
     constexpr int kUp = 3;
     const int w = VBGO_TT_WIDTH * kUp, h = VBGO_TT_HEIGHT * kUp;
+    // What's on screen - including color-pack colors, so a capture can be
+    // painted further from where the pack left off - except the debug view.
     std::vector<uint8_t> source(m_rawFrame.size());
-    if (m_shadePaletteIndex >= 0)
+    if (!m_tileDebugView)
+        source = m_frameBufferRgba;
+    else if (m_shadePaletteIndex >= 0)
         m_shadeColorizer.Colorize(m_rawFrame.data(), source.data(), m_rawFrame.size() / 4);
     else
         source = m_rawFrame;

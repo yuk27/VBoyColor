@@ -235,6 +235,7 @@ add_library(vbgo_app STATIC
     core/menu/pages/MoveScreenPage.cpp
     core/emu/Emulator.cpp
     core/emu/ShadeColorizer.cpp
+    core/emu/TileColorPack.cpp
     core/emu/AudioOutput.cpp
     core/input/XrInput.cpp
     core/input/ButtonMapping.cpp

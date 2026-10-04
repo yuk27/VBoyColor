@@ -200,7 +200,19 @@ screen pixel comes from (`core/emu/vbgo_tiletrack.h`, hooked in through
 - **F10** saves the current frame to `roms/captures/` as a paint-ready PNG
   (3x, in the active Multicolor palette - Ember works well - or grayscale)
   plus a `.tiles` file mapping every pixel to its tile, so a painted copy can
-  later be turned into tile colors.
+  be turned into tile colors.
+
+**Color packs.** Put painted copies of captures (same size, pixels not
+moved, saved as PNG) next to their `.tiles` files in
+`roms/colorpacks/<rom name>/`. Loading the ROM imports them into
+`roms/<rom name>.vbcp`: each painted pixel votes for its tile pixel's color,
+the majority wins where a tile was painted differently in different places,
+and stray near-duplicate shades are merged. The pack then colors every
+occurrence of those tiles anywhere in the game while a Multicolor palette is
+active; unpainted tiles keep the palette's colors. The `.vbcp` file alone is
+enough on other platforms (copy it next to the ROM on the Quest). In the
+desktop build, **F11** re-imports after editing a painting and **F8** toggles
+the pack for comparison.
 
 ## Credits
 

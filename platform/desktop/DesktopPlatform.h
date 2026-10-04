@@ -19,6 +19,7 @@ public:
     bool WriteRomsFile(const std::string &fileName, bool inStatesDir, const void *data, size_t size) override;
     std::vector<uint8_t> ReadRomsFile(const std::string &fileName, bool inStatesDir) override;
     bool RomsFileExists(const std::string &fileName, bool inStatesDir) const override;
+    std::vector<std::string> ListRomsSubfolder(const std::string &subfolder) const override;
 
     int GetBatteryPercent() const override { return -1; } // no real battery to read off Android
 

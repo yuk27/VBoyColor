@@ -40,6 +40,11 @@ public:
     // Read counterpart to WriteRomsFile - empty if not found or unreadable.
     virtual std::vector<uint8_t> ReadRomsFile(const std::string &fileName, bool inStatesDir) = 0;
     virtual bool RomsFileExists(const std::string &fileName, bool inStatesDir) const = 0;
+    // File names (not paths) directly inside a subfolder of the ROMs folder,
+    // sorted. Optional: platforms that can't list folders (Android's SAF
+    // grant) return none, which only disables importing color-pack
+    // paintings there - finished packs (<rom>.vbcp) still load everywhere.
+    virtual std::vector<std::string> ListRomsSubfolder(const std::string & /*subfolder*/) const { return {}; }
 
     // 0-100 device battery level, -1 if unavailable.
     virtual int GetBatteryPercent() const = 0;
