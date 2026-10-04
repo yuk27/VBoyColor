@@ -295,7 +295,8 @@ map cells and fills ~0.2-0.35 ms per eye. Output is otherwise identical.
 pixel after the per-pixel records (version 1 files from older captures still
 import, just without cell colors or fills), and the palette block
 (`VBGOPAL2`) adds the game's brightness level; newer captures follow it
-with what every pixel showed (`VBGOSHW1`, RGB at 1x). `.vbcp` version 3 adds the
+with what every pixel showed (`VBGOSHW1`, RGB at 1x); character sheets add a
+figure id per pixel (`VBGOFIG1`, 16 bit). `.vbcp` version 3 adds the
 palette and map cell colors and the reference brightness, optionally followed
 by the per-character colors (`VBGOCTX1`, then `VBGOCTXL` marking the
 background figures' ones - older builds skip both); older packs load as
@@ -313,7 +314,13 @@ Mario's Tennis straight from the ROM, which keeps nearly all of its graphics
 compressed: it decodes every character's animation frames, the screens and
 every tile set into an overview plus paint sheets (tile sheets - they fill in
 what the screen paintings don't), drawing whatever the game's `.vbcp`
-already colors in its colors so what's left stands out.
+already colors in its colors so what's left stands out. It also writes one
+**character sheet** per player ("character sheets/"): every animation frame
+the pack doesn't fully color yet, near and far court, in the shades the court
+shows them. Each frame on it counts as a figure of its own - as if each had
+been captured on a screen by itself - and the frames of one sheet are one
+character, so the colors painted there stay that character's even on tiles
+the players share (`--characters-only` writes just these).
 
 ## Credits
 

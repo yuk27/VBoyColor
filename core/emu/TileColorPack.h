@@ -177,6 +177,12 @@ public:
     // vote (a stray color from another object that happened to show doesn't
     // get painted in for good).
     static void AppendSidecarShown(std::vector<uint8_t> &sidecar, const uint8_t *rgb, size_t pixels);
+    // Another optional block: "VBGOFIG1" + a figure id per pixel (uint16, 0 =
+    // none) - a sheet of separate figures (tools/export_sprite_map.py's
+    // character sheets: every animation frame of one character side by side).
+    // Each id is one object, as if every figure had been captured on a
+    // screen of its own, and the sheet votes like a screen painting whatever
+    // its size.
 
     // The game's usual brightness level (0-63) in the screen paintings: the
     // painted colors are what the painter wants to see at that brightness,
@@ -208,6 +214,8 @@ private:
     // object's index in Vote::extra.
     std::vector<std::vector<uint32_t>> m_objectTiles;
     std::vector<uint8_t> m_objectIsFigure; // per object: a background figure (not a sprite)
+    std::vector<int32_t> m_objectFamily;   // per object: its figure sheet (one character's frames), or -1
+    int32_t m_families = 0;
     std::unordered_set<uint32_t> m_looseTiles; // background tiles seen outside figures
     std::vector<Vote> m_contextVotes;
     std::unordered_map<uint32_t, std::array<uint8_t, 64>> m_tileShades; // their tiles' pixel values (1-3; 0xFF unknown)

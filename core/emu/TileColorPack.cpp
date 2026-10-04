@@ -16,6 +16,7 @@ namespace
     constexpr char kPaletteMagicV1[8] = {'V', 'B', 'G', 'O', 'P', 'A', 'L', '1'};
     constexpr char kPaletteMagic[8] = {'V', 'B', 'G', 'O', 'P', 'A', 'L', '2'}; // + the brightness level
     constexpr char kShownMagic[8] = {'V', 'B', 'G', 'O', 'S', 'H', 'W', '1'};   // + RGB per pixel, as captured
+    constexpr char kFiguresMagic[8] = {'V', 'B', 'G', 'O', 'F', 'I', 'G', '1'}; // + figure id per pixel (uint16)
     constexpr char kContextMagic[8] = {'V', 'B', 'G', 'O', 'C', 'T', 'X', '1'}; // context variants, after the v3 pack
     constexpr char kLayerBoundMagic[8] = {'V', 'B', 'G', 'O', 'C', 'T', 'X', 'L'}; // which of them are layer-bound, after that
 
@@ -111,6 +112,8 @@ void TileColorPack::Clear()
     m_contextLayerBound = 0;
     m_objectTiles.clear();
     m_objectIsFigure.clear();
+    m_objectFamily.clear();
+    m_families = 0;
     m_looseTiles.clear();
     m_contextVotes.clear();
     m_tileShades.clear();
@@ -182,7 +185,6 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
         ++stats.rejected;
         return false;
     }
-    const bool sheet = !(w == VBGO_TT_WIDTH && h == VBGO_TT_HEIGHT);
     const uint8_t *cells = v2 ? &sidecar[headerSize + count * 8] : nullptr;
 
     // The colors the capture showed (palette block after the tile
@@ -190,11 +192,17 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
     // left unpainted, and so was a transparent one still in the background color.
     uint8_t shown[4][3];
     std::memcpy(shown, kDefaultCapturePalette, sizeof(shown));
-    // And, in newer captures, exactly what each pixel showed - pack colors
-    // included (captures show what the pack already colors, so painting can
-    // carry on from there): a pixel still showing it was left alone, and
-    // doesn't vote - a stray color the pack showed then isn't painted in again.
+    // Optional blocks after the palette, in any order:
+    //  - what each pixel showed - pack colors included (captures show what
+    //    the pack already colors, so painting can carry on from there): a
+    //    pixel still showing it was left alone, and doesn't vote - a stray
+    //    color the pack showed then isn't painted in again;
+    //  - figure ids: a sheet of separate figures (one character's animation
+    //    frames side by side), each one an object of its own - as if every
+    //    figure had been painted on a screen of its own.
     const uint8_t *shownPixels = nullptr;
+    const uint8_t *figureIds = nullptr;
+    int level = -1;
     size_t offset = headerSize + count * (v2 ? 12 : 8);
     if (sidecar.size() >= offset + 4)
     {
@@ -213,13 +221,30 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
                                std::memcmp(&sidecar[offset], kPaletteMagicV1, 8) == 0;
         if (v2Palette || v1Palette)
             std::memcpy(shown, &sidecar[offset + 8], sizeof(shown));
-        if (v2Palette && !sheet && sidecar[offset + 20] <= 63)
-            m_paintingLevels.push_back(sidecar[offset + 20]);
+        if (v2Palette)
+            level = sidecar[offset + 20];
         offset += v2Palette ? 8 + 13 : v1Palette ? 8 + 12 : 0;
-        if ((v2Palette || v1Palette) && sidecar.size() >= offset + 8 + count * 3 &&
-            std::memcmp(&sidecar[offset], kShownMagic, 8) == 0)
-            shownPixels = &sidecar[offset + 8];
+        while ((v2Palette || v1Palette) && sidecar.size() >= offset + 8)
+        {
+            if (std::memcmp(&sidecar[offset], kShownMagic, 8) == 0 && sidecar.size() >= offset + 8 + count * 3)
+            {
+                shownPixels = &sidecar[offset + 8];
+                offset += 8 + count * 3;
+            }
+            else if (std::memcmp(&sidecar[offset], kFiguresMagic, 8) == 0 && sidecar.size() >= offset + 8 + count * 2)
+            {
+                figureIds = &sidecar[offset + 8];
+                offset += 8 + count * 2;
+            }
+            else
+                break;
+        }
     }
+    // A figure sheet votes like a screen painting, whatever its size; any
+    // other painting that isn't exactly a screen is a tile sheet (fills in).
+    const bool sheet = !figureIds && !(w == VBGO_TT_WIDTH && h == VBGO_TT_HEIGHT);
+    if (!sheet && !figureIds && level >= 0 && level <= 63)
+        m_paintingLevels.push_back(static_cast<uint8_t>(level));
     constexpr int kSameColor = 24;  // |dR|+|dG|+|dB| still counted as the capture's own color
     constexpr int kMagentaReach = 40;
     static const uint8_t kMagenta[3] = {255, 0, 255};
@@ -232,7 +257,43 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
     // which share their solid tiles with every other player).
     constexpr size_t kMaxObjectPixels = 4096, kMaxObjectTiles = 96, kMinFigurePixels = 16;
     std::vector<int32_t> object;
-    if (!sheet)
+    if (figureIds)
+    {
+        std::unordered_map<uint16_t, int32_t> idOf;
+        std::vector<std::vector<uint32_t>> figureTiles;
+        std::vector<bool> figureBg;
+        object.assign(count, -1);
+        for (size_t i = 0; i < count; ++i)
+        {
+            const uint16_t id = static_cast<uint16_t>(figureIds[i * 2] | (figureIds[i * 2 + 1] << 8));
+            const uint64_t t = ReadLe64(&sidecar[headerSize + i * 8]);
+            if (id == 0 || !VBGO_TT_VALID(t) || VBGO_TT_PIXEL(t) == 0)
+                continue;
+            const auto it = idOf.emplace(id, static_cast<int32_t>(figureTiles.size())).first;
+            if (it->second == static_cast<int32_t>(figureTiles.size()))
+            {
+                figureTiles.emplace_back();
+                figureBg.push_back(!VBGO_TT_IS_OBJ(t));
+            }
+            figureTiles[it->second].push_back(VBGO_TT_HASH(t));
+            object[i] = it->second; // made global below
+        }
+        const int32_t first = static_cast<int32_t>(m_objectTiles.size());
+        const int32_t family = m_families++; // one character's frames: one family
+        for (size_t k = 0; k < figureTiles.size(); ++k)
+        {
+            std::vector<uint32_t> &tiles = figureTiles[k];
+            std::sort(tiles.begin(), tiles.end());
+            tiles.erase(std::unique(tiles.begin(), tiles.end()), tiles.end());
+            m_objectTiles.push_back(std::move(tiles));
+            m_objectIsFigure.push_back(figureBg[k]);
+            m_objectFamily.push_back(family);
+        }
+        for (int32_t &o : object)
+            if (o >= 0)
+                o += first;
+    }
+    else if (!sheet)
     {
         std::vector<int32_t> parent(count, -1);
         std::vector<uint8_t> layerOf(count, 0xFF); // world; +32 for background pixels
@@ -311,6 +372,7 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
             const int32_t id = static_cast<int32_t>(m_objectTiles.size());
             m_objectTiles.push_back(std::move(tiles));
             m_objectIsFigure.push_back(layer >= 32);
+            m_objectFamily.push_back(-1);
             for (const size_t i : group.second)
                 object[i] = id;
         }
@@ -455,6 +517,7 @@ void TileColorPack::ResolveContexts(ImportStats &stats)
         size_t pixels;
         uint64_t painted = 0; // pixels the objects showed
         bool figures = false; // only background figures paint it so (their markers count on their own layer)
+        int32_t family = -1;  // all its objects are frames of one figure sheet's character
     };
     std::vector<Pending> pending;
     const size_t total = m_contextVotes.size();
@@ -581,6 +644,10 @@ void TileColorPack::ResolveContexts(ImportStats &stats)
                 // The objects' colors (their majority per pixel), the tile's own elsewhere.
                 Pending p{hash, std::move(markers), *base, 0, 0};
                 p.figures = figures;
+                p.family = m_objectFamily[objects[clusters[c][0]].id];
+                for (const size_t a : clusters[c])
+                    if (m_objectFamily[objects[a].id] != p.family)
+                        p.family = -1;
                 for (unsigned px = 0; px < 64; ++px)
                 {
                     std::vector<uint32_t> colors;
@@ -655,6 +722,21 @@ void TileColorPack::ResolveContexts(ImportStats &stats)
             const auto it = firstWith.emplace(static_cast<uint64_t>(m) | (static_cast<uint64_t>(pending[i].figures) << 32), i).first;
             parent[root(i)] = root(it->second);
         }
+    // A figure sheet's character is one object too: its frames' variants go
+    // together (all its markers switch its colors on) - except a tile it
+    // paints two ways (a shirt's white and a cap's red on one solid tile),
+    // whose second way stays with the frames showing it.
+    std::unordered_map<uint64_t, size_t> familyGroup; // (family, nth variant of a tile in it) -> first variant
+    std::unordered_map<uint64_t, uint32_t> seenInFamily; // (family, tile) -> variants so far
+    for (size_t i = 0; i < pending.size(); ++i)
+    {
+        if (pending[i].family < 0)
+            continue;
+        const uint64_t fam = static_cast<uint64_t>(pending[i].family);
+        const uint32_t nth = seenInFamily[fam << 32 | pending[i].hash]++;
+        const auto it = familyGroup.emplace(fam << 32 | nth, i).first;
+        parent[root(i)] = root(it->second);
+    }
     std::unordered_map<size_t, std::pair<size_t, size_t>> groups; // root -> (pixels, group index)
     for (size_t i = 0; i < pending.size(); ++i)
         groups[root(i)].first += pending[i].pixels;
@@ -944,6 +1026,8 @@ void TileColorPack::FinishImport(ImportStats &stats)
     m_contextVotes.clear();
     m_objectTiles.clear();
     m_objectIsFigure.clear();
+    m_objectFamily.clear();
+    m_families = 0;
     m_looseTiles.clear();
     m_tileShades.clear();
     m_contextVotes.shrink_to_fit();

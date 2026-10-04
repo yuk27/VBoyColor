@@ -219,9 +219,10 @@ class PackColors:
         return rgb, colored
 
 
-def record(h, sub_x, sub_y, obj, pixel, char):
+def record(h, sub_x, sub_y, obj, pixel, char, world=0, palette=0):
     """One 64-bit entry of a .tiles file (field layout: core/emu/vbgo_tiletrack.h)."""
-    return (h | sub_x << 32 | sub_y << 35 | obj << 40 | pixel << 41 | (char & 0x7FF) << 48 | 1 << 63)
+    return (h | sub_x << 32 | sub_y << 35 | (palette & 3) << 38 | obj << 40 | pixel << 41 | (world & 31) << 43 |
+            (char & 0x7FF) << 48 | 1 << 63)
 
 
 class Item:
@@ -556,6 +557,117 @@ def write_sheet(path_png, placed, scale, colors):
     return set(used), (colored, int((pix > 0).sum()))
 
 
+# ---------------------------------------------------------------- character sheets
+
+# Where the game draws its players: backgrounds on these layers (the far
+# player on 26, the near one on 21 or 22), in palette 0, which the game sets
+# up inverted - value 1 is the lightest shade, 3 the darkest.
+NEAR_WORLD, FAR_WORLD, PLAYER_PALETTE = 21, 26, 0
+SHOWN_ORDER = np.array([0, 3, 2, 1], np.uint8)
+SHOWN_MAGIC = b"VBGOSHW1"
+FIGURES_MAGIC = b"VBGOFIG1"
+
+
+def as_player(item, world):
+    """The item's records as the game draws a player: background, on `world`, palette 0."""
+    rec = item.rec.copy()
+    valid = (rec >> np.uint64(63)) & np.uint64(1) == 1
+    keep = ~((np.uint64(1) << np.uint64(40)) | (np.uint64(31) << np.uint64(43)) | (np.uint64(3) << np.uint64(38)))
+    rec[valid] = (rec[valid] & keep) | (np.uint64(world) << np.uint64(43)) | (np.uint64(PLAYER_PALETTE) << np.uint64(38))
+    return Item(item.pix, rec, item.label)
+
+
+def uncolored_pixels(item, colors):
+    if not colors.tiles:
+        return int((item.pix > 0).sum())
+    n = 0
+    ys, xs = np.nonzero(item.pix)
+    for y, x in zip(ys.tolist(), xs.tolist()):
+        r = int(item.rec[y, x])
+        tile = colors.tiles.get(r & 0xFFFFFFFF)
+        i = ((r >> 35) & 7) * 8 + ((r >> 32) & 7)
+        if tile is None or not (tile[0] >> i & 1):
+            n += 1
+    return n
+
+
+def write_character_sheet(path_png, name, near, far, colors, scale, min_uncolored=12):
+    """One paint sheet per character: every animation frame the pack doesn't
+    fully color yet (near court, then far court), each one a figure of its own
+    (VBGOFIG1 - the importer treats each as if it had been captured on a
+    screen of its own, so the character's colors stay its own on tiles other
+    characters share). Shades are shown as the game shows them on the court;
+    what the pack already colors is drawn in its colors, and the sidecar
+    records exactly what was shown (VBGOSHW1), so pixels left as they are
+    don't count as painted. Returns (frames on the sheet, frames in all)."""
+    sections = []
+    for title, items, world in (("near court", near, NEAR_WORLD), ("far court", far, FAR_WORLD)):
+        todo = [as_player(it, world) for it in dedupe(items) if uncolored_pixels(it, colors) >= min_uncolored]
+        if todo:
+            sections.append((title, todo))
+    if not sections:
+        return 0, len(near) + len(far)
+    width, gap, label_h, head_h = 640, 6, 8, 14
+    for _, todo in sections:   # room for each frame's number under it
+        for it in todo:
+            it.pix = np.pad(it.pix, ((0, label_h), (0, 0)))
+            it.rec = np.pad(it.rec, ((0, label_h), (0, 0)))
+    layout, y = [], 4
+    for title, todo in sections:
+        (placed, height), = pack(todo, width - 8, gap)
+        layout.append((title, y, [(it, x + 4, y + head_h + yy) for it, x, yy in placed]))
+        y += head_h + height + 12
+    h = y
+    pix = np.zeros((h, width), np.uint8)
+    rec = np.zeros((h, width), np.uint64)
+    fig = np.zeros((h, width), np.uint16)
+    n = 0
+    for _, _, placed in layout:
+        for it, x, yy in placed:
+            n += 1
+            m = it.pix > 0
+            pix[yy:yy + it.h, x:x + it.w][m] = it.pix[m]
+            rec[yy:yy + it.h, x:x + it.w][m] = it.rec[m]
+            fig[yy:yy + it.h, x:x + it.w][m] = n
+    shown = PALETTE[SHOWN_ORDER[pix]]
+    if colors.tiles:
+        ys, xs = np.nonzero(pix)
+        for y_, x_ in zip(ys.tolist(), xs.tolist()):
+            r = int(rec[y_, x_])
+            tile = colors.tiles.get(r & 0xFFFFFFFF)
+            i = ((r >> 35) & 7) * 8 + ((r >> 32) & 7)
+            if tile is not None and tile[0] >> i & 1:
+                shown[y_, x_] = tile[1][i]
+    img = Image.fromarray(shown).resize((width * scale, h * scale), Image.NEAREST)
+    draw = ImageDraw.Draw(img)
+    big, small = font(8 * scale), font(5 * scale)
+    draw.text((4 * scale, 2 * scale), name, fill=(255, 200, 120), font=big)
+    for title, y0, placed in layout:
+        draw.text((80 * scale, y0 * scale), title, fill=(255, 200, 120), font=small)
+        for it, x, yy in placed:
+            draw.text((x * scale, (yy + it.h - label_h + 1) * scale), it.label.split()[-1], fill=(150, 150, 150), font=small)
+    img.save(path_png)
+
+    used = {}
+    for _, _, placed in layout:
+        for it, _, _ in placed:
+            for t in it.tile_hashes():
+                used[t] = None
+    for tile16, (_, th) in TILES.cache.items():
+        if th in used and used[th] is None:
+            used[th] = tile16
+    dictionary = b"".join(struct.pack("<I", th) + t16 for th, t16 in used.items() if t16 is not None)
+    count = sum(1 for t16 in used.values() if t16 is not None)
+    with open(path_png.with_suffix(".tiles"), "wb") as f:
+        f.write(SIDECAR_MAGIC + struct.pack("<II", width, h))
+        f.write(rec.astype("<u8").tobytes())
+        f.write(struct.pack("<I", count) + dictionary)
+        f.write(PALETTE_MAGIC + PALETTE.tobytes() + bytes([255]))
+        f.write(SHOWN_MAGIC + np.ascontiguousarray(shown).tobytes())
+        f.write(FIGURES_MAGIC + fig.astype("<u2").tobytes())
+    return n, len(dedupe(near)) + len(dedupe(far))
+
+
 def font(size):
     for name in ("DejaVuSans-Bold.ttf", "arialbd.ttf", "Arial Bold.ttf"):
         try:
@@ -573,6 +685,8 @@ def main():
     ap.add_argument("--overview-scale", type=int, default=2, help="sprite map upscale (default 2)")
     ap.add_argument("--pack", help='color pack to pre-color with (default: "<rom>.vbcp" if it exists)')
     ap.add_argument("--no-pack", action="store_true", help="draw everything in the plain palette")
+    ap.add_argument("--characters-only", action="store_true",
+                    help="only write the character sheets (one per character, what the pack doesn't color yet)")
     args = ap.parse_args()
 
     rom_path = Path(args.rom)
@@ -594,6 +708,16 @@ def main():
 
     print("Decoding characters...")
     chars = characters(rom)
+
+    # ---- character sheets: one per character, only the frames still to paint
+    char_dir = out / "character sheets"
+    char_dir.mkdir(parents=True, exist_ok=True)
+    for name, near, far in chars:
+        n, total = write_character_sheet(char_dir / ("%s %s - to paint.png" % (game, name)), name, near, far,
+                                         colors, args.scale)
+        print("%s: %d of %d frames still to paint" % (name, n, total))
+    if args.characters_only:
+        return
     print("Decoding screens...")
     scr = screens(rom)
     sets = tile_sets(rom)
