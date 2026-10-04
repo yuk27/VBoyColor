@@ -126,12 +126,27 @@ function(vbgo_generate_patched_vip VB_CORE_DIR OUT_DIR)
         "vip.c (VIP_Write16 framebuffer store)")
 
     # ---- 2. Tile tracking hooks: vip_draw.inc ---------------------------------
-    # Background maps: while tracking, route every pixel through the per-pixel
-    # path (which knows the in-tile x) instead of the unrolled 8-pixel one.
+    # Background maps: the unrolled 8-pixel path (a whole character row at
+    # once) tags its 8 pixels afterwards - pixel k shows in-tile x k, or 7 - k
+    # when the character is flipped horizontally.
     _vbgo_replace_once(DRAW
-        [=[  if(!(SourceX & 7) && (x + 7) <= final_x)]=]
-        [=[  if(!vbgo_tt_on && !(SourceX & 7) && (x + 7) <= final_x) /* VirtualBoyGo: per-pixel path while tile tracking */]=]
-        "vip_draw.inc (DrawBG fast path)")
+        [=[   x += 7;
+   SourceX += 8;]=]
+        [=[   if(vbgo_tt_on) /* VirtualBoyGo */
+   {
+    unsigned int k;
+    for(k = 0; k < 8; k++)
+    {
+     const unsigned int sub_x = (bgsc & 0x2000) ? 7 - k : k;
+     const unsigned int pv = (pixels >> (sub_x * 2)) & 3;
+     if(pv)
+      VBGO_TT_TAG(&target[x + k], char_no, sub_x, char_sub_y, palette_selector, 0, pv);
+    }
+   }
+
+   x += 7;
+   SourceX += 8;]=]
+        "vip_draw.inc (DrawBG 8-pixel path)")
     _vbgo_replace_once(DRAW
         [=[   if(pixel)
     target[x] = GPLT_Cache[palette_selector][pixel];

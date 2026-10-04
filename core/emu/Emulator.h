@@ -3,9 +3,11 @@
 #include "emu/AudioOutput.h"
 #include "emu/ShadeColorizer.h"
 #include "emu/TileColorPack.h"
+#include "emu/UncoloredCollector.h"
 #include "gfx/UiRenderer.h"
 #include "io/Platform.h"
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -196,6 +198,14 @@ public:
     void SetColorPackEnabled(bool enabled);
     bool IsColorPackEnabled() const { return m_colorPackEnabled; }
 
+    // While on, every frame's not-yet-colored objects (whatever the pack
+    // doesn't cover) are collected (see UncoloredCollector.h); turning it off
+    // writes them to captures/ as paint-ready sheets, "<rom> todo NNN.png" +
+    // ".tiles" - painted copies import like any other painting. Enables
+    // tracking. Returns a one-line summary.
+    std::string SetCollectingUncolored(bool enabled);
+    bool IsCollectingUncolored() const { return m_collecting; }
+
     // UI slots are 0-9 (10 total, matching FrontendGo's saveStates[10]) -
     // slot 0 is unsuffixed on disk, same as FrontendGo's slot 0 (see
     // StateFilePath). Raw retro_serialize dump, binary-compatible with
@@ -233,6 +243,13 @@ private:
     void UploadFrame();
     void PaintTileDebugView();
     void PaintColorPack();
+    // Next free "<rom><infix> NNN" in captures/.
+    std::string NextCaptureName(const char *infix) const;
+    // Writes captures/<base>.png (3x upscale of rgb, 384x224 RGB) and
+    // captures/<base>.tiles (the tile records, 384x224, plus every tile's rows).
+    bool WriteCapture(const std::string &base, const uint8_t *rgb, const uint64_t *tiles);
+    // The 4 colors uncolored pixels are shown in (Multicolor palette, else gray).
+    std::array<std::array<uint8_t, 3>, 4> CapturePalette() const;
 
     // Cart battery-save, matches FrontendGo's <romDir>/<stem>.srm. Must run
     // before retro_unload_game() - the SRAM pointer isn't valid after.
@@ -285,6 +302,8 @@ private:
     bool m_tileDebugView = false; // see SetTileDebugView
     TileColorPack m_colorPack;    // see ReloadColorPack
     bool m_colorPackEnabled = true;
+    UncoloredCollector m_collector; // see SetCollectingUncolored
+    bool m_collecting = false;
     ShadeRgb m_shadeBackground{0.0f, 0.0f, 0.0f}; // active Multicolor palette's background - painted tiles fade toward it
 
     // Plays whatever the audio_sample_batch callback forwards to it - see

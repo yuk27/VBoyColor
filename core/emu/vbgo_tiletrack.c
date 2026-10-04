@@ -121,13 +121,15 @@ void vbgo_tiletrack_end_block(unsigned fb, unsigned block_no)
       return;
    for (lr = 0; lr < 2; lr++)
    {
-      uint64_t *dst = s_fb[fb & 1][lr];
-      for (row = 0; row < 8; row++)
+      /* Column-major like the VB's framebuffer: a column's 8 rows of this
+       * block are 64 contiguous bytes, so go column by column. */
+      const uint32_t *src = &vbgo_tt_block[lr * 4096 + 8];
+      for (x = 0; x < 384; x++)
       {
-         const uint32_t *src = &vbgo_tt_block[lr * 4096 + row * 512 + 8];
-         for (x = 0; x < 384; x++)
+         uint64_t *dst = &s_fb[fb & 1][lr][x * 256 + block_no * 8];
+         for (row = 0; row < 8; row++)
          {
-            const uint32_t v = src[x];
+            const uint32_t v = src[row * 512 + x];
             uint64_t out = 0;
             if (v >> 31)
             {
@@ -148,7 +150,7 @@ void vbgo_tiletrack_end_block(unsigned fb, unsigned block_no)
                    | ((uint64_t)chr << 48)
                    | ((uint64_t)1 << 63);
             }
-            dst[x * 256 + block_no * 8 + row] = out;
+            dst[row] = out;
          }
       }
    }

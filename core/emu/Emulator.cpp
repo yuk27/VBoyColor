@@ -192,6 +192,14 @@ bool Emulator::LoadRom(const std::string &romPath, const std::string &displayNam
 
     if (m_romLoaded)
     {
+        // Uncolored objects collected so far belong to the outgoing ROM -
+        // save them as its sheets, then keep collecting for the new one.
+        if (m_collecting)
+        {
+            std::fprintf(stderr, "[Emulator] %s\n", SetCollectingUncolored(false).c_str());
+            m_collecting = true;
+        }
+        m_collector.Reset();
         // Must flush the outgoing ROM's SRAM before unloading - the core's
         // SRAM pointer isn't valid once the game is unloaded.
         SaveRam();
@@ -258,6 +266,8 @@ void Emulator::RunFrame(float deltaSeconds)
     {
         std::memcpy(m_rawFrame.data(), g_pendingFrame, m_rawFrame.size());
         m_hasFrame = true;
+        if (m_collecting && vbgo_tiletrack_is_enabled())
+            m_collector.AddFrame(vbgo_tiletrack_frame(), m_rawFrame.data(), kFbWidth, m_colorPack, CapturePalette());
         UploadFrame();
         m_lastFrameWidth = g_pendingWidth > 0 ? g_pendingWidth : kSideBySideWidth;
         m_lastFrameHeight = g_pendingHeight > 0 ? g_pendingHeight : kSideBySideHeight;
@@ -508,63 +518,43 @@ void Emulator::SetColorPackEnabled(bool enabled)
         UploadFrame();
 }
 
-std::string Emulator::CaptureTileReference()
+std::string Emulator::NextCaptureName(const char *infix) const
 {
-    if (!m_romLoaded || !m_hasFrame || !vbgo_tiletrack_is_enabled())
-        return "";
-
-    // Next free "<rom> NNN" in captures/.
-    std::string base;
     for (int n = 1; n < 1000; ++n)
     {
-        char suffix[8];
+        char suffix[16];
         std::snprintf(suffix, sizeof(suffix), " %03d", n);
-        base = m_romBaseName + suffix;
+        const std::string base = m_romBaseName + infix + suffix;
         if (!m_platform->RomsFileExists("captures/" + base + ".tiles", false))
-            break;
+            return base;
     }
+    return m_romBaseName + infix + " 999";
+}
 
-    // Left eye, 3x upscaled, in the active Multicolor palette (easier to
-    // tell objects apart while painting - e.g. Ember), or the core's
-    // grayscale otherwise. Only pixel positions matter when reading a
-    // painted copy back, so the palette is purely a painting aid. Never the
-    // tile debug view's colors.
+bool Emulator::WriteCapture(const std::string &base, const uint8_t *rgb, const uint64_t *tiles)
+{
+    // 3x nearest-neighbor upscale, so single pixels are easy to hit with a brush.
     constexpr int kUp = 3;
     const int w = VBGO_TT_WIDTH * kUp, h = VBGO_TT_HEIGHT * kUp;
-    // What's on screen - including color-pack colors, so a capture can be
-    // painted further from where the pack left off - except the debug view.
-    std::vector<uint8_t> source(m_rawFrame.size());
-    if (!m_tileDebugView)
-        source = m_frameBufferRgba;
-    else if (m_shadePaletteIndex >= 0)
-        m_shadeColorizer.Colorize(m_rawFrame.data(), source.data(), m_rawFrame.size() / 4);
-    else
-        source = m_rawFrame;
-    std::vector<uint8_t> rgb(static_cast<size_t>(w) * h * 3);
+    std::vector<uint8_t> up(static_cast<size_t>(w) * h * 3);
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x)
-        {
-            const uint8_t *src = &source[(static_cast<size_t>(y / kUp) * kFbWidth + x / kUp) * 4];
-            uint8_t *dst = &rgb[(static_cast<size_t>(y) * w + x) * 3];
-            dst[0] = src[2];
-            dst[1] = src[1];
-            dst[2] = src[0];
-        }
+            std::memcpy(&up[(static_cast<size_t>(y) * w + x) * 3],
+                        &rgb[(static_cast<size_t>(y / kUp) * VBGO_TT_WIDTH + x / kUp) * 3], 3);
     std::vector<uint8_t> png;
     stbi_write_png_to_func([](void *ctx, void *data, int size)
                            {
                                auto *out = static_cast<std::vector<uint8_t> *>(ctx);
                                out->insert(out->end(), static_cast<uint8_t *>(data), static_cast<uint8_t *>(data) + size);
                            },
-                           &png, w, h, 3, rgb.data(), w * 3);
+                           &png, w, h, 3, up.data(), w * 3);
 
-    // Sidecar: "VBGOTIL1", width, height, one 64-bit tile entry per left-eye
-    // pixel (see vbgo_tiletrack.h for the fields), then every tile used:
-    // count, (hash, 8 rows of 2bpp pixels) each.
+    // Sidecar: "VBGOTIL1", width, height, one 64-bit tile entry per pixel
+    // (see vbgo_tiletrack.h for the fields), then every tile used: count,
+    // (hash, 8 rows of 2bpp pixels) each.
     std::vector<uint8_t> sidecar = {'V', 'B', 'G', 'O', 'T', 'I', 'L', '1'};
     AppendLe32(sidecar, VBGO_TT_WIDTH);
     AppendLe32(sidecar, VBGO_TT_HEIGHT);
-    const uint64_t *tiles = vbgo_tiletrack_frame();
     std::unordered_map<uint32_t, bool> used;
     for (int i = 0; i < VBGO_TT_EYE_PIXELS; ++i)
     {
@@ -591,12 +581,97 @@ std::string Emulator::CaptureTileReference()
     AppendLe32(sidecar, count);
     sidecar.insert(sidecar.end(), dictionary.begin(), dictionary.end());
 
-    if (png.empty() ||
-        !m_platform->WriteRomsFile("captures/" + base + ".png", false, png.data(), png.size()) ||
-        !m_platform->WriteRomsFile("captures/" + base + ".tiles", false, sidecar.data(), sidecar.size()))
+    return !png.empty() && m_platform->WriteRomsFile("captures/" + base + ".png", false, png.data(), png.size()) &&
+           m_platform->WriteRomsFile("captures/" + base + ".tiles", false, sidecar.data(), sidecar.size());
+}
+
+std::array<std::array<uint8_t, 3>, 4> Emulator::CapturePalette() const
+{
+    std::array<std::array<uint8_t, 3>, 4> palette{};
+    for (int i = 0; i < 4; ++i)
+    {
+        if (m_shadePaletteIndex >= 0)
+        {
+            const XrColor4f &c = kShadePalettes[m_shadePaletteIndex][i];
+            palette[i] = {static_cast<uint8_t>(c.r * 255.0f + 0.5f), static_cast<uint8_t>(c.g * 255.0f + 0.5f),
+                          static_cast<uint8_t>(c.b * 255.0f + 0.5f)};
+        }
+        else
+        {
+            const uint8_t gray = static_cast<uint8_t>(i * 85);
+            palette[i] = {gray, gray, gray};
+        }
+    }
+    return palette;
+}
+
+std::string Emulator::CaptureTileReference()
+{
+    if (!m_romLoaded || !m_hasFrame || !vbgo_tiletrack_is_enabled())
         return "";
-    std::fprintf(stderr, "[Emulator] Captured tile reference \"%s\" (%u tiles)\n", base.c_str(), count);
+
+    // Left eye, in the active Multicolor palette (easier to tell objects
+    // apart while painting - e.g. Ember), or the core's grayscale otherwise.
+    // Only pixel positions matter when reading a painted copy back, so the
+    // palette is purely a painting aid. What's on screen - including
+    // color-pack colors, so a capture can be painted further from where the
+    // pack left off - except the tile debug view's colors.
+    std::vector<uint8_t> source(m_rawFrame.size());
+    if (!m_tileDebugView)
+        source = m_frameBufferRgba;
+    else if (m_shadePaletteIndex >= 0)
+        m_shadeColorizer.Colorize(m_rawFrame.data(), source.data(), m_rawFrame.size() / 4);
+    else
+        source = m_rawFrame;
+    std::vector<uint8_t> rgb(static_cast<size_t>(VBGO_TT_EYE_PIXELS) * 3);
+    for (int y = 0; y < VBGO_TT_HEIGHT; ++y)
+        for (int x = 0; x < VBGO_TT_WIDTH; ++x)
+        {
+            const uint8_t *src = &source[(static_cast<size_t>(y) * kFbWidth + x) * 4];
+            uint8_t *dst = &rgb[(static_cast<size_t>(y) * VBGO_TT_WIDTH + x) * 3];
+            dst[0] = src[2];
+            dst[1] = src[1];
+            dst[2] = src[0];
+        }
+
+    const std::string base = NextCaptureName("");
+    if (!WriteCapture(base, rgb.data(), vbgo_tiletrack_frame()))
+        return "";
+    std::fprintf(stderr, "[Emulator] Captured tile reference \"%s\"\n", base.c_str());
     return base;
+}
+
+std::string Emulator::SetCollectingUncolored(bool enabled)
+{
+    if (enabled == m_collecting)
+        return m_collecting ? "Collecting uncolored objects" : "Not collecting";
+    m_collecting = enabled;
+    if (enabled)
+    {
+        vbgo_tiletrack_set_enabled(true);
+        return "Collecting uncolored objects - play, then switch it off to save paint sheets";
+    }
+    if (!m_romLoaded)
+        return "Stopped collecting";
+    const std::vector<UncoloredCollector::Sheet> sheets = m_collector.TakeSheets(CapturePalette()[0]);
+    std::string first, last;
+    int written = 0;
+    for (const UncoloredCollector::Sheet &sheet : sheets)
+    {
+        const std::string base = NextCaptureName(" todo");
+        if (!WriteCapture(base, sheet.rgb.data(), sheet.tiles.data()))
+            break;
+        (written ? last : first) = base;
+        ++written;
+    }
+    char summary[512];
+    if (written == 0)
+        std::snprintf(summary, sizeof(summary), "Stopped collecting - nothing new without colors%s",
+                      sheets.empty() ? "" : " (couldn't write captures/)");
+    else
+        std::snprintf(summary, sizeof(summary), "Saved %d paint sheet(s) to roms/captures/: \"%s\"%s%s", written,
+                      first.c_str(), written > 1 ? " to \"" : "", written > 1 ? (last + "\"").c_str() : "");
+    return summary;
 }
 
 void Emulator::DrawScreen(UiRenderer &ui, float x, float y, float w, float h, Eye eye, const XrColor4f &tint,
@@ -775,6 +850,8 @@ void Emulator::LoadRam()
 
 void Emulator::Shutdown()
 {
+    if (m_romLoaded && m_collecting) // don't lose what was collected
+        std::fprintf(stderr, "[Emulator] %s\n", SetCollectingUncolored(false).c_str());
     if (m_romLoaded)
         SaveRam();
     g_audioOutput = nullptr;

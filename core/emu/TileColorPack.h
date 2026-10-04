@@ -42,6 +42,15 @@ public:
     bool Empty() const { return m_tiles.empty(); }
     size_t TileCount() const { return m_tiles.size(); }
     const Tile *Find(uint32_t hash) const;
+    const std::unordered_map<uint32_t, Tile> &Tiles() const { return m_tiles; }
+
+    // True if that tile pixel has a color.
+    bool Has(uint32_t hash, unsigned index) const
+    {
+        const Tile *tile = Find(hash);
+        return tile && (tile->mask >> index & 1);
+    }
+    void Set(uint32_t hash, unsigned index, uint8_t r, uint8_t g, uint8_t b);
 
     // Import, step 1 (call per painting): pixels = 8-bit RGB/RGBA rows,
     // exactly an integer multiple (1x, 2x, 3x...) of the 384x224 VB screen,

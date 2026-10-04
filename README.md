@@ -214,11 +214,27 @@ enough on other platforms (copy it next to the ROM on the Quest). In the
 desktop build, **F11** re-imports after editing a painting and **F8** toggles
 the pack for comparison.
 
+**Finding what's still uncolored.** In the desktop build, **F7** starts
+collecting: play normally, and every object the pack doesn't color yet (a new
+enemy, another pose of a character, new scenery) is gathered once, cropped from
+the frame it appeared in. Press **F7** again (or switch ROMs / quit) to save
+them as compact paint sheets, `roms/captures/<rom name> todo NNN.png` plus
+`.tiles` - colored parts in their pack colors, the rest in the Multicolor
+palette. Paint the rest, drop the sheet into the pack folder like any other
+painting, and repeat until nothing new turns up. A whole new area is kept as a
+full screen instead of pieces, so it's easier to recognize.
+
+**Cost.** Tile tracking is only switched on for games that have a pack (or in
+the desktop debug build). On a 2.1 GHz desktop core it adds about 1.3 ms per
+emulated frame to the core's 1.8 ms, and painting the pack adds ~0.1 ms per
+eye; output is otherwise identical.
+
 A loose mockup that doesn't line up with a capture (different size, shifted,
 partly redrawn) can be turned into a painting with
 `tools/mockup_to_painting.py` (numpy + Pillow): it fits the mockup onto the
-capture's pixels, block by block, and writes a 3x painting to touch up and
-drop into the pack folder.
+capture's pixels layer by layer, gives every tile pixel the color it shows most
+often, and writes a 3x painting to touch up and drop into the pack folder. It's
+pixel-exact when the capture shows the same moment as the mockup.
 
 ## Credits
 

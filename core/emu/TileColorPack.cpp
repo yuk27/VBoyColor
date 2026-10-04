@@ -31,6 +31,15 @@ const TileColorPack::Tile *TileColorPack::Find(uint32_t hash) const
     return it == m_tiles.end() ? nullptr : &it->second;
 }
 
+void TileColorPack::Set(uint32_t hash, unsigned index, uint8_t r, uint8_t g, uint8_t b)
+{
+    Tile &tile = m_tiles[hash];
+    tile.mask |= 1ull << index;
+    tile.rgb[index][0] = r;
+    tile.rgb[index][1] = g;
+    tile.rgb[index][2] = b;
+}
+
 bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, int channels,
                                 const std::vector<uint8_t> &sidecar, ImportStats &stats)
 {
