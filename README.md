@@ -214,6 +214,12 @@ enough on other platforms (copy it next to the ROM on the Quest). In the
 desktop build, **F11** re-imports after editing a painting and **F8** toggles
 the pack for comparison.
 
+A loose mockup that doesn't line up with a capture (different size, shifted,
+partly redrawn) can be turned into a painting with
+`tools/mockup_to_painting.py` (numpy + Pillow): it fits the mockup onto the
+capture's pixels, block by block, and writes a 3x painting to touch up and
+drop into the pack folder.
+
 ## Credits
 
 - **Beetle VB** ([libretro/beetle-vb-libretro](https://github.com/libretro/beetle-vb-libretro)),
