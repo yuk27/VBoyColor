@@ -240,7 +240,13 @@ brims). When sprites painted differently share a tile, the importer finds
 tiles only one of them has (Skelton's skull - "markers"), and the shared tile
 takes that character's colors wherever one of its markers was drawn nearby in
 the last frame - so both can even stand side by side. Nothing to do: it comes
-from the paintings (a sprite is a connected group of sprite pixels).
+from the paintings (a sprite is a connected group of sprite pixels). A
+sprite's colors only ever go to sprites, never to a background drawn nearby
+(a dialog box behind them). Players a game draws as backgrounds (Mario's
+Tennis) count too: the one figure on a background layer that holds nothing
+else, away from the screen's sides - with markers that turn up nowhere but in
+its own frames, and that only count on the layer they're drawn on, so the
+portraits next to each other on a select screen keep their own colors.
 
 **Painting the background.** Transparent parts of background tiles can be
 painted too ("fills" - a court's surface between its speckles, a sky behind a
@@ -284,8 +290,9 @@ pixel after the per-pixel records (version 1 files from older captures still
 import, just without cell colors or fills), and the palette block
 (`VBGOPAL2`) adds the game's brightness level. `.vbcp` version 3 adds the
 palette and map cell colors and the reference brightness, optionally followed
-by the per-character colors (`VBGOCTX1`, which older builds skip); older packs
-load as before.
+by the per-character colors (`VBGOCTX1`, then `VBGOCTXL` marking the
+background figures' ones - older builds skip both); older packs load as
+before.
 
 A loose mockup that doesn't line up with a capture (different size, shifted,
 partly redrawn) can be turned into a painting with

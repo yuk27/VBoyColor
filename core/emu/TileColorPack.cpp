@@ -16,6 +16,7 @@ namespace
     constexpr char kPaletteMagicV1[8] = {'V', 'B', 'G', 'O', 'P', 'A', 'L', '1'};
     constexpr char kPaletteMagic[8] = {'V', 'B', 'G', 'O', 'P', 'A', 'L', '2'}; // + the brightness level
     constexpr char kContextMagic[8] = {'V', 'B', 'G', 'O', 'C', 'T', 'X', '1'}; // context variants, after the v3 pack
+    constexpr char kLayerBoundMagic[8] = {'V', 'B', 'G', 'O', 'C', 'T', 'X', 'L'}; // which of them are layer-bound, after that
 
     constexpr uint32_t kNoColor = 0x01000000;   // a magenta vote: leave uncolored
     constexpr uint32_t kBackground = 0x02000000; // a transparent pixel left as the background (fills only)
@@ -106,7 +107,10 @@ void TileColorPack::Clear()
     m_cellTiles.clear();
     m_contextGroups.clear();
     m_contextTiles.clear();
+    m_contextLayerBound = 0;
     m_objectTiles.clear();
+    m_objectIsFigure.clear();
+    m_looseTiles.clear();
     m_contextVotes.clear();
     m_tileShades.clear();
     m_votes.clear();
@@ -203,14 +207,17 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
     static const uint8_t kMagenta[3] = {255, 0, 255};
 
     // Objects (for context colors - see the header): connected drawn sprite
-    // pixels of one layer. Background tiles aren't - map cells already tell
-    // their spots apart (a heading's letters vs. the next heading's).
-    constexpr size_t kMaxObjectPixels = 4096, kMaxObjectTiles = 96;
+    // pixels of one layer. Background tiles mostly aren't - map cells already
+    // tell their spots apart (a heading's letters vs. the next heading's) -
+    // except a background layer that holds one figure and nothing else, clear
+    // of the screen's sides (the players Mario's Tennis draws as backgrounds,
+    // which share their solid tiles with every other player).
+    constexpr size_t kMaxObjectPixels = 4096, kMaxObjectTiles = 96, kMinFigurePixels = 16;
     std::vector<int32_t> object;
     if (!sheet)
     {
         std::vector<int32_t> parent(count, -1);
-        std::vector<uint8_t> layerOf(count, 0xFF);
+        std::vector<uint8_t> layerOf(count, 0xFF); // world; +32 for background pixels
         auto root = [&parent](int32_t i) {
             while (parent[i] != i)
                 i = parent[i] = parent[parent[i]];
@@ -219,9 +226,9 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
         for (size_t i = 0; i < count; ++i)
         {
             const uint64_t t = ReadLe64(&sidecar[headerSize + i * 8]);
-            if (VBGO_TT_VALID(t) && VBGO_TT_PIXEL(t) != 0 && VBGO_TT_IS_OBJ(t))
+            if (VBGO_TT_VALID(t) && VBGO_TT_PIXEL(t) != 0)
             {
-                layerOf[i] = static_cast<uint8_t>(VBGO_TT_WORLD(t));
+                layerOf[i] = static_cast<uint8_t>(VBGO_TT_WORLD(t) + (VBGO_TT_IS_OBJ(t) ? 0 : 32));
                 parent[i] = static_cast<int32_t>(i);
             }
         }
@@ -242,13 +249,38 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
                         parent[root(static_cast<int32_t>(j))] = root(static_cast<int32_t>(i));
                 }
             }
-        std::unordered_map<int32_t, std::vector<size_t>> members;
+        // Groups in screen order (their first pixel), so object numbers don't
+        // depend on hashing.
+        std::unordered_map<int32_t, size_t> groupOf;
+        std::vector<std::pair<int32_t, std::vector<size_t>>> members;
         for (size_t i = 0; i < count; ++i)
             if (parent[i] >= 0)
-                members[root(static_cast<int32_t>(i))].push_back(i);
+            {
+                const int32_t r = root(static_cast<int32_t>(i));
+                const auto it = groupOf.emplace(r, members.size()).first;
+                if (it->second == members.size())
+                    members.emplace_back(r, std::vector<size_t>());
+                members[it->second].second.push_back(i);
+            }
+        // Background layers holding a single figure, clear of the screen's sides.
+        size_t figures[32] = {};
+        bool atSide[32] = {};
+        for (const auto &group : members)
+        {
+            const uint8_t layer = layerOf[group.first];
+            if (layer < 32 || group.second.size() < kMinFigurePixels)
+                continue;
+            ++figures[layer - 32];
+            for (const size_t i : group.second)
+                if (i % w == 0 || i % w == w - 1 || i < w)
+                    atSide[layer - 32] = true;
+        }
         object.assign(count, -1);
         for (const auto &group : members)
         {
+            const uint8_t layer = layerOf[group.first];
+            if (layer >= 32 && (figures[layer - 32] != 1 || atSide[layer - 32] || group.second.size() < kMinFigurePixels))
+                continue;
             if (group.second.size() > kMaxObjectPixels)
                 continue;
             std::vector<uint32_t> tiles;
@@ -260,9 +292,16 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
                 continue;
             const int32_t id = static_cast<int32_t>(m_objectTiles.size());
             m_objectTiles.push_back(std::move(tiles));
+            m_objectIsFigure.push_back(layer >= 32);
             for (const size_t i : group.second)
                 object[i] = id;
         }
+        // Background tiles drawn outside figures: they can't tell a figure
+        // apart (a figure's tile that also turns up in the scenery or a row
+        // of portraits isn't one of its markers).
+        for (size_t i = 0; i < count; ++i)
+            if (layerOf[i] != 0xFF && layerOf[i] >= 32 && object[i] < 0)
+                m_looseTiles.insert(VBGO_TT_HASH(ReadLe64(&sidecar[headerSize + i * 8])));
     }
 
     // Sample the middle of each pixel's block.
@@ -362,6 +401,7 @@ void TileColorPack::ResolveContexts(ImportStats &stats)
     // the objects' own tiles that no other object with that tile has.
     m_contextGroups.clear();
     m_contextTiles.clear();
+    m_contextLayerBound = 0;
     if (m_contextVotes.empty() || m_objectTiles.empty())
         return;
     constexpr int kDiffers = 60; // |dR|+|dG|+|dB| that's another color, not just another brush shade
@@ -393,6 +433,7 @@ void TileColorPack::ResolveContexts(ImportStats &stats)
         Tile tile;
         size_t pixels;
         uint64_t painted = 0; // pixels the objects showed
+        bool figures = false; // only background figures paint it so (their markers count on their own layer)
     };
     std::vector<Pending> pending;
     const size_t total = m_contextVotes.size();
@@ -428,108 +469,149 @@ void TileColorPack::ResolveContexts(ImportStats &stats)
             objects.push_back(o);
         }
         run = end;
-        if (objects.size() < 2)
-            continue;
+        // Sprites and background figures apart: a figure's colors never come
+        // into play by a sprite's markers, nor a sprite's by a figure's.
+        const std::vector<Object> all = std::move(objects);
+        for (int kind = 0; kind < 2; ++kind)
+        {
+            const bool figures = kind == 1;
+            std::vector<Object> objects;
+            for (const Object &o : all)
+                if ((o.id < m_objectIsFigure.size() && m_objectIsFigure[o.id] != 0) == figures)
+                    objects.push_back(o);
+            if (objects.size() < 2)
+                continue;
 
-        // The objects that paint it otherwise, grouped by how.
-        std::vector<std::vector<size_t>> clusters;
-        std::vector<int> clusterOf(objects.size(), -1);
-        for (size_t a = 0; a < objects.size(); ++a)
-        {
-            const Object &o = objects[a];
-            if (o.differs < 3 || o.differs * 4 < o.painted)
-                continue;
-            for (size_t c = 0; c < clusters.size() && clusterOf[a] < 0; ++c)
-            {
-                const Object &r = objects[clusters[c][0]];
-                const uint64_t common = o.mask & r.mask;
-                size_t same = 0, n = 0;
-                for (unsigned px = 0; px < 64; ++px)
-                    if (common >> px & 1)
-                    {
-                        ++n;
-                        same += distance(o.rgb[px], r.rgb[px]) <= kDiffers;
-                    }
-                if (n && same * 4 >= n * 3)
-                {
-                    clusters[c].push_back(a);
-                    clusterOf[a] = static_cast<int>(c);
-                }
-            }
-            if (clusterOf[a] < 0)
-            {
-                clusterOf[a] = static_cast<int>(clusters.size());
-                clusters.push_back({a});
-            }
-        }
-        for (size_t c = 0; c < clusters.size(); ++c)
-        {
-            std::vector<uint32_t> others, markers;
+            // The objects that paint it otherwise, grouped by how.
+            std::vector<std::vector<size_t>> clusters;
+            std::vector<int> clusterOf(objects.size(), -1);
             for (size_t a = 0; a < objects.size(); ++a)
-                if (clusterOf[a] != static_cast<int>(c))
-                    others.insert(others.end(), m_objectTiles[objects[a].id].begin(), m_objectTiles[objects[a].id].end());
-            std::sort(others.begin(), others.end());
-            for (const size_t a : clusters[c])
-                for (const uint32_t m : m_objectTiles[objects[a].id])
-                    if (m != hash && !std::binary_search(others.begin(), others.end(), m))
-                        markers.push_back(m);
-            std::sort(markers.begin(), markers.end());
-            markers.erase(std::unique(markers.begin(), markers.end()), markers.end());
-            if (markers.empty())
-                continue;
-            // The objects' colors (their majority per pixel), the tile's own elsewhere.
-            Pending p{hash, std::move(markers), *base, 0, 0};
-            for (unsigned px = 0; px < 64; ++px)
             {
-                std::vector<uint32_t> colors;
-                for (const size_t a : clusters[c])
-                    if (objects[a].mask >> px & 1)
-                        colors.push_back(objects[a].rgb[px]);
-                if (colors.empty())
+                const Object &o = objects[a];
+                if (o.differs < 3 || o.differs * 4 < o.painted)
                     continue;
-                std::sort(colors.begin(), colors.end());
-                uint32_t best = colors[0];
-                size_t bestCount = 0;
-                for (size_t i = 0; i < colors.size();)
+                for (size_t c = 0; c < clusters.size() && clusterOf[a] < 0; ++c)
                 {
-                    size_t j = i;
-                    while (j < colors.size() && colors[j] == colors[i])
-                        ++j;
-                    if (j - i > bestCount)
-                        best = colors[i], bestCount = j - i;
-                    i = j;
+                    const Object &r = objects[clusters[c][0]];
+                    const uint64_t common = o.mask & r.mask;
+                    size_t same = 0, n = 0;
+                    for (unsigned px = 0; px < 64; ++px)
+                        if (common >> px & 1)
+                        {
+                            ++n;
+                            same += distance(o.rgb[px], r.rgb[px]) <= kDiffers;
+                        }
+                    if (n && same * 4 >= n * 3)
+                    {
+                        clusters[c].push_back(a);
+                        clusterOf[a] = static_cast<int>(c);
+                    }
                 }
-                Store(p.tile, px, best);
-                p.painted |= 1ull << px;
-                ++p.pixels;
+                if (clusterOf[a] < 0)
+                {
+                    clusterOf[a] = static_cast<int>(clusters.size());
+                    clusters.push_back({a});
+                }
             }
-            // Pixels these objects never showed (covered, cut off): the color
-            // they gave the same shade elsewhere in the tile, rather than the
-            // other objects' colors.
-            const auto shades = m_tileShades.find(hash);
-            if (shades != m_tileShades.end())
+            for (size_t c = 0; c < clusters.size(); ++c)
             {
-                auto shadeOf = [&shades](unsigned px) { return shades->second[px]; };
+                std::vector<uint32_t> others, markers;
+                for (size_t a = 0; a < objects.size(); ++a)
+                    if (clusterOf[a] != static_cast<int>(c))
+                        others.insert(others.end(), m_objectTiles[objects[a].id].begin(), m_objectTiles[objects[a].id].end());
+                std::sort(others.begin(), others.end());
+                for (const size_t a : clusters[c])
+                    for (const uint32_t m : m_objectTiles[objects[a].id])
+                        if (m != hash && !std::binary_search(others.begin(), others.end(), m))
+                            markers.push_back(m);
+                std::sort(markers.begin(), markers.end());
+                markers.erase(std::unique(markers.begin(), markers.end()), markers.end());
+                if (figures)
+                {
+                    // A figure's markers also mustn't turn up in the scenery, nor in
+                    // any other figure that isn't another frame of it (one sharing
+                    // less than a third of its tiles with the cluster's).
+                    std::vector<uint32_t> own;
+                    for (const size_t a : clusters[c])
+                        own.insert(own.end(), m_objectTiles[objects[a].id].begin(), m_objectTiles[objects[a].id].end());
+                    std::sort(own.begin(), own.end());
+                    own.erase(std::unique(own.begin(), own.end()), own.end());
+                    std::vector<uint32_t> foreign;
+                    for (size_t o = 0; o < m_objectTiles.size(); ++o)
+                    {
+                        if (!m_objectIsFigure[o])
+                            continue;
+                        const auto &tiles = m_objectTiles[o];
+                        size_t shared = 0;
+                        for (const uint32_t t : tiles)
+                            shared += std::binary_search(own.begin(), own.end(), t);
+                        if (shared * 3 < tiles.size())
+                            foreign.insert(foreign.end(), tiles.begin(), tiles.end());
+                    }
+                    std::sort(foreign.begin(), foreign.end());
+                    markers.erase(std::remove_if(markers.begin(), markers.end(),
+                                                 [this, &foreign](uint32_t m) {
+                                                     return m_looseTiles.count(m) != 0 || std::binary_search(foreign.begin(), foreign.end(), m);
+                                                 }),
+                                  markers.end());
+                }
+                if (markers.empty())
+                    continue;
+                // The objects' colors (their majority per pixel), the tile's own elsewhere.
+                Pending p{hash, std::move(markers), *base, 0, 0};
+                p.figures = figures;
                 for (unsigned px = 0; px < 64; ++px)
                 {
-                    if ((p.painted >> px & 1) || !(base->mask >> px & 1))
+                    std::vector<uint32_t> colors;
+                    for (const size_t a : clusters[c])
+                        if (objects[a].mask >> px & 1)
+                            colors.push_back(objects[a].rgb[px]);
+                    if (colors.empty())
                         continue;
-                    uint32_t counts[64] = {}, best = 64, bestCount = 0;
-                    for (unsigned q = 0; q < 64; ++q)
-                        if ((p.painted >> q & 1) && shadeOf(q) == shadeOf(px))
-                            for (unsigned r = 0; r <= q; ++r) // the first pixel with that color counts them
-                                if ((p.painted >> r & 1) && shadeOf(r) == shadeOf(px) &&
-                                    std::memcmp(p.tile.rgb[r], p.tile.rgb[q], 3) == 0)
-                                {
-                                    if (++counts[r] > bestCount)
-                                        best = r, bestCount = counts[r];
-                                    break;
-                                }
-                    if (best < 64)
-                        Store(p.tile, px, rgbOf(p.tile.rgb[best]));
+                    std::sort(colors.begin(), colors.end());
+                    uint32_t best = colors[0];
+                    size_t bestCount = 0;
+                    for (size_t i = 0; i < colors.size();)
+                    {
+                        size_t j = i;
+                        while (j < colors.size() && colors[j] == colors[i])
+                            ++j;
+                        if (j - i > bestCount)
+                            best = colors[i], bestCount = j - i;
+                        i = j;
+                    }
+                    Store(p.tile, px, best);
+                    p.painted |= 1ull << px;
+                    ++p.pixels;
                 }
+                // Pixels these objects never showed (covered, cut off): the color
+                // they gave the same shade elsewhere in the tile, rather than the
+                // other objects' colors.
+                const auto shades = m_tileShades.find(hash);
+                if (shades != m_tileShades.end())
+                {
+                    auto shadeOf = [&shades](unsigned px) { return shades->second[px]; };
+                    for (unsigned px = 0; px < 64; ++px)
+                    {
+                        if ((p.painted >> px & 1) || !(base->mask >> px & 1))
+                            continue;
+                        uint32_t counts[64] = {}, best = 64, bestCount = 0;
+                        for (unsigned q = 0; q < 64; ++q)
+                            if ((p.painted >> q & 1) && shadeOf(q) == shadeOf(px))
+                                for (unsigned r = 0; r <= q; ++r) // the first pixel with that color counts them
+                                    if ((p.painted >> r & 1) && shadeOf(r) == shadeOf(px) &&
+                                        std::memcmp(p.tile.rgb[r], p.tile.rgb[q], 3) == 0)
+                                    {
+                                        if (++counts[r] > bestCount)
+                                            best = r, bestCount = counts[r];
+                                        break;
+                                    }
+                        if (best < 64)
+                            Store(p.tile, px, rgbOf(p.tile.rgb[best]));
+                    }
+                }
+                pending.push_back(std::move(p));
             }
-            pending.push_back(std::move(p));
         }
     }
     if (pending.empty())
@@ -545,11 +627,11 @@ void TileColorPack::ResolveContexts(ImportStats &stats)
             i = parent[i] = parent[parent[i]];
         return i;
     };
-    std::unordered_map<uint32_t, size_t> firstWith;
+    std::unordered_map<uint64_t, size_t> firstWith; // (marker, figures) -> first variant with it
     for (size_t i = 0; i < pending.size(); ++i)
         for (const uint32_t m : pending[i].markers)
         {
-            const auto it = firstWith.emplace(m, i).first;
+            const auto it = firstWith.emplace(static_cast<uint64_t>(m) | (static_cast<uint64_t>(pending[i].figures) << 32), i).first;
             parent[root(i)] = root(it->second);
         }
     std::unordered_map<size_t, std::pair<size_t, size_t>> groups; // root -> (pixels, group index)
@@ -576,12 +658,16 @@ void TileColorPack::ResolveContexts(ImportStats &stats)
     {
         const uint32_t index = static_cast<uint32_t>(m_contextGroups.size());
         std::vector<uint32_t> markers;
+        bool figures = true;
         for (size_t i = 0; i < pending.size(); ++i)
             if (root(i) == g.second)
             {
                 markers.insert(markers.end(), pending[i].markers.begin(), pending[i].markers.end());
                 m_contextTiles.push_back({pending[i].hash, index, pending[i].tile});
+                figures = figures && pending[i].figures;
             }
+        if (figures)
+            m_contextLayerBound |= 1ull << index;
         std::sort(markers.begin(), markers.end());
         markers.erase(std::unique(markers.begin(), markers.end()), markers.end());
         m_contextGroups.push_back(std::move(markers));
@@ -836,6 +922,8 @@ void TileColorPack::FinishImport(ImportStats &stats)
     m_cellVotes.clear();
     m_contextVotes.clear();
     m_objectTiles.clear();
+    m_objectIsFigure.clear();
+    m_looseTiles.clear();
     m_tileShades.clear();
     m_contextVotes.shrink_to_fit();
     m_votes.shrink_to_fit();
@@ -924,6 +1012,13 @@ std::vector<uint8_t> TileColorPack::Serialize() const
             AppendLe(out, c.hash, 4);
             AppendLe(out, c.group, 4);
             appendTile(out, c.tile);
+        }
+        // Optional again: "VBGOCTXL", the groups (bit per group) whose markers
+        // only count on the layer they're drawn on.
+        if (m_contextLayerBound)
+        {
+            out.insert(out.end(), kLayerBoundMagic, kLayerBoundMagic + 8);
+            AppendLe(out, m_contextLayerBound, 8);
         }
     }
     return out;
@@ -1054,6 +1149,12 @@ bool TileColorPack::Deserialize(const std::vector<uint8_t> &bytes)
             {
                 m_contextGroups = std::move(groups);
                 m_contextTiles = std::move(tiles);
+                if (have(16) && std::memcmp(&bytes[offset], kLayerBoundMagic, 8) == 0)
+                {
+                    const uint64_t bits = ReadLe64(&bytes[offset + 8]);
+                    offset += 16;
+                    m_contextLayerBound = m_contextGroups.size() >= 64 ? bits : bits & ((1ull << m_contextGroups.size()) - 1);
+                }
             }
         }
     }

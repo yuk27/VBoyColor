@@ -18,6 +18,10 @@ void ColorPackRenderer::SetPack(const TileColorPack *pack)
     for (auto &eye : m_markerGrid)
         for (auto &grid : eye)
             grid.clear();
+    for (auto &eye : m_markerLayer)
+        for (auto &grid : eye)
+            grid.clear();
+    m_layerBound = 0;
     if (!m_pack)
         return;
     const auto &groups = m_pack->ContextGroups();
@@ -34,9 +38,16 @@ void ColorPackRenderer::SetPack(const TileColorPack *pack)
         i = j;
     }
     if (!contexts.empty())
+    {
         for (auto &eye : m_markerGrid)
             for (auto &grid : eye)
                 grid.assign(kGridW * kGridH, 0);
+        m_layerBound = m_pack->LayerBoundGroups();
+        if (m_layerBound)
+            for (auto &eye : m_markerLayer)
+                for (auto &grid : eye)
+                    grid.assign(kGridW * kGridH, 0xFF);
+    }
     // Same fade as the Multicolor palette (see ShadeColorizer): the brightest
     // shade's level from the core's tag byte, through the core's gamma -
     // relative to the brightness the paintings were made at, so a game that
@@ -104,16 +115,24 @@ void ColorPackRenderer::ResolveSlots(const uint32_t *hashes)
     m_resolvedFor = hashes;
 }
 
-uint64_t ColorPackRenderer::Near(unsigned eye, int x, int y) const
+uint64_t ColorPackRenderer::Near(unsigned eye, int x, int y, unsigned world) const
 {
-    // Markers drawn within reach - last frame, or already this frame.
+    // Markers drawn within reach - last frame, or already this frame (of a
+    // layer-bound group, only ones drawn on this pixel's layer).
     const int cx = x >> 3, cy = y >> 3;
     uint64_t bits = 0;
     for (int gy = std::max(0, cy - kContextReach); gy <= std::min(kGridH - 1, cy + kContextReach); ++gy)
         for (int gx = std::max(0, cx - kContextReach); gx <= std::min(kGridW - 1, cx + kContextReach); ++gx)
         {
             const int i = gy * kGridW + gx;
-            bits |= m_markerGrid[eye][0][i] | m_markerGrid[eye][1][i];
+            for (unsigned g = 0; g < 2; ++g)
+            {
+                const uint64_t here = m_markerGrid[eye][g][i];
+                if (!m_layerBound)
+                    bits |= here;
+                else
+                    bits |= (here & ~m_layerBound) | (m_markerLayer[eye][g][i] == world ? here & m_layerBound : 0);
+            }
         }
     return bits;
 }
@@ -137,11 +156,17 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
             continue;
         ResolveSlots(view.hashes);
         uint64_t *markers = nullptr; // this frame's marker grid (the other one keeps the last frame's)
+        uint8_t *markerLayers = nullptr;
         if (haveContexts)
         {
             m_gridCurrent[eye] ^= 1;
             markers = m_markerGrid[eye][m_gridCurrent[eye]].data();
             std::fill(markers, markers + kGridW * kGridH, 0);
+            if (m_layerBound)
+            {
+                markerLayers = m_markerLayer[eye][m_gridCurrent[eye]].data();
+                std::fill(markerLayers, markerLayers + kGridW * kGridH, 0xFF);
+            }
         }
         const uint64_t stamp = view.stamp;
         for (uint32_t x = 0; x < VBGO_TT_WIDTH; ++x)
@@ -154,7 +179,7 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
             // remember the last one's lookup.
             uint32_t lastCellKey = ~0u;
             const TileColorPack::CellTile *lastCell = nullptr;
-            int nearCell = -1; // the same for markers nearby
+            int nearCell = -1; // the same for markers nearby (cell and layer)
             uint64_t nearBits = 0;
             for (uint32_t y = 0; y < VBGO_TT_HEIGHT; ++y)
             {
@@ -169,7 +194,19 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
                 const unsigned chr = VBGO_TAG_CHAR(t), index = VBGO_TAG_INDEX(t), palette = VBGO_TAG_PALETTE(t);
                 const uint8_t *rgb = nullptr;
                 if (markers && pixel && m_slots[chr].markerBits)
-                    markers[(y >> 3) * kGridW + (x >> 3)] |= m_slots[chr].markerBits;
+                {
+                    // Sprites' groups count sprite markers, background figures'
+                    // groups background ones (and remember the layer).
+                    const bool sprite = VBGO_TAG_IS_OBJ(t) != 0;
+                    const uint64_t bits = m_slots[chr].markerBits & (sprite ? ~m_layerBound : m_layerBound);
+                    if (bits)
+                    {
+                        const unsigned cell = (y >> 3) * kGridW + (x >> 3);
+                        markers[cell] |= bits;
+                        if (!sprite && markerLayers)
+                            markerLayers[cell] = static_cast<uint8_t>(VBGO_TAG_WORLD(t));
+                    }
+                }
 
                 // 1. The map cell's own colors for this tile (and fills).
                 if (haveCells && VBGO_TAG_HAS_CELL(t))
@@ -201,14 +238,17 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
                         continue; // a fill nobody painted
                     const Slot &slot = m_slots[chr];
                     const TileColorPack::Tile *tile = nullptr;
-                    // Context: a shared tile in an object whose marker is nearby.
+                    // Context: a shared tile in an object whose marker is nearby
+                    // (a sprite's colors only on sprites, a background
+                    // figure's only on its layer).
                     if (slot.contextCount)
                     {
-                        const int cell = static_cast<int>((y >> 3) * kGridW + (x >> 3));
+                        const unsigned world = VBGO_TAG_WORLD(t), sprite = VBGO_TAG_IS_OBJ(t);
+                        const int cell = static_cast<int>(((y >> 3) * kGridW + (x >> 3)) | (world << 16) | (sprite << 21));
                         if (cell != nearCell)
                         {
                             nearCell = cell;
-                            nearBits = Near(eye, static_cast<int>(x), static_cast<int>(y));
+                            nearBits = Near(eye, static_cast<int>(x), static_cast<int>(y), world) & (sprite ? ~m_layerBound : m_layerBound);
                         }
                         for (uint32_t k = 0; nearBits && k < slot.contextCount; ++k)
                         {

@@ -56,13 +56,18 @@ private:
     // Context (see TileColorPack.h): where markers were drawn, per eye, on a
     // grid of 8x8-pixel screen cells - the last frame's and the one being
     // painted. A shared tile takes a group's colors if one of its markers
-    // is within kContextReach cells.
+    // is within kContextReach cells. Sprites' groups only color sprites;
+    // layer-bound groups (background figures) only their own layer, by a
+    // marker drawn on it (each cell remembers the layer its last such
+    // marker was drawn on).
     static constexpr int kGridW = VBGO_TT_WIDTH / 8, kGridH = VBGO_TT_HEIGHT / 8, kContextReach = 4;
     std::unordered_map<uint32_t, uint64_t> m_markerBits;
     std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>> m_contextRange; // hash -> (first, count)
     std::vector<uint64_t> m_markerGrid[2][2];
+    std::vector<uint8_t> m_markerLayer[2][2];
+    uint64_t m_layerBound = 0;
     unsigned m_gridCurrent[2] = {};
-    uint64_t Near(unsigned eye, int x, int y) const;
+    uint64_t Near(unsigned eye, int x, int y, unsigned world) const;
 
     const TileColorPack *m_pack = nullptr;
     std::vector<uint32_t> m_cellStart;  // 65537 entries: cell n's CellTiles are [m_cellStart[n], m_cellStart[n + 1])

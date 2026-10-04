@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // A per-game color pack (experimental): painted colors for individual 8x8
@@ -40,7 +41,9 @@
 //    tile's usual colors gets its own colors, switched on by "marker" tiles
 //    only that object uses (Skelton's skull): if a marker was drawn near the
 //    tile in the last frame, its colors apply. Found automatically - an
-//    object is a connected group of sprite pixels in a painting.
+//    object is a connected group of sprite pixels in a painting, or the one
+//    figure on a background layer that holds nothing else (Mario's Tennis
+//    draws its players as backgrounds).
 // Tile sheets (F6: everything in the game's tile memory, laid out like a
 // tile viewer) import the same way, but only fill in tile pixels no screen
 // painting colors.
@@ -121,6 +124,10 @@ public:
     const std::vector<std::vector<uint32_t>> &ContextGroups() const { return m_contextGroups; }
     // Sorted by hash, then group.
     const std::vector<ContextTile> &ContextTiles() const { return m_contextTiles; }
+    // Groups (bit per group) found on background figures only: their markers
+    // switch them on only on the layer the marker is drawn on - so a figure
+    // next to another (portraits in a row) doesn't take its colors.
+    uint64_t LayerBoundGroups() const { return m_contextLayerBound; }
 
     bool HasLayerColors() const { return !m_layerTiles.empty(); }
     bool HasPaletteColors() const { return !m_paletteTiles.empty(); }
@@ -188,11 +195,14 @@ private:
     std::vector<CellTile> m_cellTiles;
     std::vector<std::vector<uint32_t>> m_contextGroups;
     std::vector<ContextTile> m_contextTiles;
+    uint64_t m_contextLayerBound = 0;
     uint8_t m_referenceLevel = 63;
     // Objects in the screen paintings being imported (connected tile pixels
     // of one layer): the tiles each one is made of. Context votes carry the
     // object's index in Vote::extra.
     std::vector<std::vector<uint32_t>> m_objectTiles;
+    std::vector<uint8_t> m_objectIsFigure; // per object: a background figure (not a sprite)
+    std::unordered_set<uint32_t> m_looseTiles; // background tiles seen outside figures
     std::vector<Vote> m_contextVotes;
     std::unordered_map<uint32_t, std::array<uint8_t, 64>> m_tileShades; // their tiles' pixel values (1-3; 0xFF unknown)
     void ResolveContexts(ImportStats &stats);
