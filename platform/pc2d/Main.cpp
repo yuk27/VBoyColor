@@ -417,7 +417,8 @@ int main()
 
             // Even while paused - a palette change from the menu re-colors
             // the frame already on screen (see Emulator::SetShadePalette).
-            emulator.SetShadePalette(settings.selectedShadePalette);
+            const bool packShown = emulator.HasColorPack() && emulator.IsColorPackEnabled();
+            emulator.SetShadePalette(settings.EffectiveShadePalette(packShown));
 
             // Pause emulation while the menu is open so gameplay doesn't
             // keep advancing behind it.
@@ -462,7 +463,7 @@ int main()
             if (emulator.HasScreen())
             {
                 emulator.DrawScreen(uiRenderer, 0, 0, static_cast<float>(extent.width), static_cast<float>(extent.height),
-                                    Emulator::Eye::Left, settings.ScreenTint(), settings.ScreenPattern());
+                                    Emulator::Eye::Left, settings.ScreenTint(packShown), settings.ScreenPattern(packShown));
             }
             if (appMenu.IsVisible())
                 appMenu.Draw(uiRenderer, menuX, menuY);

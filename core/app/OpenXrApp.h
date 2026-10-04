@@ -161,6 +161,9 @@ private:
     XrInput m_input;
     Platform *m_platform = nullptr;
     Emulator m_emulator;
+    // The game's color pack is in use: Gradient mode then colors per shade
+    // (see AppSettings::EffectiveShadePalette).
+    bool ColorPackShown() const { return m_emulator.HasColorPack() && m_emulator.IsColorPackEnabled(); }
     AppMenu m_appMenu;
     AppSettings m_settings;
     // Set by RenderFrame right before RenderScreenLayer/RenderMenuLayer, from

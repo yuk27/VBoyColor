@@ -43,7 +43,18 @@ void DrawColorPreview(UiRenderer &ui, UiFontHandle labelFont, AppSettings *setti
     const float y = rowY + (rowH - kSwatchSize) / 2.0f;
 
     // A per-shade palette's own 4 colors - exactly what each shade shows on
-    // screen at full brightness (see ShadeColorizer).
+    // screen at full brightness (see ShadeColorizer). One made from a
+    // gradient picks its shades' colors from all 5 stops, so those show.
+    if (settings->selectedShadePalette >= 0 && settings->selectedShadePalette < kShadePaletteCount &&
+        GradientOfShadePalette(settings->selectedShadePalette) >= 0)
+    {
+        for (const XrColor4f &stop : kScreenPatterns[GradientOfShadePalette(settings->selectedShadePalette)])
+        {
+            ui.DrawQuadRounded(x, y, kSwatchSize, kSwatchSize, XrColor4f{stop.r, stop.g, stop.b, alpha}, 1.0f);
+            x += kSwatchSize + kSwatchGap;
+        }
+        return;
+    }
     if (settings->selectedShadePalette >= 0 && settings->selectedShadePalette < kShadePaletteCount)
     {
         for (const XrColor4f &shade : kShadePalettes[settings->selectedShadePalette])

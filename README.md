@@ -23,7 +23,10 @@ are planned for the future.
 - Per-shade color palettes (Red Viper-style colorization): each of the
   Virtual Boy's 4 shades gets its own color, so a game's layers keep their
   own hues through fades - Settings → Color Mode → Multicolor, then pick a
-  palette with Color Palette
+  palette with Color Palette. The gradient palettes (Jade, Ocean, Sunset,
+  Ember, Frost, Toxic) use all 5 of their colors: each shade takes the
+  gradient's color at the brightness the game gives it - what Gradient mode
+  shows at the game's full brightness - and keeps it through fades
 
 ## Opening the menu
 
@@ -209,7 +212,8 @@ moved, saved as PNG) next to their `.tiles` files in
 the majority wins where a tile was painted differently in different places,
 and stray near-duplicate shades are merged. The pack then colors every
 occurrence of those tiles anywhere in the game while a Multicolor palette is
-active; unpainted tiles keep the palette's colors. The `.vbcp` file alone is
+active - or in Gradient mode, which then colors per shade too, from the
+gradient's 5 colors (see above); unpainted tiles keep the palette's colors. The `.vbcp` file alone is
 enough on other platforms (copy it next to the ROM on the Quest). In the
 desktop build, **F11** re-imports after editing a painting and **F8** toggles
 the pack for comparison.

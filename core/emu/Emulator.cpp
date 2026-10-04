@@ -270,6 +270,9 @@ void Emulator::RunFrame(float deltaSeconds)
         if (m_collecting && vbgo_tiletrack_is_enabled() &&
             vbgo_tiletrack_records(0, m_records.data(), nullptr, false))
             m_collector.AddFrame(m_records.data(), m_rawFrame.data(), kFbWidth, m_colorPack, CapturePalette());
+        if (m_shadePaletteIndex >= 0 && m_shadeColorizer.IsGradient())
+            m_shadeColorizer.Observe(m_rawFrame.data(), std::min<uint32_t>(m_lastFrameWidth, kFbWidth),
+                                     std::min<uint32_t>(m_lastFrameHeight, kFbHeight), static_cast<size_t>(kFbWidth) * 4);
         UploadFrame();
         m_lastFrameWidth = g_pendingWidth > 0 ? g_pendingWidth : kSideBySideWidth;
         m_lastFrameHeight = g_pendingHeight > 0 ? g_pendingHeight : kSideBySideHeight;
@@ -287,14 +290,35 @@ void Emulator::SetShadePalette(int paletteIndex)
     m_shadePaletteIndex = paletteIndex;
     if (paletteIndex >= 0)
     {
-        std::array<ShadeRgb, 4> palette;
-        for (int i = 0; i < 4; ++i)
+        const int pattern = GradientOfShadePalette(paletteIndex);
+        if (pattern >= 0)
         {
-            const XrColor4f &c = kShadePalettes[paletteIndex][i];
-            palette[i] = ShadeRgb{c.r, c.g, c.b};
+            // All 5 stops, each shade where the game's brightness for it
+            // falls on the gradient (see ShadeColorizer::SetGradient) -
+            // relative to the color pack's reference brightness if there's
+            // one, else the brightest the game has shown.
+            std::array<ShadeRgb, 5> stops;
+            for (int i = 0; i < 5; ++i)
+            {
+                const XrColor4f &c = kScreenPatterns[pattern][i];
+                stops[i] = ShadeRgb{c.r, c.g, c.b};
+            }
+            m_shadeColorizer.SetGradient(stops, m_colorPack.Empty() ? -1 : m_colorPack.ReferenceLevel());
+            if (m_hasFrame)
+                m_shadeColorizer.Observe(m_rawFrame.data(), std::min<uint32_t>(m_lastFrameWidth, kFbWidth),
+                                         std::min<uint32_t>(m_lastFrameHeight, kFbHeight), static_cast<size_t>(kFbWidth) * 4);
         }
-        m_shadeColorizer.SetPalette(palette);
-        m_shadeBackground = palette[0];
+        else
+        {
+            std::array<ShadeRgb, 4> palette;
+            for (int i = 0; i < 4; ++i)
+            {
+                const XrColor4f &c = kShadePalettes[paletteIndex][i];
+                palette[i] = ShadeRgb{c.r, c.g, c.b};
+            }
+            m_shadeColorizer.SetPalette(palette);
+        }
+        m_shadeBackground = m_shadeColorizer.Palette()[0];
     }
 
     // Emulation is paused while the menu is open, so RunFrame won't upload
@@ -470,6 +494,14 @@ std::string Emulator::ReloadColorPack()
     if (!m_colorPack.Empty())
         vbgo_tiletrack_set_enabled(true);
     UpdateFillTracking();
+    // A gradient palette learns each game's brightness anew (and takes the
+    // new pack's reference brightness).
+    if (m_shadePaletteIndex >= 0 && GradientOfShadePalette(m_shadePaletteIndex) >= 0)
+    {
+        const int index = m_shadePaletteIndex;
+        m_shadePaletteIndex = -1;
+        SetShadePalette(index);
+    }
     if (m_hasFrame && m_ui)
         UploadFrame();
     return summary;
@@ -581,7 +613,7 @@ std::array<std::array<uint8_t, 3>, 4> Emulator::CapturePalette() const
     {
         if (m_shadePaletteIndex >= 0)
         {
-            const XrColor4f &c = kShadePalettes[m_shadePaletteIndex][i];
+            const ShadeRgb c = m_shadeColorizer.Palette()[i]; // what each shade shows at full brightness
             palette[i] = {static_cast<uint8_t>(c.r * 255.0f + 0.5f), static_cast<uint8_t>(c.g * 255.0f + 0.5f),
                           static_cast<uint8_t>(c.b * 255.0f + 0.5f)};
         }
@@ -652,7 +684,7 @@ std::string Emulator::CaptureTileReference()
     std::array<std::array<uint8_t, 3>, 4> shown = CapturePalette();
     if (m_shadePaletteIndex >= 0)
     {
-        const float fade = std::pow(level / 63.0f, 1.0f / 2.2f); // as ShadeColorizer
+        const float fade = m_shadeColorizer.Fade(level);
         for (int i = 1; i < 4; ++i)
             for (int c = 0; c < 3; ++c)
                 shown[i][c] = static_cast<uint8_t>(std::lround(shown[0][c] + (shown[i][c] - shown[0][c]) * fade));

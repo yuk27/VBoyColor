@@ -9,6 +9,10 @@
 
 class Platform;
 
+// kShadePalettes' entries made from the gradient patterns (kScreenPatterns):
+// palette kFirstGradientShadePalette + n is pattern n (see the table below).
+inline constexpr int kFirstGradientShadePalette = 6;
+
 // How the screen/menu quads react to head rotation - see
 // OpenXrApp::ComputeScreenOrientation.
 enum class FollowHeadMode : int32_t
@@ -71,11 +75,24 @@ struct AppSettings
     // What the screen should be drawn with (Emulator::DrawScreen's tint/
     // patternIndex) - neutral while a shade palette is active, since its
     // colors are already in the frame and tinting on top would double them.
-    XrColor4f ScreenTint() const
+    //
+    // The per-shade palette the emulator colors with (Emulator::
+    // SetShadePalette): the Multicolor one - or, in Gradient mode for a game
+    // with a color pack, the gradient's own per-shade version: the pack's
+    // colors show, and whatever it doesn't color takes the gradient (picked
+    // by each shade's brightness, as Gradient mode does, but held steady
+    // through fades - see ShadeColorizer::SetGradient).
+    int EffectiveShadePalette(bool colorPack = false) const
     {
-        return selectedShadePalette >= 0 ? XrColor4f{1.0f, 1.0f, 1.0f, 1.0f} : XrColor4f{colorR, colorG, colorB, 1.0f};
+        if (selectedShadePalette >= 0)
+            return selectedShadePalette;
+        return colorPack && selectedPattern >= 0 ? kFirstGradientShadePalette + selectedPattern : -1;
     }
-    int ScreenPattern() const { return selectedShadePalette >= 0 ? -1 : selectedPattern; }
+    XrColor4f ScreenTint(bool colorPack = false) const
+    {
+        return EffectiveShadePalette(colorPack) >= 0 ? XrColor4f{1.0f, 1.0f, 1.0f, 1.0f} : XrColor4f{colorR, colorG, colorB, 1.0f};
+    }
+    int ScreenPattern(bool colorPack = false) const { return EffectiveShadePalette(colorPack) >= 0 ? -1 : selectedPattern; }
 
     // Best-effort; failures are silently ignored. Takes Platform by
     // reference rather than storing one - this struct is memcpy'd whole
@@ -142,7 +159,10 @@ namespace SettingsDetail
     // background and its 3 brightest stops for the 3 drawn shades - about
     // what the gradient itself shows at a typical game's full brightness
     // (e.g. Virtual Boy Wario Land's), but held steady through fades. Read
-    // straight from kScreenPatterns, so the two can't drift apart.
+    // straight from kScreenPatterns, so the two can't drift apart. Only the
+    // starting point: the emulator colors with all 5 stops, each shade where
+    // the game's brightness for it falls on the gradient (see
+    // ShadeColorizer::SetGradient).
     constexpr std::array<XrColor4f, 4> FromPattern(int pattern)
     {
         const auto &stops = kScreenPatterns[pattern];
@@ -183,3 +203,14 @@ inline constexpr std::array<std::array<XrColor4f, 4>, 16> kShadePalettes = {{
     SettingsDetail::Hex4(0xF4EFE1, 0x8C877B, 0x4A463F, 0x141414), // Paper - dark ink on off-white
 }};
 inline constexpr int kShadePaletteCount = static_cast<int>(kShadePalettes.size());
+
+// The gradient pattern a per-shade palette was made from, or -1.
+constexpr int GradientOfShadePalette(int palette)
+{
+    return palette >= kFirstGradientShadePalette && palette < kFirstGradientShadePalette + kScreenPatternCount
+               ? palette - kFirstGradientShadePalette
+               : -1;
+}
+static_assert(kShadePalettes[kFirstGradientShadePalette][1].g == kScreenPatterns[0][2].g &&
+                  kShadePalettes[kFirstGradientShadePalette + kScreenPatternCount - 1][3].r == kScreenPatterns[kScreenPatternCount - 1][4].r,
+              "kFirstGradientShadePalette must point at the FromPattern entries");

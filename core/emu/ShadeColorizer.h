@@ -42,13 +42,44 @@ public:
     // need to call it every frame.
     void SetPalette(const std::array<ShadeRgb, 4> &palette);
 
+    // A gradient instead (Settings.h's kScreenPatterns, 5 stops, darkest
+    // first): each drawn shade takes the gradient's color at the brightness
+    // the game gives that shade - what Gradient mode shows at the game's full
+    // brightness, so a game with a dim dark shade gets the gradient's deep
+    // second stop too - and fades as one uniform dim toward the first stop,
+    // like the per-shade palettes, so hues hold through fades instead of
+    // sliding down the gradient. The shades' brightnesses are learnt from the
+    // frames (Observe); until then they're taken as the usual 1/2, 3/4, 1.
+    // referenceLevel: the game's full brightness (0-63, as the fade level in
+    // the pixel tags), e.g. a color pack's; -1 = the brightest seen so far.
+    void SetGradient(const std::array<ShadeRgb, 5> &stops, int referenceLevel = -1);
+    bool IsGradient() const { return m_gradient; }
+    // Gradient only: learns the shade brightnesses from a frame of the core's
+    // output (same layout as Colorize's src); call once per frame before
+    // Colorize. Cheap: a sparse scan, and the table is only rebuilt when
+    // something changed.
+    void Observe(const uint8_t *src, size_t width, size_t height, size_t strideBytes);
+    // How far a shade is toward its full color at a fade level (0-63) - the
+    // factor Colorize uses.
+    float Fade(int level) const;
+    // The 4 colors as shown at full brightness (background, 3 shades).
+    std::array<ShadeRgb, 4> Palette() const { return m_palette; }
+
     // src: the core's XRGB8888 frame (bytes B,G,R,tag per pixel - tag bits
     // 0-1 shade index, 2-7 fade level). dst: B,G,R,A bytes ready for the
     // B8G8R8A8 screen texture, A forced opaque. src and dst may not overlap.
     void Colorize(const uint8_t *src, uint8_t *dst, size_t pixelCount) const;
 
 private:
+    void BuildGradient();
+
     // Indexed by the whole tag byte ([fade level][shade]) -> B,G,R,A bytes.
     std::array<std::array<uint8_t, 4>, 256> m_lut{};
     std::array<uint8_t, 4> m_background{};
+    std::array<ShadeRgb, 4> m_palette{};
+    // Gradient mode
+    bool m_gradient = false;
+    std::array<ShadeRgb, 5> m_stops{};
+    int m_referenceLevel = -1, m_fixedReference = -1; // 1-63
+    std::array<float, 4> m_shadeLuma{0.0f, 0.5f, 0.75f, 1.0f}; // each shade's brightness at the reference level, 0-1
 };
