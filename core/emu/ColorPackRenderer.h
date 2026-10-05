@@ -60,11 +60,30 @@ private:
     void PaintAmbiguous(uint8_t *frame, uint32_t fbWidth, uint32_t eyeOffset, const vbgo_tt_eye_view &view);
 
     // Gives the right eye the left eye's colors (see the .cpp).
-    void MatchEyes(uint8_t *frame, uint32_t fbWidth, const uint32_t eyeOffset[2]);
-    static constexpr int kMaxDisparity = 64, kUnknownDisparity = 0x7FFF, kSearch = 24;
+    void MatchEyes(uint8_t *frame, const uint8_t *raw, uint32_t fbWidth, const uint32_t eyeOffset[2]);
+    static constexpr int kMaxDisparity = 64, kUnknownDisparity = 0x7FFF;
+    static constexpr int kWindowWidth = 15, kWindowHeight = 3; // what's compared around a pixel (odd sizes; width <= 32)
+    static constexpr int kCloseMatch = 2, kFairMatch = 9;       // of the window's pixels, at most this many differ
+    static constexpr int kSearchBudget = 3000;                  // pixels a frame that search all disparities
+    static constexpr int kResearchEvery = 16;                   // frames between searches for a pixel that found nothing close (power of 2)
+    static constexpr uint8_t kNotSearched = 0xFF, kNoMatch = 0xFE;
+    std::vector<uint8_t> m_eyeCostAt; // per right-eye pixel: how far off last frame's match by looks was (or one of those)
+    uint32_t m_eyeFrame = 0;
     std::vector<uint32_t> m_eyeTags;   // both eyes' tags, row-major, packed (see MatchEyes)
-    std::vector<int16_t> m_eyeDisparityAt; // per right-eye pixel: the disparity its value match had last frame
+    std::vector<uint64_t> m_eyeShades; // both eyes' shades, 2 bits per pixel, rows with guard pixels (see MatchEyes)
+    std::vector<int16_t> m_eyeDisparityAt; // per right-eye pixel: the disparity its match had last frame
+    std::array<uint64_t, (1u << 18) / 64> m_leftShows{}; // per (tile name, pixel, sprite): the left eye shows it this frame
     std::array<int16_t, 32> m_eyeDisparity = MakeUnknownDisparities(); // per world: right eye x -> left eye x
+    std::vector<int16_t> m_eyeRowDisparity = std::vector<int16_t>(VBGO_TT_HEIGHT * 32, kUnknownDisparity); // per row, per world
+    struct TileName
+    {
+        uint32_t hash = 0;
+        uint16_t name = 0;
+        uint32_t generation = 0;
+    };
+    static constexpr unsigned kTileNameBits = 13, kTileNameSlots = 1u << kTileNameBits; // for up to 2 eyes x 2048 tiles
+    std::vector<TileName> m_tileNames; // tile hash -> its name this frame (open addressing; current generation only)
+    uint32_t m_tileNameGeneration = 0;
     static constexpr std::array<int16_t, 32> MakeUnknownDisparities()
     {
         std::array<int16_t, 32> a{};

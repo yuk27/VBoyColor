@@ -222,8 +222,12 @@ them (only the `.vbcp` files; a `.vbcp` in the headset's ROMs folder still
 wins). In the
 desktop build, **F11** re-imports after editing a painting and **F8** toggles
 the pack for comparison. Packs are painted from the left eye; the right eye
-shows each pixel in the color the left eye gives the same thing (games often
-draw a layer once per eye, with tiles of their own).
+shows each pixel in the color the left eye gives the same thing, so both eyes
+always agree: the same tile pixel at its layer's disparity (per row - some
+games shift a layer by a different amount on every row), else the left pixel
+whose surroundings show the same shades (games often draw a layer once per
+eye with tiles of their own, or draw each eye's picture separately, like
+Galactic Pinball's title and tables).
 
 **Painting rules.** Only what you change counts: pixels left in the capture's
 own colors are ignored, so a capture can be painted a bit at a time. Paint
@@ -300,7 +304,10 @@ pack is painted from those tags with a few table reads per pixel - a tile's
 colors are looked up when its graphics change, not per pixel. Measured on one
 desktop core, against the core's ~1.9 ms per emulated frame: tracking adds
 ~0.25 ms (fills only where the pack has some), and painting a full pack with
-map cells and fills ~0.2-0.35 ms per eye. Output is otherwise identical.
+map cells and fills ~0.2-0.35 ms per eye. Matching the right eye to the left
+adds ~1-3 ms (most where each eye's picture is drawn separately, which is
+matched by looks; a pixel's match is remembered from frame to frame).
+Output is otherwise identical.
 
 **Formats.** `.tiles` version 2 (`VBGOTIL2`) adds the map cell of every
 pixel after the per-pixel records (version 1 files from older captures still

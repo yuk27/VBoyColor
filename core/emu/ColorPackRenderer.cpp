@@ -17,6 +17,11 @@ void ColorPackRenderer::SetPack(const TileColorPack *pack)
     for (Slot &slot : m_slots)
         slot = Slot{};
     m_resolvedFor = nullptr;
+    // (eye matching starts over: last frame's matches belong to another game)
+    m_eyeDisparityAt.clear();
+    m_eyeCostAt.clear();
+    m_eyeDisparity = MakeUnknownDisparities();
+    std::fill(m_eyeRowDisparity.begin(), m_eyeRowDisparity.end(), static_cast<int16_t>(kUnknownDisparity));
     for (auto &eye : m_markerGrid)
         for (auto &grid : eye)
             grid.clear();
@@ -296,7 +301,7 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
         if (!m_ambiguousPixels.empty())
             PaintAmbiguous(frame, fbWidth, eyeOffset[eye], view);
     }
-    MatchEyes(frame, fbWidth, eyeOffset);
+    MatchEyes(frame, raw, fbWidth, eyeOffset);
 }
 
 void ColorPackRenderer::PaintAmbiguous(uint8_t *frame, uint32_t fbWidth, uint32_t eyeOffset, const vbgo_tt_eye_view &view)
@@ -337,35 +342,103 @@ void ColorPackRenderer::PaintAmbiguous(uint8_t *frame, uint32_t fbWidth, uint32_
     m_ambiguousPixels.clear();
 }
 
-void ColorPackRenderer::MatchEyes(uint8_t *frame, uint32_t fbWidth, const uint32_t eyeOffset[2])
+namespace
+{
+// Shades packed 2 bits per pixel (pixel p of a row at bit 2 * (p + guard)),
+// with guard pixels each side so a window at any disparity stays in the row.
+constexpr int kGuardPixels = 96;
+constexpr int kShadeRowWords = (VBGO_TT_WIDTH + 2 * kGuardPixels) * 2 / 64;
+
+inline uint64_t ShadeBits(const uint64_t *row, int x, int n)
+{
+    const int bit = (x + kGuardPixels) * 2, w = bit >> 6, s = bit & 63;
+    uint64_t v = row[w] >> s;
+    if (s)
+        v |= row[w + 1] << (64 - s);
+    return v & ((1ull << (2 * n)) - 1);
+}
+
+inline int CountSet(uint64_t x)
+{
+#if defined(__GNUC__) || defined(__clang__)
+    return __builtin_popcountll(x);
+#else
+    x = x - ((x >> 1) & 0x5555555555555555ull);
+    x = (x & 0x3333333333333333ull) + ((x >> 2) & 0x3333333333333333ull);
+    x = (x + (x >> 4)) & 0x0F0F0F0F0F0F0F0Full;
+    return static_cast<int>((x * 0x0101010101010101ull) >> 56);
+#endif
+}
+
+// Pixels whose shades differ, of two runs of 2-bit shades.
+inline int ShadesOff(uint64_t a, uint64_t b)
+{
+    const uint64_t x = a ^ b;
+    return CountSet((x | (x >> 1)) & 0x5555555555555555ull);
+}
+} // namespace
+
+void ColorPackRenderer::MatchEyes(uint8_t *frame, const uint8_t *raw, uint32_t fbWidth, const uint32_t eyeOffset[2])
 {
     // Both eyes see one scene, so they must show it in the same colors - but
     // the pack is painted from left-eye captures, and games often draw a
-    // layer twice, once per eye on a world of its own (Wario Land: 23 left,
-    // 24 right), with map cells and even tiles of its own (pre-shifted
-    // copies): looked up on its own, the right eye would get other layers'
-    // colors, or none. So every right-eye pixel takes the color of the
-    // left-eye pixel showing the same thing:
-    //  1. the same tile pixel on that row (sprite or background alike), at
-    //     the disparity its layer had last time, or else wherever the left
-    //     eye shows it on the row (within kMaxDisparity);
-    //  2. for a tile pixel the left eye doesn't show - the right eye's own
-    //     copy of a texture, or a picture drawn once per eye with tiles of
-    //     its own (Galactic Pinball's title and tables, with depth inside
-    //     them) - the left pixel the row's pixel values say it is: the
-    //     disparity this pixel had last frame or the one its neighbour on
-    //     the row just had, if the left pixel there has the same value;
-    //     else the best match of the pixels around it within kSearch of its
-    //     layer's disparity.
-    // Anything without a counterpart (cut off at the screen's edge) keeps
-    // its own colors.
+    // layer twice, once per eye on a world of its own (Mario Clash), with
+    // map cells and even tiles of its own (pre-shifted copies), shift a
+    // layer by another amount on every row (Wario Land's mountains), or draw
+    // each eye's picture separately, depth and all (Galactic Pinball's title
+    // and tables): looked up on its own, the right eye would get other
+    // places' colors, or none. So every right-eye pixel takes the color of
+    // the left-eye pixel showing the same thing:
+    //  1. the same tile pixel (by contents, sprite or background alike) at
+    //     the disparity its layer had on this row last frame, or overall;
+    //     else the instance on the row nearest to that (within
+    //     kMaxDisparity) if what's around it looks the same too;
+    //  2. otherwise the left pixel whose surroundings look the same: the
+    //     kWindowWidth x kWindowHeight pixels around it, in the shades the
+    //     eyes actually show - the best of the disparities this pixel had
+    //     last frame, its neighbour's, the pixel above's and its layer's;
+    //     if none is close, the best within kMaxDisparity (at most
+    //     kSearchBudget searches a frame - the rest catch up in the next
+    //     frames - and none again while last frame's match is as good);
+    //  3. a tile pixel the left eye shows somewhere else, without a close
+    //     match, keeps its own colors - the pack's colors for it are the
+    //     left eye's too.
+    // Anything without a counterpart (cut off at the screen's edge, seen by
+    // one eye only) keeps its own colors.
     vbgo_tt_eye_view view[2];
     if (!vbgo_tiletrack_eye_view(0, &view[0]) || !vbgo_tiletrack_eye_view(1, &view[1]))
         return;
     // Both eyes' tags, row by row, packed to what matching needs: bit 31
-    // drawn this frame, bits 0-17 what it shows (character slot, pixel,
-    // sprite), 18-19 the pixel's value, 20-24 the layer.
-    constexpr uint32_t kDrawn = 1u << 31, kWhat = (1u << 18) - 1;
+    // drawn this frame, bits 0-17 what it shows (tile, pixel, sprite),
+    // 18-19 the pixel's value, 20-24 the layer.
+    // A tile is named by its contents, not by the character slot it sits
+    // in: games keep copies of a tile in several slots and draw each eye
+    // from its own (Mario Clash's score digits). The name is the first left-
+    // eye slot holding that tile, or - flagged kRightOnly - the first right-
+    // eye one if the left eye has no such tile.
+    constexpr uint32_t kDrawn = 1u << 31, kRightOnly = 1u << 30, kWhat = (1u << 18) - 1;
+    std::array<uint16_t, 2048> nameOf[2];
+    {
+        if (m_tileNames.empty())
+            m_tileNames.resize(kTileNameSlots);
+        if (++m_tileNameGeneration == 0) // (wrapped: start over)
+        {
+            std::fill(m_tileNames.begin(), m_tileNames.end(), TileName{});
+            m_tileNameGeneration = 1;
+        }
+        for (unsigned eye = 0; eye < 2; ++eye)
+            for (unsigned c = 0; c < 2048; ++c)
+            {
+                const uint32_t hash = view[eye].hashes[c];
+                uint32_t i = (hash * 2654435761u) >> (32 - kTileNameBits);
+                while (m_tileNames[i].generation == m_tileNameGeneration && m_tileNames[i].hash != hash)
+                    i = (i + 1) & (kTileNameSlots - 1);
+                TileName &n = m_tileNames[i];
+                if (n.generation != m_tileNameGeneration)
+                    n = {hash, static_cast<uint16_t>(eye ? 0x8000 | c : c), m_tileNameGeneration};
+                nameOf[eye][c] = n.name;
+            }
+    }
     m_eyeTags.resize(2 * VBGO_TT_EYE_PIXELS);
     if (m_eyeDisparityAt.empty())
         m_eyeDisparityAt.assign(VBGO_TT_EYE_PIXELS, kUnknownDisparity);
@@ -381,47 +454,80 @@ void ColorPackRenderer::MatchEyes(uint8_t *frame, uint32_t fbWidth, const uint32
                     for (int y = y0; y < y0 + 8; ++y)
                     {
                         const uint64_t t = column ? column[y] : 0;
+                        const unsigned slot = nameOf[eye][VBGO_TAG_CHAR(t)];
                         out[y * VBGO_TT_WIDTH + x] =
                             column && (t >> 48) == stamp
-                                ? kDrawn | VBGO_TAG_CHAR(t) | (VBGO_TAG_INDEX(t) << 11) | (VBGO_TAG_IS_OBJ(t) << 17) |
-                                      (VBGO_TAG_PIXEL(t) << 18) | (VBGO_TAG_WORLD(t) << 20)
+                                ? kDrawn | (slot & 0x7FF) | ((slot & 0x8000) ? kRightOnly : 0) | (VBGO_TAG_INDEX(t) << 11) |
+                                      (VBGO_TAG_IS_OBJ(t) << 17) | (VBGO_TAG_PIXEL(t) << 18) | (VBGO_TAG_WORLD(t) << 20)
                                 : 0;
                     }
                 }
     }
-    // (Both eyes come from one drawing pass, so a character slot is the same
-    // tile in both - checked, in case a game changes one in between.)
-    const bool sameSlots = view[0].hashes == view[1].hashes;
-    // Where on the current row the left eye shows each tile pixel: a small
-    // open-addressing table, valid for the row whose number it carries.
-    struct Seen
-    {
-        uint32_t what;
-        int16_t x;
-        uint16_t row;
-    };
-    std::array<Seen, 1024> seenAt;
-    for (Seen &e : seenAt)
-        e.row = 0xFFFF;
-    auto slotOf = [](uint32_t what) { return (what * 2654435761u) >> 22; };
-    std::array<std::array<uint32_t, 2 * kMaxDisparity + 1>, 32> votes{};
+    // The shades both eyes show (the core's tag byte, low 2 bits), packed.
+    m_eyeShades.assign(2 * VBGO_TT_HEIGHT * kShadeRowWords, 0);
+    for (unsigned eye = 0; eye < 2; ++eye)
+        for (int y = 0; y < VBGO_TT_HEIGHT; ++y)
+        {
+            uint64_t *out = &m_eyeShades[(eye * VBGO_TT_HEIGHT + y) * kShadeRowWords];
+            const uint8_t *in = &raw[(static_cast<size_t>(y) * fbWidth + eyeOffset[eye]) * 4 + 3];
+            for (int x = 0; x < VBGO_TT_WIDTH; ++x)
+            {
+                const int bit = (x + kGuardPixels) * 2;
+                out[bit >> 6] |= static_cast<uint64_t>(in[x * 4] & 3) << (bit & 63);
+            }
+        }
+    // Every tile pixel the left eye shows anywhere (bit per slot, pixel, sprite).
+    std::fill(m_leftShows.begin(), m_leftShows.end(), 0);
+    for (size_t i = 0; i < VBGO_TT_EYE_PIXELS; ++i)
+        if (const uint32_t l = m_eyeTags[i])
+            m_leftShows[(l & kWhat) >> 6] |= 1ull << (l & 63);
+    std::array<std::array<uint32_t, 2 * kMaxDisparity + 1>, 32> votes{}, lookalikeVotes{};
+    int searchBudget = kSearchBudget;
+    ++m_eyeFrame;
+    if (m_eyeCostAt.empty())
+        m_eyeCostAt.assign(VBGO_TT_EYE_PIXELS, kNotSearched);
     for (int y = 0; y < VBGO_TT_HEIGHT; ++y)
     {
         const uint32_t *left = &m_eyeTags[y * VBGO_TT_WIDTH];
         const uint32_t *right = &m_eyeTags[VBGO_TT_EYE_PIXELS + y * VBGO_TT_WIDTH];
+        int16_t *disparityAt = &m_eyeDisparityAt[y * VBGO_TT_WIDTH];
         uint8_t *row = &frame[static_cast<size_t>(y) * fbWidth * 4];
         auto same = [&](int xl, uint32_t r) {
-            return xl >= 0 && xl < VBGO_TT_WIDTH && ((left[xl] ^ r) & (kDrawn | kWhat)) == 0 &&
-                   (sameSlots || view[0].hashes[left[xl] & 0x7FF] == view[1].hashes[r & 0x7FF]);
+            return xl >= 0 && xl < VBGO_TT_WIDTH && ((left[xl] ^ r) & (kDrawn | kRightOnly | kWhat)) == 0;
         };
+        std::array<int16_t, 32> rowCandidate;
+        std::array<int32_t, 32> rowCount{};
         auto take = [&](int x, int from, bool identical) {
-            if (identical)
-            {
-                const unsigned world = (right[x] >> 20) & 31;
-                ++votes[world][from - x + kMaxDisparity];
-            }
+            const unsigned world = (right[x] >> 20) & 31;
+            const int d = from - x;
+            ++(identical ? votes : lookalikeVotes)[world][d + kMaxDisparity];
+            disparityAt[x] = static_cast<int16_t>(d);
+            if (!rowCount[world])
+                rowCandidate[world] = static_cast<int16_t>(d), rowCount[world] = 1;
+            else
+                rowCount[world] += rowCandidate[world] == d ? 1 : -1;
             std::memcpy(&row[(eyeOffset[1] + x) * 4], &row[(eyeOffset[0] + from) * 4], 3);
         };
+        // Each layer's disparity on this row last frame (a layer can shift
+        // every row by its own amount - Wario Land's mountains), for the rows
+        // to come this frame's (whatever most of its pixels here had).
+        int16_t *rowDisparity = &m_eyeRowDisparity[y * 32];
+        struct CommitRow // (at the end of the row, however it ends)
+        {
+            std::array<int16_t, 32> &candidate;
+            std::array<int32_t, 32> &count;
+            int16_t *out;
+            ~CommitRow()
+            {
+                for (unsigned w = 0; w < 32; ++w)
+                    out[w] = count[w] > 0 ? candidate[w] : static_cast<int16_t>(kUnknownDisparity);
+            }
+        } commitRow{rowCandidate, rowCount, rowDisparity};
+        const std::array<int16_t, 32> lastRow = [&] {
+            std::array<int16_t, 32> a;
+            std::copy(rowDisparity, rowDisparity + 32, a.begin());
+            return a;
+        }();
         // Mostly the same tile pixel at its layer's disparity; the rest after.
         int missed[VBGO_TT_WIDTH], misses = 0;
         for (int x = 0; x < VBGO_TT_WIDTH; ++x)
@@ -429,23 +535,57 @@ void ColorPackRenderer::MatchEyes(uint8_t *frame, uint32_t fbWidth, const uint32
             const uint32_t r = right[x];
             if (!r)
                 continue;
-            const int predicted = m_eyeDisparity[(r >> 20) & 31];
-            if (predicted != kUnknownDisparity && same(x + predicted, r))
+            const unsigned world = (r >> 20) & 31;
+            const int onRow = lastRow[world], predicted = m_eyeDisparity[world];
+            if (onRow != kUnknownDisparity && same(x + onRow, r))
+                take(x, x + onRow, true);
+            else if (predicted != kUnknownDisparity && predicted != onRow && same(x + predicted, r))
                 take(x, x + predicted, true);
             else
                 missed[misses++] = x;
         }
         if (!misses)
             continue;
+        // The windows (kWindowWidth x kWindowHeight pixels around x in the
+        // right eye, around x + d in the left): how many pixels' shades
+        // differ, counting up to limit.
+        const int top = std::max(0, y - kWindowHeight / 2), bottom = std::min(VBGO_TT_HEIGHT - 1, y + kWindowHeight / 2);
+        const uint64_t *leftShades = &m_eyeShades[0], *rightShades = &m_eyeShades[VBGO_TT_HEIGHT * kShadeRowWords];
+        auto windowOff = [&](int x, int d, int limit) {
+            int off = 0;
+            for (int yy = top; yy <= bottom && off < limit; ++yy)
+                off += ShadesOff(ShadeBits(&rightShades[yy * kShadeRowWords], x - kWindowWidth / 2, kWindowWidth),
+                                 ShadeBits(&leftShades[yy * kShadeRowWords], x + d - kWindowWidth / 2, kWindowWidth));
+            return off;
+        };
+        const uint64_t *rightRow = &rightShades[y * kShadeRowWords], *leftRow = &leftShades[y * kShadeRowWords];
+        // Which tile pixels the left eye has on this row (a 4096-bit filter).
+        std::array<uint64_t, 64> onThisRow{};
+        auto filterBit = [](uint32_t what) { return (what * 2654435761u) >> 20; };
         for (int x = 0; x < VBGO_TT_WIDTH; ++x)
             if (left[x])
             {
-                const uint32_t what = left[x] & kWhat;
-                uint32_t i = slotOf(what);
-                while (seenAt[i].row == y && seenAt[i].what != what)
-                    i = (i + 1) & 1023;
-                seenAt[i] = {what, static_cast<int16_t>(x), static_cast<uint16_t>(y)};
+                const uint32_t b = filterBit(left[x] & kWhat);
+                onThisRow[b >> 6] |= 1ull << (b & 63);
             }
+        // Disparities nearest to around first, within kMaxDisparity and the
+        // screen; f returns true to stop.
+        auto nearestFirst = [](int x, int around, auto &&f) {
+            const int lowest = std::max(-kMaxDisparity, -x), highest = std::min(kMaxDisparity, VBGO_TT_WIDTH - 1 - x);
+            around = std::min(std::max(around, lowest), highest);
+            if (f(around))
+                return;
+            for (int dist = 1;; ++dist)
+            {
+                const int lo = around - dist, hi = around + dist;
+                if (lo < lowest && hi > highest)
+                    return;
+                if (lo >= lowest && f(lo))
+                    return;
+                if (hi <= highest && f(hi))
+                    return;
+            }
+        };
         int runDisparity = kUnknownDisparity, runEnd = -2;
         unsigned runWorld = 32;
         for (int m = 0; m < misses; ++m)
@@ -453,66 +593,115 @@ void ColorPackRenderer::MatchEyes(uint8_t *frame, uint32_t fbWidth, const uint32
             const int x = missed[m];
             const uint32_t r = right[x];
             const unsigned world = (r >> 20) & 31;
-            const int predicted = m_eyeDisparity[world];
-            int seen = -1;
-            for (uint32_t i = slotOf(r & kWhat); seenAt[i].row == y; i = (i + 1) & 1023)
-                if (seenAt[i].what == (r & kWhat))
+            const uint64_t shade = ShadeBits(rightRow, x, 1);
+            const int candidates[5] = {disparityAt[x], runWorld == world && runEnd + 2 >= x ? runDisparity : kUnknownDisparity,
+                                       y ? m_eyeDisparityAt[(y - 1) * VBGO_TT_WIDTH + x] : kUnknownDisparity,
+                                       lastRow[world], m_eyeDisparity[world]};
+            int around = 0;
+            for (const int c : candidates)
+                if (c != kUnknownDisparity)
                 {
-                    seen = seenAt[i].x;
+                    around = c;
                     break;
                 }
-            if (seen >= 0 && std::abs(seen - x) <= kMaxDisparity && same(seen, r))
+            // 1. The same tile pixel elsewhere on the row: the instance
+            // nearest to where its layer would put it - if what's around it
+            // looks the same too (a tile used all over, in other places;
+            // not asked of sprites, whose surroundings are at other depths).
+            if (!(r & kRightOnly) && (onThisRow[filterBit(r & kWhat) >> 6] >> (filterBit(r & kWhat) & 63) & 1))
             {
-                take(x, seen, true);
-                continue;
+                int found = 0;
+                nearestFirst(x, around, [&](int c) {
+                    if (!same(x + c, r))
+                        return false;
+                    if (!shade || (r & 1u << 17) || windowOff(x, c, kFairMatch + 1) <= kFairMatch)
+                    {
+                        take(x, x + c, true);
+                        runDisparity = c, runWorld = world, runEnd = x;
+                        found = -1;
+                        return true;
+                    }
+                    return ++found == 2;
+                });
+                if (found < 0)
+                    continue;
             }
-            // 2. By the pixels' values.
-            int16_t &cached = m_eyeDisparityAt[y * VBGO_TT_WIDTH + x];
-            auto off = [&](int d, int o) { // the pixel o from x and its counterpart at disparity d differ
-                const int xr = x + o, xl = x + d + o;
-                const uint32_t a = xr >= 0 && xr < VBGO_TT_WIDTH ? right[xr] : 0;
-                const uint32_t b = xl >= 0 && xl < VBGO_TT_WIDTH ? left[xl] : 0;
-                return ((a ^ b) & (kDrawn | 3u << 18 | 1u << 17)) != 0;
-            };
-            auto fits = [&](int d) { return !off(d, 0) && !off(d, -1) && !off(d, 1); };
-            int d = kUnknownDisparity;
-            if (cached != kUnknownDisparity && fits(cached))
-                d = cached;
-            else if (runDisparity != kUnknownDisparity && runWorld == world && runEnd + 2 >= x && fits(runDisparity))
-                d = runDisparity;
-            else
+            const bool shownElsewhere = !(r & kRightOnly) && (m_leftShows[(r & kWhat) >> 6] >> (r & 63) & 1);
+            if (!shade)
             {
-                // The left pixel whose neighbours (2 each side) match best.
-                const int around = predicted != kUnknownDisparity ? predicted : runWorld == world && runDisparity != kUnknownDisparity ? runDisparity : 0;
-                int best = 3; // at most 2 of the 5 off
-                for (int k = 0; k <= 2 * kSearch; ++k)
-                {
-                    const int c = around + ((k & 1) ? -(k + 1) / 2 : k / 2);
-                    if (off(c, 0))
-                        continue;
-                    int cost = 0;
-                    for (int o = -2; o <= 2 && cost < best; ++o)
-                        cost += off(c, o);
-                    if (cost < best)
-                        best = cost, d = c;
-                    if (best == 0)
-                        break;
-                }
+                disparityAt[x] = kUnknownDisparity;
+                continue; // the black shade: black either way
             }
-            cached = static_cast<int16_t>(d);
+            // 2. By what both eyes show around it: the disparity it had last
+            // frame, its neighbour's or the pixel above's, its layer's on
+            // the row or overall - the best of them; if none is close, the
+            // best within kMaxDisparity (at most kSearchBudget pixels a frame
+            // search - the rest take the best of those, and get searched in
+            // the frames after).
+            int d = kUnknownDisparity, best = kWindowWidth * kWindowHeight + 1;
+            uint8_t &lastCost = m_eyeCostAt[y * VBGO_TT_WIDTH + x];
+            bool settled = false; // as good as last frame's match: no need to look further
+            for (int i = 0; i < 5 && best > kCloseMatch && !settled; ++i)
+            {
+                const int c = candidates[i];
+                if (c == kUnknownDisparity || std::abs(c) > kMaxDisparity || x + c < 0 || x + c >= VBGO_TT_WIDTH ||
+                    ShadeBits(leftRow, x + c, 1) != shade)
+                    continue;
+                bool tried = false;
+                for (int j = 0; j < i; ++j)
+                    tried |= candidates[j] == c;
+                if (tried)
+                    continue;
+                const int off = windowOff(x, c, best);
+                if (off < best)
+                    best = off, d = c;
+                settled = i == 0 && lastCost <= kWindowWidth * kWindowHeight && best <= lastCost;
+            }
+            const bool search = best > kFairMatch && !settled && searchBudget > 0 &&
+                                (lastCost == kNotSearched || ((x + y + static_cast<int>(m_eyeFrame)) & (kResearchEvery - 1)) == 0);
+            if (search)
+            {
+                --searchBudget;
+                int limit = best;
+                nearestFirst(x, d != kUnknownDisparity ? d : around, [&](int c) {
+                    if (ShadeBits(leftRow, x + c, 1) != shade)
+                        return false;
+                    const int off = windowOff(x, c, limit);
+                    if (off < limit)
+                        limit = off, d = c;
+                    return limit == 0;
+                });
+                best = limit;
+            }
+            // A tile pixel the left eye shows elsewhere keeps its own colors
+            // unless something looks much the same.
+            if (shownElsewhere && best > kFairMatch)
+                d = kUnknownDisparity;
+            // Remember how good it was - unless it's a poor match nobody
+            // searched past yet (searched as soon as the budget allows).
+            const bool trusted = search || settled || best <= kFairMatch || lastCost == kNoMatch;
+            lastCost = !trusted ? kNotSearched : d == kUnknownDisparity ? kNoMatch : static_cast<uint8_t>(best);
             if (d == kUnknownDisparity)
+            {
+                // 3. Nothing like it: its own colors.
+                disparityAt[x] = kUnknownDisparity;
                 continue;
+            }
             runDisparity = d, runWorld = world, runEnd = x;
             take(x, x + d, false);
         }
     }
     // Each layer's disparity for the next frame: where most of its pixels
-    // matched (kept if it showed nothing matching this time).
+    // showed the same tile pixel, else where most matched by what's around
+    // them (kept if it showed nothing matching this time).
     for (unsigned w = 0; w < 32; ++w)
-    {
-        uint32_t best = 0;
-        for (int d = 0; d <= 2 * kMaxDisparity; ++d)
-            if (votes[w][d] > best)
-                best = votes[w][d], m_eyeDisparity[w] = static_cast<int16_t>(d - kMaxDisparity);
-    }
+        for (const auto *v : {&votes[w], &lookalikeVotes[w]})
+        {
+            uint32_t best = 0;
+            for (int d = 0; d <= 2 * kMaxDisparity; ++d)
+                if ((*v)[d] > best)
+                    best = (*v)[d], m_eyeDisparity[w] = static_cast<int16_t>(d - kMaxDisparity);
+            if (best)
+                break;
+        }
 }
