@@ -221,6 +221,8 @@ bool Emulator::LoadRom(const std::string &romPath, const std::string &displayNam
     if (m_romLoaded)
     {
         m_romBaseName = displayName.empty() ? "rom" : displayName;
+        m_romCrc = TileColorPack::Crc32(romBytes.data(), romBytes.size());
+        m_romSize = static_cast<uint32_t>(romBytes.size());
         LoadRam();
         std::fprintf(stderr, "[Emulator] %s\n", ReloadColorPack().c_str());
     }
@@ -282,13 +284,26 @@ void Emulator::RunFrame(float deltaSeconds)
 
 void Emulator::SetShadePalette(int paletteIndex)
 {
-    if (paletteIndex < 0 || paletteIndex >= kShadePaletteCount)
+    if (paletteIndex != kAutoColors && (paletteIndex < 0 || paletteIndex >= kShadePaletteCount))
         paletteIndex = -1;
     if (paletteIndex == m_shadePaletteIndex)
         return;
 
     m_shadePaletteIndex = paletteIndex;
-    if (paletteIndex >= 0)
+    m_packRenderer.SetAutoColors(paletteIndex == kAutoColors);
+    if (paletteIndex == kAutoColors)
+    {
+        // Automatic colors are painted from the tile tracker's tags (see
+        // ColorPackRenderer); the base palette only shows where nothing
+        // tracked is drawn, and is what they fade toward.
+        std::array<ShadeRgb, 4> palette;
+        for (int i = 0; i < 4; ++i)
+            palette[i] = ShadeRgb{AutoColors::kBase[i][0] / 255.0f, AutoColors::kBase[i][1] / 255.0f, AutoColors::kBase[i][2] / 255.0f};
+        m_shadeColorizer.SetPalette(palette);
+        m_shadeBackground = m_shadeColorizer.Palette()[0];
+        vbgo_tiletrack_set_enabled(true);
+    }
+    else if (paletteIndex >= 0)
     {
         const int pattern = GradientOfShadePalette(paletteIndex);
         if (pattern >= 0)
@@ -354,9 +369,12 @@ void Emulator::UploadFrame()
                 dst[x + 3] = 0xFF;
             }
     }
-    if (m_shadePaletteIndex >= 0 && m_colorPackEnabled && m_packRenderer.Active() && vbgo_tiletrack_is_enabled())
+    // The color pack's colors (unless F8 hid them) and/or the Auto mode's.
+    const bool packShown = m_colorPackEnabled && m_packRenderer.HasPack();
+    if (m_shadePaletteIndex >= 0 && (packShown || m_packRenderer.AutoColorsOn()) && vbgo_tiletrack_is_enabled())
     {
         const uint32_t eyeOffset[2] = {0, m_lastFrameWidth - VBGO_TT_WIDTH};
+        m_packRenderer.SetPackShown(packShown);
         m_packRenderer.Paint(m_frameBufferRgba.data(), m_rawFrame.data(), kFbWidth, eyeOffset, m_shadeBackground);
     }
     if (m_tileDebugView)
@@ -470,6 +488,7 @@ std::string Emulator::ReloadColorPack()
     if (stats.paintings + stats.sheets > 0)
     {
         m_colorPack.FinishImport(stats);
+        m_colorPack.SetRom(m_romCrc, m_romSize); // so the game finds it under any file name
         const std::vector<uint8_t> bytes = m_colorPack.Serialize();
         m_platform->WriteRomsFile(m_romBaseName + ".vbcp", false, bytes.data(), bytes.size());
         std::snprintf(summary, sizeof(summary),
@@ -483,20 +502,37 @@ std::string Emulator::ReloadColorPack()
                       stats.rejected ? "; skipped: " : "",
                       stats.rejected ? stats.lastError.c_str() : "", m_romBaseName.c_str());
     }
-    else if (m_colorPack.Deserialize(m_platform->ReadRomsFile(m_romBaseName + ".vbcp", false)))
-        std::snprintf(summary, sizeof(summary), "Color pack: loaded %s.vbcp (%zu tiles)", m_romBaseName.c_str(),
-                      m_colorPack.TileCount());
+    else if (std::vector<uint8_t> bytes = m_platform->ReadRomsFile(m_romBaseName + ".vbcp", false); m_colorPack.Deserialize(bytes))
+    {
+        // Made before packs recorded their ROM: record this one, so the game
+        // finds it under any file name (and the Android build's index of
+        // bundled packs lists it - see android/app/build.gradle).
+        const bool stamped = !m_colorPack.RomCrc();
+        if (stamped)
+        {
+            bytes = TileColorPack::WithRom(std::move(bytes), m_romCrc, m_romSize);
+            m_platform->WriteRomsFile(m_romBaseName + ".vbcp", false, bytes.data(), bytes.size());
+            m_colorPack.SetRom(m_romCrc, m_romSize);
+        }
+        std::snprintf(summary, sizeof(summary), "Color pack: loaded %s.vbcp (%zu tiles)%s", m_romBaseName.c_str(),
+                      m_colorPack.TileCount(), stamped ? " - recorded its ROM (CRC) in it" : "");
+    }
     // Built into the app (Android: the .vbcp files android/app/build.gradle
     // bundles - see colorpacks.dir there); one in the ROMs folder wins.
     else if (m_colorPack.Deserialize(m_platform->LoadAssetBytes("colorpacks/" + m_romBaseName + ".vbcp")))
         std::snprintf(summary, sizeof(summary), "Color pack: built-in %s.vbcp (%zu tiles)", m_romBaseName.c_str(),
                       m_colorPack.TileCount());
+    // A pack made for this very ROM under another name (the ROM's file was
+    // renamed, or comes from another set).
+    else if (std::string from; FindPackForRom(from))
+        std::snprintf(summary, sizeof(summary), "Color pack: %s (made for this ROM, CRC %08X; %zu tiles)", from.c_str(),
+                      m_romCrc, m_colorPack.TileCount());
     else
-        std::snprintf(summary, sizeof(summary), "Color pack: none for \"%s\"%s%s", m_romBaseName.c_str(),
+        std::snprintf(summary, sizeof(summary), "Color pack: none for \"%s\" (CRC %08X)%s%s", m_romBaseName.c_str(), m_romCrc,
                       stats.rejected ? " - skipped: " : "", stats.rejected ? stats.lastError.c_str() : "");
 
     m_packRenderer.SetPack(&m_colorPack);
-    if (!m_colorPack.Empty())
+    if (!m_colorPack.Empty() || m_packRenderer.AutoColorsOn())
         vbgo_tiletrack_set_enabled(true);
     UpdateFillTracking();
     // A gradient palette learns each game's brightness anew (and takes the
@@ -510,6 +546,52 @@ std::string Emulator::ReloadColorPack()
     if (m_hasFrame && m_ui)
         UploadFrame();
     return summary;
+}
+
+bool Emulator::FindPackForRom(std::string &from)
+{
+    // Built in: android/app/build.gradle lists the bundled packs' ROMs in
+    // colorpacks/index.txt ("<CRC-32 in hex> <ROM size> <pack file>" a line).
+    const std::vector<uint8_t> index = m_platform->LoadAssetBytes("colorpacks/index.txt");
+    const std::string text(index.begin(), index.end());
+    size_t start = 0;
+    while (start < text.size())
+    {
+        size_t end = text.find('\n', start);
+        if (end == std::string::npos)
+            end = text.size();
+        const std::string line = text.substr(start, end - start);
+        start = end + 1;
+        unsigned crc = 0, size = 0;
+        int nameAt = 0;
+        if (std::sscanf(line.c_str(), "%x %u %n", &crc, &size, &nameAt) < 2 || nameAt <= 0 || crc != m_romCrc ||
+            (size && size != m_romSize))
+            continue;
+        std::string name = line.substr(static_cast<size_t>(nameAt));
+        while (!name.empty() && (name.back() == '\r' || name.back() == ' '))
+            name.pop_back();
+        if (m_colorPack.Deserialize(m_platform->LoadAssetBytes("colorpacks/" + name)))
+        {
+            from = "built-in " + name;
+            return true;
+        }
+    }
+    // The ROMs folder's packs (where the platform can list it - not Android).
+    for (const std::string &name : m_platform->ListRomsSubfolder(""))
+    {
+        if (name.size() < 6 || name.compare(name.size() - 5, 5, ".vbcp") != 0)
+            continue;
+        const std::vector<uint8_t> bytes = m_platform->ReadRomsFile(name, false);
+        uint32_t crc = 0, size = 0;
+        if (TileColorPack::RomOf(bytes, crc, size) && crc == m_romCrc && (!size || size == m_romSize) &&
+            m_colorPack.Deserialize(bytes))
+        {
+            from = name;
+            return true;
+        }
+    }
+    m_colorPack.Clear();
+    return false;
 }
 
 void Emulator::SetAuthoring(bool enabled)

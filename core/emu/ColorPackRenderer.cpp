@@ -29,6 +29,11 @@ void ColorPackRenderer::SetPack(const TileColorPack *pack)
         for (auto &grid : eye)
             grid.clear();
     m_layerBound = 0;
+    // (automatic colors start over too: the layers seen, the brightness)
+    m_autoWorlds = 0;
+    m_autoWorldsUsed = ~0u;
+    m_autoMaxLevel = 0;
+    SetFadeReference(m_pack ? m_pack->ReferenceLevel() : 63);
     if (!m_pack)
         return;
     const auto &groups = m_pack->ContextGroups();
@@ -55,14 +60,6 @@ void ColorPackRenderer::SetPack(const TileColorPack *pack)
                 for (auto &grid : eye)
                     grid.assign(kGridW * kGridH, 0xFF);
     }
-    // Same fade as the Multicolor palette (see ShadeColorizer): the brightest
-    // shade's level from the core's tag byte, through the core's gamma -
-    // relative to the brightness the paintings were made at, so a game that
-    // normally runs below full brightness shows exactly the painted colors.
-    const float reference = std::pow(m_pack->ReferenceLevel() / 63.0f, 1.0f / 2.2f);
-    for (int i = 0; i < 64; ++i)
-        m_fade[i] = static_cast<int>(std::lround(256.0f * std::min(1.0f, std::pow(static_cast<float>(i) / 63.0f, 1.0f / 2.2f) / reference)));
-
     const std::vector<TileColorPack::CellTile> &cells = m_pack->CellTiles(); // sorted by cell
     m_cellStart.assign(65537, 0);
     for (const TileColorPack::CellTile &cell : cells)
@@ -87,6 +84,38 @@ void ColorPackRenderer::SetPack(const TileColorPack *pack)
                     m_layered.insert(tile.first);
                     break;
                 }
+}
+
+void ColorPackRenderer::SetFadeReference(unsigned level)
+{
+    // Same fade as the Multicolor palette (see ShadeColorizer): the brightest
+    // shade's level from the core's tag byte, through the core's gamma -
+    // relative to the brightness the paintings were made at (without a
+    // pack: the brightest the game has shown), so a game that normally runs
+    // below full brightness shows exactly the painted colors.
+    const float reference = std::pow(std::max(1u, std::min(63u, level)) / 63.0f, 1.0f / 2.2f);
+    for (int i = 0; i < 64; ++i)
+        m_fade[i] = static_cast<int>(std::lround(256.0f * std::min(1.0f, std::pow(static_cast<float>(i) / 63.0f, 1.0f / 2.2f) / reference)));
+}
+
+void ColorPackRenderer::UpdateAutoColors()
+{
+    // Each background layer's ramp by its depth in the game's drawing order
+    // (higher worlds are drawn first, farther back), over the layers drawn
+    // since the game started - so a layer keeps its colors.
+    if (m_autoWorlds == m_autoWorldsUsed)
+        return;
+    m_autoWorldsUsed = m_autoWorlds;
+    int nearest = 0, farthest = 31;
+    if (m_autoWorlds)
+    {
+        while (!(m_autoWorlds >> nearest & 1))
+            ++nearest;
+        while (!(m_autoWorlds >> farthest & 1))
+            --farthest;
+    }
+    for (int w = 0; w < 32; ++w)
+        m_autoLayer[w] = AutoColors::LayerRamp(farthest > nearest ? static_cast<float>(farthest - w) / (farthest - nearest) : 0.5f);
 }
 
 void ColorPackRenderer::ResolveSlots(const uint32_t *hashes)
@@ -148,21 +177,27 @@ uint64_t ColorPackRenderer::Near(unsigned eye, int x, int y, unsigned world) con
 void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWidth, const uint32_t eyeOffset[2],
                               const ShadeRgb &background)
 {
-    if (!m_pack)
+    const TileColorPack *pack = m_packShown ? m_pack : nullptr;
+    if (!pack && !m_auto)
         return;
+    if (m_auto)
+        UpdateAutoColors();
     const int bg[3] = {static_cast<int>(background.b * 255.0f + 0.5f), static_cast<int>(background.g * 255.0f + 0.5f),
                        static_cast<int>(background.r * 255.0f + 0.5f)};
-    const TileColorPack::CellTile *cellTiles = m_pack->CellTiles().data();
-    const bool haveCells = !m_cellStart.empty();
-    const TileColorPack::ContextTile *contexts = m_pack->ContextTiles().data();
-    const bool haveContexts = !m_markerGrid[0][0].empty();
+    const TileColorPack::CellTile *cellTiles = pack ? pack->CellTiles().data() : nullptr;
+    const bool haveCells = pack && !m_cellStart.empty();
+    const TileColorPack::ContextTile *contexts = pack ? pack->ContextTiles().data() : nullptr;
+    const bool haveContexts = pack && !m_markerGrid[0][0].empty();
+    uint32_t worldsDrawn = 0; // background layers drawn this frame
+    unsigned brightest = 0;
 
     for (unsigned eye = 0; eye < 2; ++eye)
     {
         vbgo_tt_eye_view view;
         if (!vbgo_tiletrack_eye_view(eye, &view))
             continue;
-        ResolveSlots(view.hashes);
+        if (pack)
+            ResolveSlots(view.hashes);
         uint64_t *markers = nullptr; // this frame's marker grid (the other one keeps the last frame's)
         uint8_t *markerLayers = nullptr;
         if (haveContexts)
@@ -200,9 +235,14 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
                 if (pixel && (r[0] | r[1] | r[2]) == 0)
                     continue; // drawn in a shade the game switched off - stays background
                 const unsigned chr = VBGO_TAG_CHAR(t), index = VBGO_TAG_INDEX(t), palette = VBGO_TAG_PALETTE(t);
+                if (!VBGO_TAG_IS_OBJ(t))
+                    worldsDrawn |= 1u << VBGO_TAG_WORLD(t);
+                brightest = std::max<unsigned>(brightest, r[3] >> 2);
+                const uint8_t *rgb = nullptr;
+                if (!pack)
+                    goto automatic;
                 if (pixel && m_slots[chr].ambiguous)
                     m_ambiguousPixels.emplace_back(static_cast<uint16_t>(x), static_cast<uint16_t>(y));
-                const uint8_t *rgb = nullptr;
                 if (markers && pixel && m_slots[chr].markerBits)
                 {
                     // Sprites' groups count sprite markers, background figures'
@@ -237,7 +277,7 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
                     if (lastCell)
                     {
                         if (lastCell->keep >> index & 1)
-                            continue; // left uncolored here on purpose
+                            goto automatic; // left uncolored here on purpose: the mode's own colors
                         if (lastCell->mask >> index & 1)
                             rgb = lastCell->rgb[index];
                     }
@@ -275,12 +315,22 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
                     {
                         tile = slot.palette[palette];
                         if (slot.layered && tile == slot.base)
-                            if (const TileColorPack::Tile *layer = m_pack->FindLayer(slot.hash, VBGO_TAG_WORLD(t)))
+                            if (const TileColorPack::Tile *layer = pack->FindLayer(slot.hash, VBGO_TAG_WORLD(t)))
                                 tile = layer;
                     }
-                    if (!tile || !(tile->mask >> index & 1))
-                        continue; // unpainted - keeps the Multicolor palette's color
-                    rgb = tile->rgb[index];
+                    if (tile && (tile->mask >> index & 1))
+                        rgb = tile->rgb[index];
+                }
+            automatic:
+                if (!rgb)
+                {
+                    // Unpainted: keeps the Multicolor palette's color - or,
+                    // in Auto mode, its layer's or sprite palette's (see
+                    // AutoColors.h); the black shade stays background.
+                    const unsigned shade = r[3] & 3;
+                    if (!m_auto || !pixel || !shade)
+                        continue;
+                    rgb = (VBGO_TAG_IS_OBJ(t) ? AutoColors::kSpriteRamps[palette] : m_autoLayer[VBGO_TAG_WORLD(t)])[shade - 1].data();
                 }
                 uint8_t *dst = &frame[i];
                 const int fade = m_fade[r[3] >> 2]; // 0-256
@@ -302,6 +352,14 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
             PaintAmbiguous(frame, fbWidth, eyeOffset[eye], view);
     }
     MatchEyes(frame, raw, fbWidth, eyeOffset);
+    // Automatic colors: the layers this game draws, its brightness (without
+    // a pack, they fade relative to the brightest it has shown).
+    m_autoWorlds |= worldsDrawn;
+    if (!m_pack && brightest > m_autoMaxLevel)
+    {
+        m_autoMaxLevel = brightest;
+        SetFadeReference(brightest);
+    }
 }
 
 void ColorPackRenderer::PaintAmbiguous(uint8_t *frame, uint32_t fbWidth, uint32_t eyeOffset, const vbgo_tt_eye_view &view)

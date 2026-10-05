@@ -13,6 +13,12 @@ class Platform;
 // palette kFirstGradientShadePalette + n is pattern n (see the table below).
 inline constexpr int kFirstGradientShadePalette = 6;
 
+// AppSettings::selectedShadePalette's value for the Auto color mode: colors
+// by what drew each pixel - its layer's depth, a sprite's palette (see
+// core/emu/AutoColors.h) - under a game's color pack, if it has one. The
+// default, so a game shows in color (its pack's, if any) out of the box.
+inline constexpr int kAutoColors = 100;
+
 // How the screen/menu quads react to head rotation - see
 // OpenXrApp::ComputeScreenOrientation.
 enum class FollowHeadMode : int32_t
@@ -65,19 +71,19 @@ struct AppSettings
 
     // -1 = off; 0+ = index into kShadePalettes - per-shade colors baked into
     // the frame itself by Emulator::SetShadePalette (Red Viper-style
-    // colorization). Mutually exclusive with both the tint and
-    // selectedPattern above: while one's active, ScreenTint()/ScreenPattern()
-    // go neutral and SettingsPage hides the R/G/B rows. Kept as the LAST
-    // field so a version-11 settings file is an exact prefix of this layout
-    // (see Settings.cpp's migration).
-    int selectedShadePalette = -1;
+    // colorization); kAutoColors = the Auto mode (the default). Mutually
+    // exclusive with both the tint and selectedPattern above: while one's
+    // active, ScreenTint()/ScreenPattern() go neutral and SettingsPage hides
+    // the R/G/B rows. Kept as the LAST field so a version-11 settings file is
+    // an exact prefix of this layout (see Settings.cpp's migration).
+    int selectedShadePalette = kAutoColors;
 
     // What the screen should be drawn with (Emulator::DrawScreen's tint/
     // patternIndex) - neutral while a shade palette is active, since its
     // colors are already in the frame and tinting on top would double them.
     //
     // The per-shade palette the emulator colors with (Emulator::
-    // SetShadePalette): the Multicolor one - or, in Gradient mode for a game
+    // SetShadePalette): the Multicolor one or kAutoColors - or, in Gradient mode for a game
     // with a color pack, the gradient's own per-shade version: the pack's
     // colors show, and whatever it doesn't color takes the gradient (picked
     // by each shade's brightness, as Gradient mode does, but held steady

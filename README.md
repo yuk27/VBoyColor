@@ -27,6 +27,14 @@ are planned for the future.
   Ember, Frost, Toxic) use all 5 of their colors: each shade takes the
   gradient's color at the brightness the game gives it - what Gradient mode
   shows at the game's full brightness - and keeps it through fades
+- **Auto** colors (Settings → Color Mode → Auto, the default): coloring by
+  shade can only show 4 colors at once, because the Virtual Boy only outputs
+  4 shades. Auto colors each pixel by what drew it instead - a background
+  layer by its depth in the game's drawing order (far to near: indigo, teal,
+  green, sand), a sprite by its palette (red/yellow for most characters) -
+  with a dark/light/lightest step per shade, so even a game nobody painted
+  shows many colors, the same in both eyes. A game's color pack (see below)
+  colors over it, so a game with a pack shows in color out of the box
 
 ## Opening the menu
 
@@ -211,15 +219,21 @@ moved, saved as PNG) next to their `.tiles` files in
 `roms/<rom name>.vbcp`: each painted pixel votes for its tile pixel's color,
 the majority wins where a tile was painted differently in different places,
 and stray near-duplicate shades are merged. The pack then colors every
-occurrence of those tiles anywhere in the game while a Multicolor palette is
-active - or in Gradient mode, which then colors per shade too, from the
-gradient's 5 colors (see above); unpainted tiles keep the palette's colors. The `.vbcp` file alone is
-enough on other platforms: copy it next to the ROM on the Quest, or build it
-into the app - set `colorpacks.dir` in `android/local.properties` to a folder
-of `.vbcp` files (the desktop build's `roms` folder, say, with forward
-slashes: `colorpacks.dir=C:/path/to/roms`) and every Android build bundles
-them (only the `.vbcp` files; a `.vbcp` in the headset's ROMs folder still
-wins). In the
+occurrence of those tiles anywhere in the game in Auto mode or while a
+Multicolor palette is active - or in Gradient mode, which then colors per
+shade too, from the gradient's 5 colors (see above); unpainted tiles keep the
+mode's colors. The `.vbcp` file alone is enough on other platforms: copy it
+next to the ROM on the Quest, or build it into the app - set `colorpacks.dir`
+in `android/local.properties` to a folder of `.vbcp` files (the desktop
+build's `roms` folder, say, with forward slashes:
+`colorpacks.dir=C:/path/to/roms`) and every Android build bundles them (only
+the `.vbcp` files; a `.vbcp` in the headset's ROMs folder still wins). A pack
+records the ROM it was made for (CRC-32 and size), so the game finds it
+whatever its ROM file is called: by name first, else the bundled pack made
+for this ROM (the Android build lists them in `colorpacks/index.txt`), else
+- on desktop - one in the `roms` folder. Packs made before this get their
+ROM recorded the first time the game loads them by name, or with
+`tools/vbcp_rom.py PACK.vbcp ROM.vb`. In the
 desktop build, **F11** re-imports after editing a painting and **F8** toggles
 the pack for comparison. Packs are painted from the left eye; the right eye
 shows each pixel in the color the left eye gives the same thing, so both eyes
@@ -318,8 +332,9 @@ figure id per pixel (`VBGOFIG1`, 16 bit). `.vbcp` version 3 adds the
 palette and map cell colors and the reference brightness, optionally followed
 by the per-character colors (`VBGOCTX1`, then `VBGOCTXL` marking the
 background figures' ones - older builds skip both) and the tiles a
-character sheet paints two ways in a frame (`VBGOAMB1`); older packs load as
-before.
+character sheet paints two ways in a frame (`VBGOAMB1`), and ends with the
+ROM it was made for (`VBGOROM1`, CRC-32, size - always the last 16 bytes);
+older packs load as before.
 
 A loose mockup that doesn't line up with a capture (different size, shifted,
 partly redrawn) can be turned into a painting with

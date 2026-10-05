@@ -195,6 +195,22 @@ public:
     // so the runtime fades them relative to it (63 if unknown).
     uint8_t ReferenceLevel() const { return m_referenceLevel; }
 
+    // The ROM the pack was made for - the CRC-32 of the ROM file and its
+    // size - so a game finds its pack whatever its file is called (0 if
+    // unknown: packs made before this). Kept in a fixed 16-byte footer
+    // ("VBGOROM1", CRC, size; older builds stop reading before it) that
+    // RomOf reads without parsing the rest.
+    void SetRom(uint32_t crc, uint32_t size)
+    {
+        m_romCrc = crc;
+        m_romSize = size;
+    }
+    uint32_t RomCrc() const { return m_romCrc; }
+    static bool RomOf(const std::vector<uint8_t> &packBytes, uint32_t &crc, uint32_t &size);
+    // A pack file's bytes with that ROM recorded (footer added or replaced).
+    static std::vector<uint8_t> WithRom(std::vector<uint8_t> packBytes, uint32_t crc, uint32_t size);
+    static uint32_t Crc32(const uint8_t *data, size_t size);
+
 private:
     static uint64_t LayerKey(uint32_t hash, unsigned world) { return (static_cast<uint64_t>(hash) << 5) | (world & 31); }
     static uint64_t PaletteKey(uint32_t hash, unsigned palette) { return (static_cast<uint64_t>(hash) << 2) | (palette & 3); }
@@ -215,6 +231,7 @@ private:
     std::vector<ContextTile> m_contextTiles;
     uint64_t m_contextLayerBound = 0;
     std::unordered_set<uint32_t> m_ambiguous;
+    uint32_t m_romCrc = 0, m_romSize = 0;
     uint8_t m_referenceLevel = 63;
     // Objects in the screen paintings being imported (connected tile pixels
     // of one layer): the tiles each one is made of. Context votes carry the

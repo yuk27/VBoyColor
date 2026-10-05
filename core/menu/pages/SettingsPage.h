@@ -34,9 +34,10 @@ private:
     {
         Tint,
         Gradient,
-        Multicolor
+        Multicolor,
+        Auto // colors by layer and sprite (kAutoColors) - the default
     };
-    static constexpr int kColorModeCount = 3;
+    static constexpr int kColorModeCount = 4;
 
     ColorMode CurrentColorMode() const;
     void ChangeColorMode(int delta);

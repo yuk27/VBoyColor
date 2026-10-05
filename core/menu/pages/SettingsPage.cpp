@@ -1,4 +1,5 @@
 #include "menu/pages/SettingsPage.h"
+#include "emu/AutoColors.h"
 #include "io/Platform.h"
 #include "io/Settings.h"
 #include "menu/MenuPage.h"
@@ -42,6 +43,20 @@ void DrawColorPreview(UiRenderer &ui, UiFontHandle labelFont, AppSettings *setti
     float x = rowX + MenuList::kIconSize + MenuList::kIconTextGap + labelWidth + kSwatchLeftGap;
     const float y = rowY + (rowH - kSwatchSize) / 2.0f;
 
+    // Auto: its layers' colors, far to near, and its sprites' red - what the
+    // screen mostly shows (see AutoColors.h).
+    if (settings->selectedShadePalette == kAutoColors)
+    {
+        const AutoColors::Rgb swatches[5] = {AutoColors::kLayerRamps[0][1], AutoColors::kLayerRamps[1][1],
+                                             AutoColors::kLayerRamps[2][1], AutoColors::kLayerRamps[3][1],
+                                             AutoColors::kSpriteRamps[0][1]};
+        for (const AutoColors::Rgb &c : swatches)
+        {
+            ui.DrawQuadRounded(x, y, kSwatchSize, kSwatchSize, XrColor4f{c[0] / 255.0f, c[1] / 255.0f, c[2] / 255.0f, alpha}, 1.0f);
+            x += kSwatchSize + kSwatchGap;
+        }
+        return;
+    }
     // A per-shade palette's own 4 colors - exactly what each shade shows on
     // screen at full brightness (see ShadeColorizer). One made from a
     // gradient picks its shades' colors from all 5 stops, so those show.
@@ -164,6 +179,8 @@ SettingsPage::ColorMode SettingsPage::CurrentColorMode() const
 {
     // Derived from which palette field is set rather than stored, so it can
     // never disagree with what's actually being drawn.
+    if (m_settings->selectedShadePalette == kAutoColors)
+        return ColorMode::Auto;
     if (m_settings->selectedShadePalette >= 0)
         return ColorMode::Multicolor;
     if (m_settings->selectedPattern >= 0)
@@ -188,7 +205,9 @@ void SettingsPage::ChangeColorMode(int delta)
     // Tint needs nothing set: colorR/G/B (and selectedPalette) are kept
     // untouched while another mode is active, so the previous tint returns.
     m_settings->selectedPattern = next == static_cast<int>(ColorMode::Gradient) ? m_lastPattern : -1;
-    m_settings->selectedShadePalette = next == static_cast<int>(ColorMode::Multicolor) ? m_lastShadePalette : -1;
+    m_settings->selectedShadePalette = next == static_cast<int>(ColorMode::Multicolor) ? m_lastShadePalette
+                                       : next == static_cast<int>(ColorMode::Auto)     ? kAutoColors
+                                                                                        : -1;
     RefreshLabels();
 }
 
@@ -217,6 +236,8 @@ void SettingsPage::ChangePalette(int delta)
         m_settings->selectedShadePalette =
             (m_settings->selectedShadePalette + delta + kShadePaletteCount) % kShadePaletteCount;
         break;
+    case ColorMode::Auto:
+        break; // no presets - the row just shows what Auto uses
     }
     RefreshLabels();
 }
@@ -250,7 +271,7 @@ void SettingsPage::RefreshLabels()
     // Color Palette's label stays static ("Color Palette") - its row draws
     // the actual colors via DrawColorPreview instead of a selected-index
     // number (see AddEntry's accessoryDraw above).
-    static constexpr const char *kModeNames[kColorModeCount] = {"Tint", "Gradient", "Multicolor"};
+    static constexpr const char *kModeNames[kColorModeCount] = {"Tint", "Gradient", "Multicolor", "Auto"};
     m_colorModeEntry->SetText(std::string("Color Mode: ") + kModeNames[static_cast<int>(CurrentColorMode())]);
     // 2 decimals, not 3 - kColorStep is 0.05, so the third decimal is always
     // 0 and never actually reachable by adjusting the value.

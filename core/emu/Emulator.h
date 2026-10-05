@@ -152,7 +152,9 @@ public:
     // Per-shade colorization (AppSettings::selectedShadePalette): -1 = off,
     // the core's grayscale goes to the screen texture as-is; 0+ = index into
     // kShadePalettes, every pixel recolored by which VB shade it is (see
-    // ShadeColorizer). Unlike the tint/pattern, this is baked into the
+    // ShadeColorizer); kAutoColors = the Auto mode, colored by what drew
+    // each pixel (see AutoColors.h - turns tile tracking on). Under a color
+    // pack either way. Unlike the tint/pattern, this is baked into the
     // uploaded frame rather than applied at draw time, so on a change the
     // last frame is immediately re-colored and re-uploaded - the screen
     // updates live while the menu has emulation paused. Cheap when
@@ -291,6 +293,8 @@ private:
     // build save-state/SRAM file names. Empty before any ROM loads, when
     // SaveRam/SaveState no-op.
     std::string m_romBaseName;
+    uint32_t m_romCrc = 0, m_romSize = 0; // the loaded ROM's CRC-32 and size (color packs are matched by them too)
+    bool FindPackForRom(std::string &from); // a pack made for this ROM (by its CRC), built in or in the ROMs folder
 
     float m_frameAccumulator = 0.0f; // real time not yet consumed by retro_run() - see kCoreFps
 

@@ -19,7 +19,8 @@ namespace
     constexpr char kFiguresMagic[8] = {'V', 'B', 'G', 'O', 'F', 'I', 'G', '1'}; // + figure id per pixel (uint16)
     constexpr char kContextMagic[8] = {'V', 'B', 'G', 'O', 'C', 'T', 'X', '1'}; // context variants, after the v3 pack
     constexpr char kLayerBoundMagic[8] = {'V', 'B', 'G', 'O', 'C', 'T', 'X', 'L'}; // which of them are layer-bound, after that
-    constexpr char kAmbiguousMagic[8] = {'V', 'B', 'G', 'O', 'A', 'M', 'B', '1'};   // tiles painted two ways in a frame, after those
+    constexpr char kAmbiguousMagic[8] = {'V', 'B', 'G', 'O', 'A', 'M', 'B', '1'};
+    constexpr char kRomMagic[8] = {'V', 'B', 'G', 'O', 'R', 'O', 'M', '1'}; // the pack's last 16 bytes: + ROM CRC-32, size   // tiles painted two ways in a frame, after those
 
     constexpr uint32_t kNoColor = 0x01000000;   // a magenta vote: leave uncolored
     constexpr uint32_t kBackground = 0x02000000; // a transparent pixel left as the background (fills only)
@@ -104,6 +105,7 @@ namespace
 
 void TileColorPack::Clear()
 {
+    m_romCrc = m_romSize = 0;
     m_tiles.clear();
     m_layerTiles.clear();
     m_paletteTiles.clear();
@@ -1234,7 +1236,54 @@ std::vector<uint8_t> TileColorPack::Serialize() const
         for (const uint32_t hash : ambiguous)
             AppendLe(out, hash, 4);
     }
+    if (m_romCrc || m_romSize)
+    {
+        out.insert(out.end(), kRomMagic, kRomMagic + 8);
+        AppendLe(out, m_romCrc, 4);
+        AppendLe(out, m_romSize, 4);
+    }
     return out;
+}
+
+bool TileColorPack::RomOf(const std::vector<uint8_t> &packBytes, uint32_t &crc, uint32_t &size)
+{
+    crc = size = 0;
+    if (packBytes.size() < 12 + 16 || std::memcmp(&packBytes[packBytes.size() - 16], kRomMagic, 8) != 0)
+        return false;
+    crc = ReadLe32(&packBytes[packBytes.size() - 8]);
+    size = ReadLe32(&packBytes[packBytes.size() - 4]);
+    return true;
+}
+
+std::vector<uint8_t> TileColorPack::WithRom(std::vector<uint8_t> packBytes, uint32_t crc, uint32_t size)
+{
+    uint32_t oldCrc = 0, oldSize = 0;
+    if (RomOf(packBytes, oldCrc, oldSize))
+        packBytes.resize(packBytes.size() - 16);
+    packBytes.insert(packBytes.end(), kRomMagic, kRomMagic + 8);
+    AppendLe(packBytes, crc, 4);
+    AppendLe(packBytes, size, 4);
+    return packBytes;
+}
+
+uint32_t TileColorPack::Crc32(const uint8_t *data, size_t size)
+{
+    // CRC-32 (IEEE 802.3, as zip and No-Intro's ROM lists use).
+    static const std::array<uint32_t, 256> table = [] {
+        std::array<uint32_t, 256> t{};
+        for (uint32_t i = 0; i < 256; ++i)
+        {
+            uint32_t c = i;
+            for (int k = 0; k < 8; ++k)
+                c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+            t[i] = c;
+        }
+        return t;
+    }();
+    uint32_t crc = 0xFFFFFFFFu;
+    for (size_t i = 0; i < size; ++i)
+        crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
+    return crc ^ 0xFFFFFFFFu;
 }
 
 bool TileColorPack::Deserialize(const std::vector<uint8_t> &bytes)
@@ -1249,6 +1298,7 @@ bool TileColorPack::Deserialize(const std::vector<uint8_t> &bytes)
                                                                           : 0;
     if (!version)
         return false;
+    RomOf(bytes, m_romCrc, m_romSize);
     size_t offset = 8;
     auto have = [&](size_t n) { return bytes.size() >= offset + n; };
     auto readTile = [&](Tile &tile) {

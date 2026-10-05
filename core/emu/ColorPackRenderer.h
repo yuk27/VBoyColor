@@ -1,5 +1,6 @@
 #pragma once
 
+#include "emu/AutoColors.h"
 #include "emu/ShadeColorizer.h"
 #include "emu/TileColorPack.h"
 #include "emu/vbgo_tiletrack.h"
@@ -26,7 +27,16 @@ public:
     // Builds the lookup tables (call again whenever the pack changes; the
     // pack must outlive its use here). nullptr / an empty pack disables.
     void SetPack(const TileColorPack *pack);
-    bool Active() const { return m_pack != nullptr; }
+    bool HasPack() const { return m_pack != nullptr; }
+    // Whether the pack's colors show (off: only automatic colors, if on - to
+    // compare).
+    void SetPackShown(bool shown) { m_packShown = shown; }
+    // Automatic colors (see AutoColors.h) for every tracked pixel the pack
+    // doesn't color - all of them, without a pack.
+    void SetAutoColors(bool on) { m_auto = on; }
+    bool AutoColorsOn() const { return m_auto; }
+    // Something to paint: a pack, or automatic colors.
+    bool Active() const { return m_pack != nullptr || m_auto; }
 
     // The map cells the pack has fill colors for, as the 65536-bit map
     // vbgo_tiletrack_set_fill_cells takes; empty if there are none.
@@ -53,6 +63,15 @@ private:
     };
 
     void ResolveSlots(const uint32_t *hashes);
+    void SetFadeReference(unsigned level);
+
+    // Automatic colors: every background layer's ramp (by world), from the
+    // layers drawn since the pack was set (bit per world).
+    bool m_auto = false, m_packShown = true;
+    uint32_t m_autoWorlds = 0, m_autoWorldsUsed = ~0u;
+    unsigned m_autoMaxLevel = 0;
+    std::array<AutoColors::Ramp, 32> m_autoLayer{};
+    void UpdateAutoColors();
 
     // Pixels of ambiguous tiles (see TileColorPack::IsAmbiguous) painted this
     // eye, (x, y) - they take the color the same shade has next to them.

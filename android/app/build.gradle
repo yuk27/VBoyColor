@@ -126,7 +126,24 @@ def bundleColorPacks = tasks.register("bundleColorPacks") {
             from(packs)
             into(destDir)
         }
-        logger.lifecycle("Bundled ${destDir.list().length} color pack(s): ${destDir.list().sort().join(', ')}")
+        // colorpacks/index.txt: the ROM each pack was made for (its 16-byte
+        // "VBGOROM1" footer: CRC-32, size), so a game finds its pack whatever
+        // its ROM file is called (see Emulator::FindPackForRom).
+        def index = []
+        destDir.listFiles().findAll { it.name.endsWith(".vbcp") }.sort { it.name }.each { pack ->
+            def bytes = pack.bytes
+            if (bytes.length >= 28 && new String(bytes, bytes.length - 16, 8, "US-ASCII") == "VBGOROM1") {
+                def buf = java.nio.ByteBuffer.wrap(bytes, bytes.length - 8, 8).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                def crc = Integer.toUnsignedLong(buf.getInt())
+                def size = Integer.toUnsignedLong(buf.getInt())
+                index << String.format("%08x %d %s", crc, size, pack.name)
+            } else {
+                logger.lifecycle("  ${pack.name}: made before packs recorded their ROM - found only by the ROM's file name")
+            }
+        }
+        new File(destDir, "index.txt").setText(index.join("\n") + "\n", "UTF-8")
+        def bundled = destDir.list().findAll { it.endsWith(".vbcp") }.sort()
+        logger.lifecycle("Bundled ${bundled.size()} color pack(s) (${index.size()} findable by ROM checksum): ${bundled.join(', ')}")
     }
 }
 tasks.named("preBuild").configure { dependsOn(bundleColorPacks) }
