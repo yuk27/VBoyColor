@@ -570,7 +570,6 @@ def write_sheet(path_png, placed, scale, colors):
 # up inverted - value 1 is the lightest shade, 3 the darkest.
 NEAR_WORLD, FAR_WORLD, PLAYER_PALETTE = 21, 26, 0
 SHOWN_ORDER = np.array([0, 3, 2, 1], np.uint8)
-SHOWN_MAGIC = b"VBGOSHW1"
 FIGURES_MAGIC = b"VBGOFIG1"
 
 
@@ -603,9 +602,9 @@ def write_character_sheet(path_png, name, near, far, colors, scale, min_uncolore
     (VBGOFIG1 - the importer treats each as if it had been captured on a
     screen of its own, so the character's colors stay its own on tiles other
     characters share). Shades are shown as the game shows them on the court;
-    what the pack already colors is drawn in its colors, and the sidecar
-    records exactly what was shown (VBGOSHW1), so pixels left as they are
-    don't count as painted. Returns (frames on the sheet, frames in all)."""
+    what the pack already colors is drawn in its colors - left as it is, that
+    counts as painted too (the sheet is the whole character: wrong colors are
+    to be painted over). Returns (frames on the sheet, frames in all)."""
     sections = []
     for title, items, world in (("near court", near, NEAR_WORLD), ("far court", far, FAR_WORLD)):
         todo = [as_player(it, world) for it in dedupe(items) if uncolored_pixels(it, colors) >= min_uncolored]
@@ -669,7 +668,9 @@ def write_character_sheet(path_png, name, near, far, colors, scale, min_uncolore
         f.write(rec.astype("<u8").tobytes())
         f.write(struct.pack("<I", count) + dictionary)
         f.write(PALETTE_MAGIC + PALETTE.tobytes() + bytes([255]))
-        f.write(SHOWN_MAGIC + np.ascontiguousarray(shown).tobytes())
+        # (No VBGOSHW1: a character sheet is all of the character, so colors
+        # left as the pack showed them count too - they tell it apart from the
+        # other characters on the tiles they share.)
         f.write(FIGURES_MAGIC + fig.astype("<u2").tobytes())
     return n, len(dedupe(near)) + len(dedupe(far))
 
@@ -693,6 +694,8 @@ def main():
     ap.add_argument("--no-pack", action="store_true", help="draw everything in the plain palette")
     ap.add_argument("--characters-only", action="store_true",
                     help="only write the character sheets (one per character, what the pack doesn't color yet)")
+    ap.add_argument("--all-frames", action="store_true",
+                    help="character sheets with every frame, colored or not (\"<character> - all frames\")")
     args = ap.parse_args()
 
     rom_path = Path(args.rom)
@@ -719,9 +722,10 @@ def main():
     char_dir = out / "character sheets"
     char_dir.mkdir(parents=True, exist_ok=True)
     for name, near, far in chars:
-        n, total = write_character_sheet(char_dir / ("%s %s - to paint.png" % (game, name)), name, near, far,
-                                         colors, args.scale)
-        print("%s: %d of %d frames still to paint" % (name, n, total))
+        suffix = "all frames" if args.all_frames else "to paint"
+        n, total = write_character_sheet(char_dir / ("%s %s - %s.png" % (game, name, suffix)), name, near, far,
+                                         colors, args.scale, min_uncolored=0 if args.all_frames else 12)
+        print("%s: %d of %d frames %s" % (name, n, total, "on the sheet" if args.all_frames else "still to paint"))
     if args.characters_only:
         return
     print("Decoding screens...")

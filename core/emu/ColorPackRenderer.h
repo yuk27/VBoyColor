@@ -49,9 +49,15 @@ private:
         const TileColorPack::Tile *palette[4] = {};  // per palette: its own colors, else base
         uint64_t markerBits = 0;                     // context groups this tile is a marker of
         uint32_t contextFirst = 0, contextCount = 0; // its context variants in the pack's ContextTiles()
+        bool ambiguous = false;                      // painted two ways in a frame: takes its surroundings' colors
     };
 
     void ResolveSlots(const uint32_t *hashes);
+
+    // Pixels of ambiguous tiles (see TileColorPack::IsAmbiguous) painted this
+    // eye, (x, y) - they take the color the same shade has next to them.
+    std::vector<std::pair<uint16_t, uint16_t>> m_ambiguousPixels;
+    void PaintAmbiguous(uint8_t *frame, uint32_t fbWidth, uint32_t eyeOffset, const vbgo_tt_eye_view &view);
 
     // Gives the right eye the left eye's colors (see the .cpp).
     void MatchEyes(uint8_t *frame, uint32_t fbWidth, const uint32_t eyeOffset[2]);

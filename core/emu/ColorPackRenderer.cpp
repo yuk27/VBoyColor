@@ -102,6 +102,7 @@ void ColorPackRenderer::ResolveSlots(const uint32_t *hashes)
             slot.palette[p] = variant ? variant : slot.base;
         }
         slot.layered = !m_layered.empty() && m_layered.count(slot.hash) != 0;
+        slot.ambiguous = m_pack->IsAmbiguous(slot.hash);
         slot.markerBits = 0;
         slot.contextCount = 0;
         if (!m_markerBits.empty())
@@ -194,6 +195,8 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
                 if (pixel && (r[0] | r[1] | r[2]) == 0)
                     continue; // drawn in a shade the game switched off - stays background
                 const unsigned chr = VBGO_TAG_CHAR(t), index = VBGO_TAG_INDEX(t), palette = VBGO_TAG_PALETTE(t);
+                if (pixel && m_slots[chr].ambiguous)
+                    m_ambiguousPixels.emplace_back(static_cast<uint16_t>(x), static_cast<uint16_t>(y));
                 const uint8_t *rgb = nullptr;
                 if (markers && pixel && m_slots[chr].markerBits)
                 {
@@ -290,8 +293,48 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
                 }
             }
         }
+        if (!m_ambiguousPixels.empty())
+            PaintAmbiguous(frame, fbWidth, eyeOffset[eye], view);
     }
     MatchEyes(frame, fbWidth, eyeOffset);
+}
+
+void ColorPackRenderer::PaintAmbiguous(uint8_t *frame, uint32_t fbWidth, uint32_t eyeOffset, const vbgo_tt_eye_view &view)
+{
+    // A tile a character paints two ways in one frame (a plain filled tile:
+    // the shirt's white, the cap's green) takes, pixel by pixel, the color
+    // of the nearest pixel of the same shade on its layer that isn't such a
+    // tile - the shirt's or the cap's around it (within 8 pixels, straight
+    // up, down, left or right). Without one it keeps what the pack gave it.
+    auto tagAt = [&](int x, int y, uint64_t &t) {
+        if (x < 0 || x >= VBGO_TT_WIDTH || y < 0 || y >= VBGO_TT_HEIGHT || !view.columns[x])
+            return false;
+        t = view.columns[x][y];
+        return (t >> 48) == view.stamp;
+    };
+    static constexpr int kDirections[4][2] = {{0, -1}, {0, 1}, {-1, 0}, {1, 0}};
+    for (const auto &p : m_ambiguousPixels)
+    {
+        const int x = p.first, y = p.second;
+        uint64_t t = 0, n = 0;
+        if (!tagAt(x, y, t))
+            continue;
+        int from = -1;
+        for (int d = 1; d <= 8 && from < 0; ++d)
+            for (const auto &dir : kDirections)
+            {
+                const int nx = x + dir[0] * d, ny = y + dir[1] * d;
+                if (tagAt(nx, ny, n) && VBGO_TAG_PIXEL(n) == VBGO_TAG_PIXEL(t) && VBGO_TAG_WORLD(n) == VBGO_TAG_WORLD(t) &&
+                    VBGO_TAG_IS_OBJ(n) == VBGO_TAG_IS_OBJ(t) && !m_slots[VBGO_TAG_CHAR(n)].ambiguous)
+                {
+                    from = ny * static_cast<int>(fbWidth) + static_cast<int>(eyeOffset) + nx;
+                    break;
+                }
+            }
+        if (from >= 0)
+            std::memcpy(&frame[(static_cast<size_t>(y) * fbWidth + eyeOffset + x) * 4], &frame[static_cast<size_t>(from) * 4], 3);
+    }
+    m_ambiguousPixels.clear();
 }
 
 void ColorPackRenderer::MatchEyes(uint8_t *frame, uint32_t fbWidth, const uint32_t eyeOffset[2])

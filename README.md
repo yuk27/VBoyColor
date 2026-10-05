@@ -221,7 +221,9 @@ slashes: `colorpacks.dir=C:/path/to/roms`) and every Android build bundles
 them (only the `.vbcp` files; a `.vbcp` in the headset's ROMs folder still
 wins). In the
 desktop build, **F11** re-imports after editing a painting and **F8** toggles
-the pack for comparison.
+the pack for comparison. Packs are painted from the left eye; the right eye
+shows each pixel in the color the left eye gives the same thing (games often
+draw a layer once per eye, with tiles of their own).
 
 **Painting rules.** Only what you change counts: pixels left in the capture's
 own colors are ignored, so a capture can be painted a bit at a time. Paint
@@ -308,7 +310,8 @@ with what every pixel showed (`VBGOSHW1`, RGB at 1x); character sheets add a
 figure id per pixel (`VBGOFIG1`, 16 bit). `.vbcp` version 3 adds the
 palette and map cell colors and the reference brightness, optionally followed
 by the per-character colors (`VBGOCTX1`, then `VBGOCTXL` marking the
-background figures' ones - older builds skip both); older packs load as
+background figures' ones - older builds skip both) and the tiles a
+character sheet paints two ways in a frame (`VBGOAMB1`); older packs load as
 before.
 
 A loose mockup that doesn't line up with a capture (different size, shifted,
@@ -329,7 +332,16 @@ the pack doesn't fully color yet, near and far court, in the shades the court
 shows them. Each frame on it counts as a figure of its own - as if each had
 been captured on a screen by itself - and the frames of one sheet are one
 character, so the colors painted there stay that character's even on tiles
-the players share (`--characters-only` writes just these).
+the players share (`--characters-only` writes just these; `--all-frames`
+puts every frame on them, colored or not). For their tiles a character's
+sheet decides: no other character's tiles switch its colors on, and what
+screen paintings show of those tiles at a map cell or on a layer makes no
+cell or layer colors (players move through the map and swap layers with the
+side of the court). A tile a sheet paints two ways within one frame (a plain
+filled tile: a shirt's white, a cap's green) takes, pixel by pixel, the color
+the same shade has right next to it on screen. Everything on a character
+sheet counts as painted, colors left as the pack showed them too (paint over
+wrong ones).
 
 ## Credits
 

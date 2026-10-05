@@ -129,6 +129,12 @@ public:
     // next to another (portraits in a row) doesn't take its colors.
     uint64_t LayerBoundGroups() const { return m_contextLayerBound; }
 
+    // Tiles a character sheet (VBGOFIG1) paints two ways within one frame (a
+    // plain filled tile white on the shirt, green on the cap): no context can
+    // tell those apart, so the runtime gives such a tile's pixels the color
+    // the same shade has right next to it (see ColorPackRenderer).
+    bool IsAmbiguous(uint32_t hash) const { return !m_ambiguous.empty() && m_ambiguous.count(hash) != 0; }
+
     bool HasLayerColors() const { return !m_layerTiles.empty(); }
     bool HasPaletteColors() const { return !m_paletteTiles.empty(); }
     const std::unordered_map<uint32_t, Tile> &Tiles() const { return m_tiles; }
@@ -208,6 +214,7 @@ private:
     std::vector<std::vector<uint32_t>> m_contextGroups;
     std::vector<ContextTile> m_contextTiles;
     uint64_t m_contextLayerBound = 0;
+    std::unordered_set<uint32_t> m_ambiguous;
     uint8_t m_referenceLevel = 63;
     // Objects in the screen paintings being imported (connected tile pixels
     // of one layer): the tiles each one is made of. Context votes carry the
