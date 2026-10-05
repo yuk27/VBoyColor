@@ -197,7 +197,7 @@ private:
     {
         uint64_t key;
         uint32_t rgb; // 0xRRGGBB, or the "no color" marker
-        uint32_t extra; // cell votes: the world (bits 0-4) and whether it's a fill (bit 8)
+        uint32_t extra; // cell votes: the world (bits 0-4) and whether it's a fill (bit 8); layer votes: the palette
     };
 
     std::unordered_map<uint32_t, Tile> m_tiles;
@@ -215,6 +215,7 @@ private:
     std::vector<std::vector<uint32_t>> m_objectTiles;
     std::vector<uint8_t> m_objectIsFigure; // per object: a background figure (not a sprite)
     std::vector<int32_t> m_objectFamily;   // per object: its figure sheet (one character's frames), or -1
+    std::vector<uint8_t> m_objectPalette;  // per object: the palette all its pixels were drawn in, or 0xFF
     int32_t m_families = 0;
     std::unordered_set<uint32_t> m_looseTiles; // background tiles seen outside figures
     std::vector<Vote> m_contextVotes;

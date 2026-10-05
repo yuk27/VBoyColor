@@ -113,6 +113,7 @@ void TileColorPack::Clear()
     m_objectTiles.clear();
     m_objectIsFigure.clear();
     m_objectFamily.clear();
+    m_objectPalette.clear();
     m_families = 0;
     m_looseTiles.clear();
     m_contextVotes.clear();
@@ -288,6 +289,7 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
             m_objectTiles.push_back(std::move(tiles));
             m_objectIsFigure.push_back(figureBg[k]);
             m_objectFamily.push_back(family);
+            m_objectPalette.push_back(0xFF);
         }
         for (int32_t &o : object)
             if (o >= 0)
@@ -369,10 +371,17 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
             tiles.erase(std::unique(tiles.begin(), tiles.end()), tiles.end());
             if (tiles.size() > kMaxObjectTiles)
                 continue;
+            uint8_t palette = 0xFE;
+            for (const size_t i : group.second)
+            {
+                const uint8_t p = static_cast<uint8_t>(VBGO_TT_PALETTE(ReadLe64(&sidecar[headerSize + i * 8])));
+                palette = palette == 0xFE || palette == p ? p : 0xFF;
+            }
             const int32_t id = static_cast<int32_t>(m_objectTiles.size());
             m_objectTiles.push_back(std::move(tiles));
             m_objectIsFigure.push_back(layer >= 32);
             m_objectFamily.push_back(-1);
+            m_objectPalette.push_back(palette);
             for (const size_t i : group.second)
                 object[i] = id;
         }
@@ -432,7 +441,7 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
                     shades.fill(0xFF);
                 shades[key & 63] = static_cast<uint8_t>(VBGO_TT_PIXEL(t));
             }
-            m_layerVotes.push_back({(key << 5) | VBGO_TT_WORLD(t), rgb, 0});
+            m_layerVotes.push_back({(key << 5) | VBGO_TT_WORLD(t), rgb, VBGO_TT_PALETTE(t)});
             m_paletteVotes.push_back({(key << 2) | VBGO_TT_PALETTE(t), rgb, 0});
         }
     }
@@ -534,6 +543,17 @@ void TileColorPack::ResolveContexts(ImportStats &stats)
         {
             Object o;
             o.id = m_contextVotes[i].extra;
+            // An object drawn in a palette whose own colors it paints exactly
+            // (an option shown in its "not selected" palette) is told apart by
+            // that palette already - that's no reason for a context.
+            const Tile *own = nullptr;
+            size_t ownDiffers = 0;
+            if (o.id < m_objectPalette.size() && m_objectPalette[o.id] < 4)
+            {
+                const auto variant = m_paletteTiles.find((static_cast<uint64_t>(hash) << 2) | m_objectPalette[o.id]);
+                if (variant != m_paletteTiles.end())
+                    own = &variant->second;
+            }
             while (i < end && m_contextVotes[i].extra == o.id)
             {
                 size_t next = i;
@@ -548,8 +568,12 @@ void TileColorPack::ResolveContexts(ImportStats &stats)
                 ++o.painted;
                 if ((base->mask >> px & 1) && distance(color, rgbOf(base->rgb[px])) > kDiffers)
                     ++o.differs;
+                if (own && (!(own->mask >> px & 1) || distance(color, rgbOf(own->rgb[px])) > kDiffers))
+                    ++ownDiffers;
                 i = next;
             }
+            if (own && ownDiffers == 0)
+                o.differs = 0;
             objects.push_back(o);
         }
         run = end;
@@ -946,6 +970,19 @@ void TileColorPack::FinishImport(ImportStats &stats)
     };
     Chosen paletteChosen;
     variants(m_paletteVotes, 2, m_paletteTiles, stats.palettePixels, &paletteChosen);
+    // A layer's votes that only follow their palette's own variant (a menu's
+    // "not selected" entries) say nothing about the layer: they count as the
+    // tile's usual color there, so the palette's colors don't turn into a
+    // layer variant that then also recolors the selected entries.
+    for (Vote &vote : m_layerVotes)
+    {
+        const uint64_t pixelKey = vote.key >> 5;
+        uint32_t own, overall;
+        if (vote.rgb < kNoColor && paletteChosen.Get((pixelKey << 2) | (vote.extra & 3), own) && own == vote.rgb &&
+            chosen.Get(pixelKey, overall))
+            vote.rgb = overall;
+    }
+    std::sort(m_layerVotes.begin(), m_layerVotes.end(), byKeyThenColor);
     variants(m_layerVotes, 5, m_layerTiles, stats.layerPixels, nullptr);
 
     // Cleanup 4: map cells. Wherever a painting shows a background tile at a
@@ -1027,6 +1064,7 @@ void TileColorPack::FinishImport(ImportStats &stats)
     m_objectTiles.clear();
     m_objectIsFigure.clear();
     m_objectFamily.clear();
+    m_objectPalette.clear();
     m_families = 0;
     m_looseTiles.clear();
     m_tileShades.clear();
