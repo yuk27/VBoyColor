@@ -486,6 +486,11 @@ std::string Emulator::ReloadColorPack()
     else if (m_colorPack.Deserialize(m_platform->ReadRomsFile(m_romBaseName + ".vbcp", false)))
         std::snprintf(summary, sizeof(summary), "Color pack: loaded %s.vbcp (%zu tiles)", m_romBaseName.c_str(),
                       m_colorPack.TileCount());
+    // Built into the app (Android: the .vbcp files android/app/build.gradle
+    // bundles - see colorpacks.dir there); one in the ROMs folder wins.
+    else if (m_colorPack.Deserialize(m_platform->LoadAssetBytes("colorpacks/" + m_romBaseName + ".vbcp")))
+        std::snprintf(summary, sizeof(summary), "Color pack: built-in %s.vbcp (%zu tiles)", m_romBaseName.c_str(),
+                      m_colorPack.TileCount());
     else
         std::snprintf(summary, sizeof(summary), "Color pack: none for \"%s\"%s%s", m_romBaseName.c_str(),
                       stats.rejected ? " - skipped: " : "", stats.rejected ? stats.lastError.c_str() : "");

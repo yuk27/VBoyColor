@@ -214,7 +214,12 @@ and stray near-duplicate shades are merged. The pack then colors every
 occurrence of those tiles anywhere in the game while a Multicolor palette is
 active - or in Gradient mode, which then colors per shade too, from the
 gradient's 5 colors (see above); unpainted tiles keep the palette's colors. The `.vbcp` file alone is
-enough on other platforms (copy it next to the ROM on the Quest). In the
+enough on other platforms: copy it next to the ROM on the Quest, or build it
+into the app - set `colorpacks.dir` in `android/local.properties` to a folder
+of `.vbcp` files (the desktop build's `roms` folder, say, with forward
+slashes: `colorpacks.dir=C:/path/to/roms`) and every Android build bundles
+them (only the `.vbcp` files; a `.vbcp` in the headset's ROMs folder still
+wins). In the
 desktop build, **F11** re-imports after editing a painting and **F8** toggles
 the pack for comparison.
 

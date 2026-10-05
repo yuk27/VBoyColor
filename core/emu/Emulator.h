@@ -197,7 +197,9 @@ public:
     // colorpacks/<rom>/ with paintings (each "<name>.png" beside the
     // "<name>.tiles" its reference was captured with - desktop only, needs
     // folder listing), imports them and saves the result as <rom>.vbcp next
-    // to the ROM; otherwise loads an existing <rom>.vbcp (any platform).
+    // to the ROM; otherwise loads an existing <rom>.vbcp (any platform), or
+    // else one built into the app (asset "colorpacks/<rom>.vbcp" - Android
+    // bundles them at build time, see android/app/build.gradle).
     // Called by LoadRom; call again to pick up edited paintings. Turns tile
     // tracking on when a pack is present. Returns a one-line summary.
     std::string ReloadColorPack();

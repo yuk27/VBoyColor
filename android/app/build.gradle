@@ -1,5 +1,23 @@
 apply plugin: 'com.android.application'
 
+// android/local.properties (gitignored): machine-specific settings -
+// keystore.dir and colorpacks.dir (both below).
+def localProps = new Properties()
+def localPropsFile = rootProject.file("local.properties")
+if (localPropsFile.exists()) {
+    localPropsFile.withInputStream { localProps.load(it) }
+}
+
+// Color packs built into the app: set colorpacks.dir to a folder holding
+// "<rom name>.vbcp" files - typically the desktop build's roms folder, where
+// it rebuilds a game's pack whenever that game (with a colorpacks/ folder) is
+// loaded - and every build bundles its *.vbcp files (nothing else - never
+// ROMs) as assets colorpacks/<rom name>.vbcp. Emulator::ReloadColorPack uses
+// those when the headset's ROMs folder has no .vbcp of its own for the game.
+// Unset = none bundled. Packs never go into the repo.
+def colorPacksDir = localProps.getProperty("colorpacks.dir")
+def colorPackAssets = new File(layout.buildDirectory.get().asFile, "generated/colorpack-assets")
+
 android {
     namespace "com.nintendont.virtualboygo"
     ndkVersion "23.2.8568313"
@@ -54,18 +72,13 @@ android {
     sourceSets {
         main {
             manifest.srcFile "AndroidManifest.xml"
-            assets.srcDirs = ["../../assets/runtime"]
+            assets.srcDirs = ["../../assets/runtime", colorPackAssets]
         }
     }
 
     // Release keystore lives outside the repo - set keystore.dir in
     // android/local.properties (gitignored). keystore.txt: line 1 = store
     // password, line 2 = key password. Absent = unsigned debug builds still work.
-    def localProps = new Properties()
-    def localPropsFile = rootProject.file("local.properties")
-    if (localPropsFile.exists()) {
-        localPropsFile.withInputStream { localProps.load(it) }
-    }
     def keystoreDir = localProps.getProperty("keystore.dir")
     def keystoreConfigured = keystoreDir != null && new File(keystoreDir, "keystore.txt").exists()
     if (keystoreConfigured) {
@@ -95,3 +108,25 @@ android {
         }
     }
 }
+
+// Copies the packs to bundle (see colorpacks.dir above) before every build -
+// fresh each time, so a pack removed from that folder leaves the app too.
+def bundleColorPacks = tasks.register("bundleColorPacks") {
+    def packs = colorPacksDir != null ? fileTree(colorPacksDir) { include "*.vbcp" } : files()
+    inputs.files(packs)
+    outputs.dir(colorPackAssets)
+    doLast {
+        if (colorPacksDir != null && !new File(colorPacksDir).isDirectory()) {
+            logger.warn("colorpacks.dir (android/local.properties) isn't a folder: ${colorPacksDir} - no color packs bundled")
+        }
+        project.delete(colorPackAssets)
+        def destDir = new File(colorPackAssets, "colorpacks")
+        destDir.mkdirs()
+        project.copy {
+            from(packs)
+            into(destDir)
+        }
+        logger.lifecycle("Bundled ${destDir.list().length} color pack(s): ${destDir.list().sort().join(', ')}")
+    }
+}
+tasks.named("preBuild").configure { dependsOn(bundleColorPacks) }
