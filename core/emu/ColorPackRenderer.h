@@ -53,6 +53,20 @@ private:
 
     void ResolveSlots(const uint32_t *hashes);
 
+    // Gives the right eye the left eye's colors (see the .cpp).
+    void MatchEyes(uint8_t *frame, uint32_t fbWidth, const uint32_t eyeOffset[2]);
+    static constexpr int kMaxDisparity = 64, kUnknownDisparity = 0x7FFF, kSearch = 24;
+    std::vector<uint32_t> m_eyeTags;   // both eyes' tags, row-major, packed (see MatchEyes)
+    std::vector<int16_t> m_eyeDisparityAt; // per right-eye pixel: the disparity its value match had last frame
+    std::array<int16_t, 32> m_eyeDisparity = MakeUnknownDisparities(); // per world: right eye x -> left eye x
+    static constexpr std::array<int16_t, 32> MakeUnknownDisparities()
+    {
+        std::array<int16_t, 32> a{};
+        for (auto &d : a)
+            d = kUnknownDisparity;
+        return a;
+    }
+
     // Context (see TileColorPack.h): where markers were drawn, per eye, on a
     // grid of 8x8-pixel screen cells - the last frame's and the one being
     // painted. A shared tile takes a group's colors if one of its markers

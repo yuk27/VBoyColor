@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 
 void ColorPackRenderer::SetPack(const TileColorPack *pack)
 {
@@ -288,5 +290,186 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
                 }
             }
         }
+    }
+    MatchEyes(frame, fbWidth, eyeOffset);
+}
+
+void ColorPackRenderer::MatchEyes(uint8_t *frame, uint32_t fbWidth, const uint32_t eyeOffset[2])
+{
+    // Both eyes see one scene, so they must show it in the same colors - but
+    // the pack is painted from left-eye captures, and games often draw a
+    // layer twice, once per eye on a world of its own (Wario Land: 23 left,
+    // 24 right), with map cells and even tiles of its own (pre-shifted
+    // copies): looked up on its own, the right eye would get other layers'
+    // colors, or none. So every right-eye pixel takes the color of the
+    // left-eye pixel showing the same thing:
+    //  1. the same tile pixel on that row (sprite or background alike), at
+    //     the disparity its layer had last time, or else wherever the left
+    //     eye shows it on the row (within kMaxDisparity);
+    //  2. for a tile pixel the left eye doesn't show - the right eye's own
+    //     copy of a texture, or a picture drawn once per eye with tiles of
+    //     its own (Galactic Pinball's title and tables, with depth inside
+    //     them) - the left pixel the row's pixel values say it is: the
+    //     disparity this pixel had last frame or the one its neighbour on
+    //     the row just had, if the left pixel there has the same value;
+    //     else the best match of the pixels around it within kSearch of its
+    //     layer's disparity.
+    // Anything without a counterpart (cut off at the screen's edge) keeps
+    // its own colors.
+    vbgo_tt_eye_view view[2];
+    if (!vbgo_tiletrack_eye_view(0, &view[0]) || !vbgo_tiletrack_eye_view(1, &view[1]))
+        return;
+    // Both eyes' tags, row by row, packed to what matching needs: bit 31
+    // drawn this frame, bits 0-17 what it shows (character slot, pixel,
+    // sprite), 18-19 the pixel's value, 20-24 the layer.
+    constexpr uint32_t kDrawn = 1u << 31, kWhat = (1u << 18) - 1;
+    m_eyeTags.resize(2 * VBGO_TT_EYE_PIXELS);
+    if (m_eyeDisparityAt.empty())
+        m_eyeDisparityAt.assign(VBGO_TT_EYE_PIXELS, kUnknownDisparity);
+    for (unsigned eye = 0; eye < 2; ++eye)
+    {
+        uint32_t *out = &m_eyeTags[eye * VBGO_TT_EYE_PIXELS];
+        const uint64_t stamp = view[eye].stamp;
+        for (int x0 = 0; x0 < VBGO_TT_WIDTH; x0 += 8) // in 8x8 blocks, for the cache
+            for (int y0 = 0; y0 < VBGO_TT_HEIGHT; y0 += 8)
+                for (int x = x0; x < x0 + 8; ++x)
+                {
+                    const uint64_t *column = view[eye].columns[x];
+                    for (int y = y0; y < y0 + 8; ++y)
+                    {
+                        const uint64_t t = column ? column[y] : 0;
+                        out[y * VBGO_TT_WIDTH + x] =
+                            column && (t >> 48) == stamp
+                                ? kDrawn | VBGO_TAG_CHAR(t) | (VBGO_TAG_INDEX(t) << 11) | (VBGO_TAG_IS_OBJ(t) << 17) |
+                                      (VBGO_TAG_PIXEL(t) << 18) | (VBGO_TAG_WORLD(t) << 20)
+                                : 0;
+                    }
+                }
+    }
+    // (Both eyes come from one drawing pass, so a character slot is the same
+    // tile in both - checked, in case a game changes one in between.)
+    const bool sameSlots = view[0].hashes == view[1].hashes;
+    // Where on the current row the left eye shows each tile pixel: a small
+    // open-addressing table, valid for the row whose number it carries.
+    struct Seen
+    {
+        uint32_t what;
+        int16_t x;
+        uint16_t row;
+    };
+    std::array<Seen, 1024> seenAt;
+    for (Seen &e : seenAt)
+        e.row = 0xFFFF;
+    auto slotOf = [](uint32_t what) { return (what * 2654435761u) >> 22; };
+    std::array<std::array<uint32_t, 2 * kMaxDisparity + 1>, 32> votes{};
+    for (int y = 0; y < VBGO_TT_HEIGHT; ++y)
+    {
+        const uint32_t *left = &m_eyeTags[y * VBGO_TT_WIDTH];
+        const uint32_t *right = &m_eyeTags[VBGO_TT_EYE_PIXELS + y * VBGO_TT_WIDTH];
+        uint8_t *row = &frame[static_cast<size_t>(y) * fbWidth * 4];
+        auto same = [&](int xl, uint32_t r) {
+            return xl >= 0 && xl < VBGO_TT_WIDTH && ((left[xl] ^ r) & (kDrawn | kWhat)) == 0 &&
+                   (sameSlots || view[0].hashes[left[xl] & 0x7FF] == view[1].hashes[r & 0x7FF]);
+        };
+        auto take = [&](int x, int from, bool identical) {
+            if (identical)
+            {
+                const unsigned world = (right[x] >> 20) & 31;
+                ++votes[world][from - x + kMaxDisparity];
+            }
+            std::memcpy(&row[(eyeOffset[1] + x) * 4], &row[(eyeOffset[0] + from) * 4], 3);
+        };
+        // Mostly the same tile pixel at its layer's disparity; the rest after.
+        int missed[VBGO_TT_WIDTH], misses = 0;
+        for (int x = 0; x < VBGO_TT_WIDTH; ++x)
+        {
+            const uint32_t r = right[x];
+            if (!r)
+                continue;
+            const int predicted = m_eyeDisparity[(r >> 20) & 31];
+            if (predicted != kUnknownDisparity && same(x + predicted, r))
+                take(x, x + predicted, true);
+            else
+                missed[misses++] = x;
+        }
+        if (!misses)
+            continue;
+        for (int x = 0; x < VBGO_TT_WIDTH; ++x)
+            if (left[x])
+            {
+                const uint32_t what = left[x] & kWhat;
+                uint32_t i = slotOf(what);
+                while (seenAt[i].row == y && seenAt[i].what != what)
+                    i = (i + 1) & 1023;
+                seenAt[i] = {what, static_cast<int16_t>(x), static_cast<uint16_t>(y)};
+            }
+        int runDisparity = kUnknownDisparity, runEnd = -2;
+        unsigned runWorld = 32;
+        for (int m = 0; m < misses; ++m)
+        {
+            const int x = missed[m];
+            const uint32_t r = right[x];
+            const unsigned world = (r >> 20) & 31;
+            const int predicted = m_eyeDisparity[world];
+            int seen = -1;
+            for (uint32_t i = slotOf(r & kWhat); seenAt[i].row == y; i = (i + 1) & 1023)
+                if (seenAt[i].what == (r & kWhat))
+                {
+                    seen = seenAt[i].x;
+                    break;
+                }
+            if (seen >= 0 && std::abs(seen - x) <= kMaxDisparity && same(seen, r))
+            {
+                take(x, seen, true);
+                continue;
+            }
+            // 2. By the pixels' values.
+            int16_t &cached = m_eyeDisparityAt[y * VBGO_TT_WIDTH + x];
+            auto off = [&](int d, int o) { // the pixel o from x and its counterpart at disparity d differ
+                const int xr = x + o, xl = x + d + o;
+                const uint32_t a = xr >= 0 && xr < VBGO_TT_WIDTH ? right[xr] : 0;
+                const uint32_t b = xl >= 0 && xl < VBGO_TT_WIDTH ? left[xl] : 0;
+                return ((a ^ b) & (kDrawn | 3u << 18 | 1u << 17)) != 0;
+            };
+            auto fits = [&](int d) { return !off(d, 0) && !off(d, -1) && !off(d, 1); };
+            int d = kUnknownDisparity;
+            if (cached != kUnknownDisparity && fits(cached))
+                d = cached;
+            else if (runDisparity != kUnknownDisparity && runWorld == world && runEnd + 2 >= x && fits(runDisparity))
+                d = runDisparity;
+            else
+            {
+                // The left pixel whose neighbours (2 each side) match best.
+                const int around = predicted != kUnknownDisparity ? predicted : runWorld == world && runDisparity != kUnknownDisparity ? runDisparity : 0;
+                int best = 3; // at most 2 of the 5 off
+                for (int k = 0; k <= 2 * kSearch; ++k)
+                {
+                    const int c = around + ((k & 1) ? -(k + 1) / 2 : k / 2);
+                    if (off(c, 0))
+                        continue;
+                    int cost = 0;
+                    for (int o = -2; o <= 2 && cost < best; ++o)
+                        cost += off(c, o);
+                    if (cost < best)
+                        best = cost, d = c;
+                    if (best == 0)
+                        break;
+                }
+            }
+            cached = static_cast<int16_t>(d);
+            if (d == kUnknownDisparity)
+                continue;
+            runDisparity = d, runWorld = world, runEnd = x;
+            take(x, x + d, false);
+        }
+    }
+    // Each layer's disparity for the next frame: where most of its pixels
+    // matched (kept if it showed nothing matching this time).
+    for (unsigned w = 0; w < 32; ++w)
+    {
+        uint32_t best = 0;
+        for (int d = 0; d <= 2 * kMaxDisparity; ++d)
+            if (votes[w][d] > best)
+                best = votes[w][d], m_eyeDisparity[w] = static_cast<int16_t>(d - kMaxDisparity);
     }
 }
