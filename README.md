@@ -31,8 +31,10 @@ are planned for the future.
   shade can only show 4 colors at once, because the Virtual Boy only outputs
   4 shades. Auto colors each pixel by what drew it instead - a background
   layer by its depth in the game's drawing order (far to near: indigo, teal,
-  green, sand), a sprite by its palette (red/yellow for most characters) -
-  with a dark/light/lightest step per shade, so even a game nobody painted
+  green, sand), a sprite by its palette (red/yellow for most characters) - and
+  a small layer some games draw a character on (Mario's Tennis's players,
+  Teleroboxer's opponent) like a sprite - with a dark/light/lightest step per
+  shade, so even a game nobody painted
   shows many colors, the same in both eyes. A game's color pack (see below)
   colors over it, so a game with a pack shows in color out of the box
 
@@ -241,7 +243,11 @@ always agree: the same tile pixel at its layer's disparity (per row - some
 games shift a layer by a different amount on every row), else the left pixel
 whose surroundings show the same shades (games often draw a layer once per
 eye with tiles of their own, or draw each eye's picture separately, like
-Galactic Pinball's title and tables).
+Galactic Pinball's title and tables). Specks that matched something else
+nearby are matched again within their surroundings' depth, a small object (a
+twinkling star) takes one depth, and a pixel nothing on the left looks like
+(scenery only one eye sees through Mario's Tennis's scoreboard net) takes the
+color of the nearest pixel of its layer and shade that did match.
 
 **Painting rules.** Only what you change counts: pixels left in the capture's
 own colors are ignored, so a capture can be painted a bit at a time. Paint
@@ -319,7 +325,7 @@ colors are looked up when its graphics change, not per pixel. Measured on one
 desktop core, against the core's ~1.9 ms per emulated frame: tracking adds
 ~0.25 ms (fills only where the pack has some), and painting a full pack with
 map cells and fills ~0.2-0.35 ms per eye. Matching the right eye to the left
-adds ~1-3 ms (most where each eye's picture is drawn separately, which is
+adds ~1.5-4 ms (most where each eye's picture is drawn separately, which is
 matched by looks; a pixel's match is remembered from frame to frame).
 Output is otherwise identical.
 

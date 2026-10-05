@@ -16,7 +16,8 @@
 //    is the first ramp, its nearest the last (over the layers seen so far);
 //  - sprites take a warm, saturated ramp by their palette (most games draw
 //    their characters with palette 0: red / orange / yellow), so they stand
-//    out against the scenery;
+//    out against the scenery - and so do small layers that a game draws a
+//    character on (by their palette too - see ColorPackRenderer's figures);
 //  - each of the VB's 3 drawn shades is that ramp's dark, light or lightest
 //    color, like a Multicolor palette - and fades with the game's
 //    brightness the same way.

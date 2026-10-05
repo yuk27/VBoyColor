@@ -37,6 +37,10 @@ public:
     bool AutoColorsOn() const { return m_auto; }
     // Something to paint: a pack, or automatic colors.
     bool Active() const { return m_pack != nullptr || m_auto; }
+    // (For tools: the last frame's right-eye matches - per pixel, how it was
+    // matched (kSameTile...) and its disparity.)
+    const std::vector<uint8_t> &EyeMatchKinds() const { return m_eyeMatchKind; }
+    const std::vector<int16_t> &EyeDisparities() const { return m_eyeDisparityAt; }
 
     // The map cells the pack has fill colors for, as the 65536-bit map
     // vbgo_tiletrack_set_fill_cells takes; empty if there are none.
@@ -71,6 +75,12 @@ private:
     uint32_t m_autoWorlds = 0, m_autoWorldsUsed = ~0u;
     unsigned m_autoMaxLevel = 0;
     std::array<AutoColors::Ramp, 32> m_autoLayer{};
+    // Figures: background layers no bigger than kFigureSize pixels across
+    // (lately) - characters some games draw on layers of their own - colored
+    // like sprites, so they stand out from the scenery (bit per world).
+    static constexpr int kFigureSize = 128;
+    uint32_t m_figureWorlds = 0, m_figuresUsed = ~0u;
+    std::array<int16_t, 32> m_worldExtent{};
     void UpdateAutoColors();
 
     // Pixels of ambiguous tiles (see TileColorPack::IsAmbiguous) painted this
@@ -83,10 +93,26 @@ private:
     static constexpr int kMaxDisparity = 64, kUnknownDisparity = 0x7FFF;
     static constexpr int kWindowWidth = 15, kWindowHeight = 3; // what's compared around a pixel (odd sizes; width <= 32)
     static constexpr int kCloseMatch = 2, kFairMatch = 9;       // of the window's pixels, at most this many differ
+    static constexpr int kPoorMatchCost = 18;                   // (and more than this many: hardly alike)
     static constexpr int kSearchBudget = 3000;                  // pixels a frame that search all disparities
     static constexpr int kResearchEvery = 16;                   // frames between searches for a pixel that found nothing close (power of 2)
     static constexpr uint8_t kNotSearched = 0xFF, kNoMatch = 0xFE;
     std::vector<uint8_t> m_eyeCostAt; // per right-eye pixel: how far off last frame's match by looks was (or one of those)
+    static constexpr uint8_t kNoMatchKind = 0, kSameTile = 1, kLookalike = 2, kSameTileFound = 3, kUnmatched = 4,
+                             kPoorMatch = 5; // (a look-alike, but not much alike)
+    std::vector<uint8_t> m_eyeMatchKind; // per right-eye pixel, this frame: how it was matched
+    std::vector<uint8_t> m_packColored;  // per right-eye pixel, this frame: the pack has colors for it
+    uint32_t m_lookalikeWorlds = 0;      // layers matched mostly by looks last frame (bit per world)
+    static constexpr int kSpeckle = 64; // a patch of about one disparity smaller than this, inside a bigger one, is a speck
+    static constexpr int kSpeckReach = 8; // how far from the patch's disparity a speck may be matched again
+    std::vector<int> m_blobOf, m_blobSize; // (RemoveSpeckles: its patches)
+    std::vector<int16_t> m_speckDisparity;
+    void RemoveSpeckles(uint8_t *frame, uint32_t fbWidth, const uint32_t eyeOffset[2]);
+    static constexpr int kSmallObject = 64; // objects (touching lit pixels of a layer) up to this size take one disparity
+    std::vector<uint8_t> m_objectMark;
+    void AlignSmallObjects(uint8_t *frame, uint32_t fbWidth, const uint32_t eyeOffset[2]);
+    static constexpr int kFillReach = 8; // how far a poor match looks for a pixel to take its color from
+    void FillPoorMatches(uint8_t *frame, uint32_t fbWidth, const uint32_t eyeOffset[2]);
     uint32_t m_eyeFrame = 0;
     std::vector<uint32_t> m_eyeTags;   // both eyes' tags, row-major, packed (see MatchEyes)
     std::vector<uint64_t> m_eyeShades; // both eyes' shades, 2 bits per pixel, rows with guard pixels (see MatchEyes)
