@@ -74,6 +74,7 @@ const TileColorPack::Tile kNoTile{}; // (no tile colors: nothing painted)
 
 void ColorPackRenderer::SetPack(const TileColorPack *pack)
 {
+    m_depth.Reset();
     m_pack = pack && !pack->Empty() ? pack : nullptr;
     m_cellStart.clear();
     m_fillCells.clear();
@@ -758,16 +759,21 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
         return;
     vbgo_tt_eye_view view[2];
     const bool have[2] = {vbgo_tiletrack_eye_view(0, &view[0]), vbgo_tiletrack_eye_view(1, &view[1])};
+    const int bg[3] = {static_cast<int>(background.b * 255.0f + 0.5f), static_cast<int>(background.g * 255.0f + 0.5f),
+                       static_cast<int>(background.r * 255.0f + 0.5f)};
     if (!have[0] && !have[1])
+    {
+        // (nothing drawn from tiles at all - but the game's CPU may have drawn)
+        if (m_auto)
+            PaintDepth(frame, raw, fbWidth, eyeOffset, view, have, bg);
         return;
+    }
     ++m_frame;
     const vbgo_tt_eye_view &any = have[0] ? view[0] : view[1];
     ClassifyWorlds(any.worlds);
     m_oam = any.oam;
     if (m_auto)
         UpdateAutoColors();
-    const int bg[3] = {static_cast<int>(background.b * 255.0f + 0.5f), static_cast<int>(background.g * 255.0f + 0.5f),
-                       static_cast<int>(background.r * 255.0f + 0.5f)};
     const bool haveCells = pack && !m_cellStart.empty();
     const TileColorPack::ContextTile *contexts = pack ? pack->ContextTiles().data() : nullptr;
     const bool haveContexts = pack && !m_markerGrid[0].empty();
@@ -1105,6 +1111,9 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
         if (!m_ambiguousPixels.empty())
             PaintAmbiguous(frame, fbWidth, eyeOffset[eye], v);
     }
+    // (only where the game's CPU drew - else every pixel shown came from tiles)
+    if (m_auto && ((have[0] && view[0].cpu_drawn) || (have[1] && view[1].cpu_drawn) || !have[0] || !have[1]))
+        brightest = std::max(brightest, PaintDepth(frame, raw, fbWidth, eyeOffset, view, have, bg));
     // Automatic colors: the layers this game draws, its brightness (without
     // a pack, they fade relative to the brightest it has shown).
     m_autoWorlds |= worldsDrawn;
@@ -1126,6 +1135,71 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
         m_autoMaxLevel = brightest;
         SetFadeReference(brightest);
     }
+}
+
+unsigned ColorPackRenderer::PaintDepth(uint8_t *frame, const uint8_t *raw, uint32_t fbWidth, const uint32_t eyeOffset[2],
+                                       const vbgo_tt_eye_view view[2], const bool have[2], const int bg[3])
+{
+    // Each eye's shades, and the lit pixels no tile drew this frame (a
+    // shade the game switched off counts as nothing).
+    constexpr size_t kPixels = VBGO_TT_EYE_PIXELS;
+    const size_t rowBytes = static_cast<size_t>(fbWidth) * 4;
+    bool any = false;
+    unsigned brightest = 0;
+    for (unsigned eye = 0; eye < 2; ++eye)
+    {
+        m_depthShades[eye].assign(kPixels, 0);
+        m_depthWant[eye].assign(kPixels, 0);
+        uint8_t *shades = m_depthShades[eye].data(), *want = m_depthWant[eye].data();
+        const uint64_t stamp = have[eye] ? view[eye].stamp : 0;
+        for (uint32_t x = 0; x < VBGO_TT_WIDTH; ++x)
+        {
+            const uint64_t *column = have[eye] ? view[eye].columns[x] : nullptr;
+            const uint8_t *src = &raw[(static_cast<size_t>(eyeOffset[eye]) + x) * 4];
+            for (uint32_t y = 0; y < VBGO_TT_HEIGHT; ++y, src += rowBytes)
+            {
+                uint32_t rawPixel;
+                std::memcpy(&rawPixel, src, 4);
+                const unsigned shade = (rawPixel >> 24) & 3;
+                if (!shade || !(rawPixel & 0xFFFFFFu))
+                    continue;
+                shades[y * VBGO_TT_WIDTH + x] = static_cast<uint8_t>(shade);
+                if (column && (column[y] >> 48) == stamp && VBGO_TAG_PIXEL(column[y]))
+                    continue; // a tile drew it
+                want[y * VBGO_TT_WIDTH + x] = 1;
+                any = true;
+                brightest = std::max<unsigned>(brightest, rawPixel >> 26);
+            }
+        }
+    }
+    if (!any)
+        return 0;
+    if (!m_pack && brightest > m_autoMaxLevel)
+    {
+        m_autoMaxLevel = brightest; // (before painting: the very first frame fades right too)
+        SetFadeReference(brightest);
+    }
+    const uint8_t *const shades[2] = {m_depthShades[0].data(), m_depthShades[1].data()};
+    const uint8_t *const want[2] = {m_depthWant[0].data(), m_depthWant[1].data()};
+    m_depth.Update(shades, want);
+    for (unsigned eye = 0; eye < 2; ++eye)
+        for (uint32_t y = 0; y < VBGO_TT_HEIGHT; ++y)
+        {
+            const uint8_t *w = &want[eye][y * VBGO_TT_WIDTH];
+            for (uint32_t x = 0; x < VBGO_TT_WIDTH; ++x)
+            {
+                if (!w[x])
+                    continue;
+                const size_t i = (static_cast<size_t>(y) * fbWidth + eyeOffset[eye] + x) * 4;
+                uint8_t rgb[3];
+                DepthColors::Color(m_depth.Disparity(eye, x, y), shades[eye][y * VBGO_TT_WIDTH + x], rgb);
+                const int fade = m_fade[raw[i + 3] >> 2]; // 0-256 (the tag byte's brightness)
+                frame[i + 0] = static_cast<uint8_t>(bg[0] + (((rgb[2] - bg[0]) * fade + 128) >> 8));
+                frame[i + 1] = static_cast<uint8_t>(bg[1] + (((rgb[1] - bg[1]) * fade + 128) >> 8));
+                frame[i + 2] = static_cast<uint8_t>(bg[2] + (((rgb[0] - bg[2]) * fade + 128) >> 8));
+            }
+        }
+    return brightest;
 }
 
 namespace

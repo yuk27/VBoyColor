@@ -42,7 +42,7 @@ target_compile_options(vb_core_pic PRIVATE -w -O2)
 
 add_library(vbp SHARED vbp.cpp
     ${REPO}/core/emu/ShadeColorizer.cpp ${REPO}/core/emu/TileColorPack.cpp
-    ${REPO}/core/emu/ColorPackRenderer.cpp ${REPO}/core/emu/UncoloredCollector.cpp)
+    ${REPO}/core/emu/ColorPackRenderer.cpp ${REPO}/core/emu/DepthColors.cpp ${REPO}/core/emu/UncoloredCollector.cpp)
 target_include_directories(vbp PRIVATE ${REPO}/core ${REPO}/core/emu)
 target_compile_options(vbp PRIVATE -O2 -include cstdint)
 # (x86: POPCNT like every x86-64 desktop CPU since 2008 - the app gets it from MSVC's __popcnt64 / ARM64's cnt)

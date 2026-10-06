@@ -83,7 +83,8 @@ namespace
     // by the ROM's CRC-32, else a part of its name (lower case). Picked by
     // rendering each game's title and play screens in every scheme (Oct 2026,
     // the games without a color pack). Everything else starts in Auto - the
-    // games with a pack, and those Auto suits (Space Pinball).
+    // games with a pack, and those Auto suits (Space Pinball; Red Alarm, its
+    // wireframes by depth - listed to say so).
     // Multicolor palettes, by index in kShadePalettes:
     constexpr int kArcade = 0, kNeon = 1, kCandy = 2, kFireLeaf = 3, kOcean = 7, kSunsetM = 8, kLcdDark = 13;
     struct Suggestion
@@ -105,8 +106,8 @@ namespace
         {0xf3cd40dd, "niko-chan", kArcade, -1},
         {0x19bb2dfb, "panic bomber", kArcade, -1},
         {0x40498f5e, "panibon", kArcade, -1},
-        {0xaa10a7b4, "red alarm", kArcade, -1}, // blue wireframes, yellow ship
-        {0x7e85c45d, "red alarm", kArcade, -1},
+        {0xaa10a7b4, "red alarm", kAutoColors, -1}, // wireframes colored by depth (DepthColors.h)
+        {0x7e85c45d, "red alarm", kAutoColors, -1},
         {0x44788197, "gundam", kOcean, -1},
         {0xfa44402d, "space invaders", kNeon, -1},
         {0x60895693, "space squash", kNeon, -1},

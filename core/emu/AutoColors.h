@@ -45,8 +45,9 @@ namespace AutoColors
         {{{22, 96, 36}, {70, 196, 78}, {210, 252, 176}}},   // green
         {{{108, 22, 96}, {214, 76, 176}, {255, 206, 242}}}, // magenta
     }};
-    // The background (shade 0) and what untracked pixels show (drawn without
-    // tiles - rare): a neutral dark blue-gray ramp.
+    // The background (shade 0), and the base the rest is painted over: a
+    // neutral dark blue-gray ramp. (What the game draws without tiles is
+    // colored by depth - see DepthColors.h.)
     inline constexpr std::array<Rgb, 4> kBase = {{{6, 6, 14}, {70, 76, 98}, {140, 148, 170}, {226, 230, 240}}};
 
     // The ramp at a depth (0 = farthest layer, 1 = nearest), blended between

@@ -115,7 +115,9 @@ extern "C"
         info.path = path;
         info.data = g_rom.data();
         info.size = g_rom.size();
-        return retro_load_game(&info) ? 1 : 0;
+        const bool ok = retro_load_game(&info);
+        vbgo_tiletrack_reset();
+        return ok ? 1 : 0;
     }
 
     void vbp_track(int on) { vbgo_tiletrack_set_enabled(on != 0); }
@@ -291,7 +293,12 @@ extern "C"
 
     size_t vbp_state_size() { return retro_serialize_size(); }
     int vbp_save(uint8_t *buf, size_t n) { return retro_serialize(buf, n) ? 1 : 0; }
-    int vbp_load(const uint8_t *buf, size_t n) { return retro_unserialize(buf, n) ? 1 : 0; }
+    int vbp_load(const uint8_t *buf, size_t n)
+    {
+        const bool ok = retro_unserialize(buf, n);
+        vbgo_tiletrack_reset();
+        return ok ? 1 : 0;
+    }
 
     int vbp_pack_load(const uint8_t *bytes, size_t n)
     {

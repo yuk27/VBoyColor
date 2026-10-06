@@ -1,6 +1,7 @@
 #pragma once
 
 #include "emu/AutoColors.h"
+#include "emu/DepthColors.h"
 #include "emu/ShadeColorizer.h"
 #include "emu/TileColorPack.h"
 #include "emu/vbgo_tiletrack.h"
@@ -59,7 +60,8 @@ public:
     // compare).
     void SetPackShown(bool shown) { m_packShown = shown; }
     // Automatic colors (see AutoColors.h) for every tracked pixel the pack
-    // doesn't color - all of them, without a pack.
+    // doesn't color - all of them, without a pack - and by depth for what
+    // no tile drew (see DepthColors.h).
     void SetAutoColors(bool on) { m_auto = on; }
     bool AutoColorsOn() const { return m_auto; }
     // Something to paint: a pack, or automatic colors.
@@ -295,6 +297,13 @@ private:
     };
     std::array<std::vector<NearCell>, 32> m_nearCache; // (Near's, per layer and grid cell)
     std::vector<uint64_t> m_nearSprites; // per grid cell: sprites' groups with a marker within reach (last two frames)
+
+    // Auto mode, what no tile drew (the game's CPU wrote it into the frame
+    // buffer): colored by depth. Returns the brightest level it painted.
+    unsigned PaintDepth(uint8_t *frame, const uint8_t *raw, uint32_t fbWidth, const uint32_t eyeOffset[2], const vbgo_tt_eye_view view[2],
+                        const bool have[2], const int bg[3]);
+    DepthColors m_depth;
+    std::vector<uint8_t> m_depthShades[2], m_depthWant[2];
 
     const TileColorPack *m_pack = nullptr;
     std::vector<uint32_t> m_cellStart;  // 65537 entries: cell n's CellTiles are [m_cellStart[n], m_cellStart[n + 1])

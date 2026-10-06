@@ -278,6 +278,7 @@ bool Emulator::LoadRom(const std::string &romPath, const std::string &displayNam
     info.size = romBytes.size();
 
     m_romLoaded = retro_load_game(&info);
+    vbgo_tiletrack_reset();
     m_frameAccumulator = 0.0f;
     {
         std::lock_guard<std::mutex> lock(m_workMutex);
@@ -1267,7 +1268,10 @@ bool Emulator::LoadState(int uiSlot)
     if (data.size() != retro_serialize_size())
         return false;
 
-    return retro_unserialize(data.data(), data.size());
+    if (!retro_unserialize(data.data(), data.size()))
+        return false;
+    vbgo_tiletrack_reset(); // (the frame buffers now hold what the state saved - nothing tracked drew it)
+    return true;
 }
 
 bool Emulator::SaveStateExists(int uiSlot) const

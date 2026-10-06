@@ -27,8 +27,11 @@ pack).*
 - **Color, four ways** (Settings → Color Mode):
   - **Auto** (default) - every pixel is colored by what drew it: background
     layers by their depth (far to near: dusk violet, brick, amber, sand),
-    characters by their palette, each with dark/light/lightest steps. Every
-    game shows many colors with no setup.
+    characters by their palette, each with dark/light/lightest steps. What a
+    game draws without tiles (Red Alarm's wireframe world, 3-D Tetris's
+    well) is colored by how far away it is - the distance between the two
+    eyes' pictures - from indigo far away to gold up close. Every game shows
+    many colors with no setup.
   - **Multicolor** - each of the Virtual Boy's four shades gets its own color
     (in the spirit of Red Viper's multicolour mode), from a set of palettes.
   - **Gradient** - the game's brightness mapped onto a color gradient
@@ -41,8 +44,8 @@ pack).*
   built-in one, and you can paint your own on PC: see
   [docs/COLOR_PACKS.md](docs/COLOR_PACKS.md).
 - **Colors per game** - every Virtual Boy game starts in the scheme that
-  suits it best (picked game by game: Red Alarm's wireframes in Arcade
-  blue, Golf's fairways green, Virtual Bowling's lanes in Sunset wood...),
+  suits it best (picked game by game: Red Alarm's wireframes by depth,
+  Golf's fairways green, Virtual Bowling's lanes in Sunset wood...),
   and remembers yours once you change it.
 - **Real 3D on Quest** - each eye gets its own picture, as on the hardware,
   and both eyes always show the same colors.

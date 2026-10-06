@@ -251,6 +251,7 @@ add_library(vbgo_app STATIC
     core/emu/ShadeColorizer.cpp
     core/emu/TileColorPack.cpp
     core/emu/ColorPackRenderer.cpp
+    core/emu/DepthColors.cpp
     core/emu/UncoloredCollector.cpp
     core/emu/FrameRecorder.cpp
     core/emu/AudioOutput.cpp

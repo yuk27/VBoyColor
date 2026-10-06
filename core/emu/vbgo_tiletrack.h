@@ -79,6 +79,10 @@ extern "C" {
 
 void vbgo_tiletrack_set_enabled(bool enabled);
 bool vbgo_tiletrack_is_enabled(void);
+/* Forget every tag (a new game, or a save state loaded: what's in the frame
+ * buffers now wasn't drawn by anything tracked - a game that draws with its
+ * CPU and never runs a drawing pass would otherwise keep showing the old tags). */
+void vbgo_tiletrack_reset(void);
 
 #define VBGO_TT_FILLS_NONE 0
 #define VBGO_TT_FILLS_PACK 1 /* only in cells marked with vbgo_tiletrack_set_fill_cells */
@@ -105,6 +109,10 @@ typedef struct
     * halfwords, VIP 0x3E000 - a sprite's JX, JP/JLON/JRON, JY, char). */
    const uint16_t *worlds;
    const uint16_t *oam;
+   /* 1 if the game's CPU wrote into this buffer since its drawing pass
+    * (pixels no tile drew - see vbgo_tiletrack_cpu_fb_write), or what's in
+    * it isn't known (a reset since) - 0: every pixel shown came from the pass. */
+   int cpu_drawn;
 } vbgo_tt_eye_view;
 
 /* World attribute fields (w = 16 halfwords of one world). */

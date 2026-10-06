@@ -32,6 +32,7 @@ static uint16_t s_worlds[2][VBGO_WORLD_HALFWORDS];
 static uint16_t s_oam[2][VBGO_OAM_HALFWORDS];
 static int s_have_attrs[2];
 static int s_have[2];
+static int s_cpu[2]; /* per buffer: the CPU wrote into it since its pass (or a reset since) */
 static int s_pass_open; /* a drawing pass has started (block 0 seen, or tracking switched on mid-pass) */
 static int s_last_fb = -1;
 
@@ -81,6 +82,7 @@ static void StartPass(unsigned fb, const uint16_t *chr_ram, const uint16_t *dram
    /* (Tracking switched on mid-pass: the blocks before this one simply have
     * no tags with this stamp.) */
    s_have[fb] = 1;
+   s_cpu[fb] = 0; /* (the pass draws every pixel of the buffer anew) */
    s_pass_open = 1;
 }
 
@@ -99,6 +101,16 @@ void vbgo_tiletrack_set_enabled(bool enabled)
 }
 
 bool vbgo_tiletrack_is_enabled(void) { return vbgo_tt_on != 0; }
+
+void vbgo_tiletrack_reset(void)
+{
+   memset(s_fb, 0, sizeof(s_fb));
+   memset(s_have, 0, sizeof(s_have));
+   memset(s_disp, 0, sizeof(s_disp));
+   s_pass_open = 0;
+   s_last_fb = -1;
+   s_cpu[0] = s_cpu[1] = 1;
+}
 
 void vbgo_tiletrack_set_fill_mode(int mode) { vbgo_tt_fill = mode; }
 
@@ -145,6 +157,7 @@ void vbgo_tiletrack_cpu_fb_write(unsigned fb, unsigned lr, unsigned offset, unsi
    unsigned b, p;
    if (!vbgo_tt_on)
       return;
+   s_cpu[fb & 1] = 1;
    for (b = 0; b < bytes; b++)
    {
       const unsigned o = offset + b;
@@ -178,6 +191,7 @@ bool vbgo_tiletrack_eye_view(unsigned eye, vbgo_tt_eye_view *view)
    view->chr = s_chr[fb];
    view->worlds = s_have_attrs[fb] ? s_worlds[fb] : NULL;
    view->oam = s_have_attrs[fb] ? s_oam[fb] : NULL;
+   view->cpu_drawn = s_cpu[fb];
    for (x = 0; x < VBGO_TT_WIDTH; x++)
    {
       const uint8_t d = s_disp[eye & 1][x];
