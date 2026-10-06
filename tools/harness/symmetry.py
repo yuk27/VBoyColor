@@ -42,7 +42,7 @@ def measure(vb, left, right):
         return np.where(f["obj"], ob, bg), tile
 
     (K0, T0), (K1, T1) = keys(0), keys(1)
-    partner = info[:, 2]
+    partner = info[:, 2]  # (a left world's partner: its pair's right world - a pair may have several left worlds)
     rw = F[1]["world"]
     pair_right = (~F[1]["obj"]) & (partner[rw] >= 0) & ((info[rw, 0] & 3) == 2)
     st = collections.Counter()
@@ -50,10 +50,11 @@ def measure(vb, left, right):
         at, tiles = {}, {}
         for x in np.nonzero(lit[0][y])[0]:
             at.setdefault(int(K0[y, x]), []).append(int(x))
-            if not F[0]["obj"][y, x]:
-                tiles.setdefault((int(F[0]["world"][y, x]), int(T0[y, x])), []).append(int(x))
+            lw = int(F[0]["world"][y, x])
+            if not F[0]["obj"][y, x] and (info[lw, 0] & 3) == 1 and partner[lw] >= 0:
+                tiles.setdefault((int(partner[lw]), int(T0[y, x])), []).append(int(x))
         for x in np.nonzero(lit[1][y])[0]:
-            xs = tiles.get((int(partner[rw[y, x]]), int(T1[y, x]))) if pair_right[y, x] else at.get(int(K1[y, x]))
+            xs = tiles.get((int(rw[y, x]), int(T1[y, x]))) if pair_right[y, x] else at.get(int(K1[y, x]))
             kind = "pair" if pair_right[y, x] else "shared"
             # (a pair: the instance nearest to where its band's disparity puts it - pictures repeat tiles)
             d = int(disparity[rw[y, x]][y // 8]) if pair_right[y, x] else 0

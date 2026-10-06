@@ -160,8 +160,10 @@ private:
     struct Pair
     {
         uint8_t left = 0, right = 0;
+        uint32_t leftWorlds = 0; // the left picture's worlds (bit per world): left, and any that draw with it for one right world
         bool sprites = false; // a sprite world's left-only and right-only sprites (left = right = that world)
         std::array<uint16_t, 32> attributes{}; // both worlds' attribute blocks, as last estimated
+        uint32_t otherAttributes = 0;          // (a hash of the other left worlds' blocks, as last estimated)
         bool estimated = false;
         uint32_t estimatedAt = 0, wantedAt = 0; // (frames: last estimated, last needed)
         std::array<int16_t, kBands> disparity{}; // right x -> left x, per band
@@ -200,8 +202,8 @@ private:
         const TileColorPack::CellTile *cell = nullptr;
     };
     std::vector<MapEntry> m_mapCache;
-    // Per tile, palette and left world: the first left-picture cell showing
-    // it this frame (see MappedCell).
+    // Per tile, palette and pair: the first cell of the pair's left picture
+    // showing it this frame (see MappedCell).
     struct LeftTileCell
     {
         uint64_t key = 0;
@@ -209,7 +211,7 @@ private:
         uint16_t cell = 0;
     };
     std::vector<LeftTileCell> m_leftTileCells;
-    LeftTileCell *FindLeftTileCell(uint32_t hash, unsigned palette, unsigned world, bool add);
+    LeftTileCell *FindLeftTileCell(uint32_t hash, unsigned palette, unsigned pair, bool add);
     static constexpr int kMapClose = 4, kMapReach = 16; // how far from the band's disparity a left tile is looked for (see MappedCell)
     // The left eye's pixels of pairs' left pictures this frame: that pair + 1
     // (bits 0-4), the shade (bits 5-6) - 0 elsewhere (and in a guard band

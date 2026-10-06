@@ -228,7 +228,7 @@ void ColorPackRenderer::ResolveSlots(const uint32_t *hashes)
 void ColorPackRenderer::ClassifyWorlds(const uint16_t *worlds)
 {
     // Which eyes draw each world (LON/RON), its type, and the per-eye pairs:
-    // a left-only world next to a right-only one of the same type, in the
+    // left-only worlds next to right-only ones of the same type, in the
     // order the VIP draws them (Mario Clash's stage, Galactic Pinball's
     // tables). A pair's right world takes its left partner's colors.
     std::array<World, 32> next{};
@@ -259,34 +259,65 @@ void ColorPackRenderer::ClassifyWorlds(const uint16_t *worlds)
             if (world.eyes == 3 && world.type != 3)
                 m_rightShift[w] = static_cast<int16_t>(2 * (Sign9(a[2]) - (world.type == 2 ? 0 : Sign9(a[5]))));
         }
-        for (int k = 0; k + 1 < n;)
+        // A run of left-only worlds next to a run of right-only ones (same
+        // type) pair up in order, one by one: Mario Clash alternates them,
+        // Galactic Pinball's Cosmic table draws three left worlds, then
+        // their three right ones. A left run's extra worlds join its last
+        // pair - the right world draws what they do together (the Alien
+        // table: three left worlds, one right); a right run's extra worlds
+        // may pair with what follows.
+        auto addPair = [&](int left, int right, uint32_t leftWorlds) {
+            next[right].partner = static_cast<int8_t>(left);
+            next[right].colors = static_cast<uint8_t>(left);
+            for (int w = 0; w < 32; ++w)
+                if (leftWorlds >> w & 1)
+                {
+                    next[w].partner = static_cast<int8_t>(right);
+                    m_pairOfLeft[w] = static_cast<int8_t>(pairCount);
+                }
+            // (the same pair as last frame keeps its estimates)
+            Pair &pair = pairs[pairCount];
+            for (int old = 0; old < m_pairCount; ++old)
+                if (!m_pairs[old].sprites && m_pairs[old].left == left && m_pairs[old].right == right)
+                {
+                    pair = std::move(m_pairs[old]);
+                    m_pairs[old].left = m_pairs[old].right = 0xFF;
+                    break;
+                }
+            if (pair.leftWorlds != leftWorlds)
+                pair.estimated = false; // (another picture)
+            pair.left = static_cast<uint8_t>(left);
+            pair.right = static_cast<uint8_t>(right);
+            pair.leftWorlds = leftWorlds;
+            m_pairOfRight[right] = static_cast<int8_t>(pairCount);
+            ++pairCount;
+        };
+        for (int k = 0; k < n;)
         {
-            const int a = listed[k], b = listed[k + 1];
-            if (next[a].type == next[b].type && next[a].type != 3 && (next[a].eyes | next[b].eyes) == 3 &&
-                next[a].eyes != 3 && next[b].eyes != 3 && pairCount < kMaxPairs)
+            const World &first = next[listed[k]];
+            if (first.eyes == 3 || first.type == 3)
             {
-                const int left = next[a].eyes == 1 ? a : b, right = left == a ? b : a;
-                next[left].partner = static_cast<int8_t>(right);
-                next[right].partner = static_cast<int8_t>(left);
-                next[right].colors = static_cast<uint8_t>(left);
-                // (the same pair as last frame keeps its estimates)
-                Pair &pair = pairs[pairCount];
-                for (int old = 0; old < m_pairCount; ++old)
-                    if (!m_pairs[old].sprites && m_pairs[old].left == left && m_pairs[old].right == right)
-                    {
-                        pair = std::move(m_pairs[old]);
-                        m_pairs[old].left = m_pairs[old].right = 0xFF;
-                        break;
-                    }
-                pair.left = static_cast<uint8_t>(left);
-                pair.right = static_cast<uint8_t>(right);
-                m_pairOfLeft[left] = static_cast<int8_t>(pairCount);
-                m_pairOfRight[right] = static_cast<int8_t>(pairCount);
-                ++pairCount;
-                k += 2;
-            }
-            else
                 ++k;
+                continue;
+            }
+            int e1 = k + 1, e2;
+            while (e1 < n && next[listed[e1]].eyes == first.eyes && next[listed[e1]].type == first.type)
+                ++e1;
+            e2 = e1;
+            while (e2 < n && next[listed[e2]].eyes == (first.eyes ^ 3) && next[listed[e2]].type == first.type)
+                ++e2;
+            const int firstCount = e1 - k, secondCount = e2 - e1, count = std::min(firstCount, secondCount);
+            const bool leftFirst = first.eyes == 1;
+            for (int i = 0; i < count && pairCount < kMaxPairs; ++i)
+            {
+                const int left = leftFirst ? listed[k + i] : listed[e1 + i], right = leftFirst ? listed[e1 + i] : listed[k + i];
+                uint32_t leftWorlds = 1u << left;
+                if (leftFirst && i + 1 == count)
+                    for (int j = k + count; j < e1; ++j)
+                        leftWorlds |= 1u << listed[j];
+                addPair(left, right, leftWorlds);
+            }
+            k = !count ? e1 : secondCount > firstCount ? e1 + count : e2;
         }
         // Sprites only one eye shows (JLON / JRON): Galactic Pinball draws
         // much of a table as a left-eye and a right-eye set of sprites, with
@@ -330,7 +361,7 @@ int ColorPackRenderer::EyeOnly(uint64_t tag) const
 bool ColorPackRenderer::InPicture(const Pair &pair, uint64_t tag, unsigned eye) const
 {
     if (!pair.sprites)
-        return !VBGO_TAG_IS_OBJ(tag) && VBGO_TAG_WORLD(tag) == (eye ? pair.right : pair.left);
+        return !VBGO_TAG_IS_OBJ(tag) && (eye ? VBGO_TAG_WORLD(tag) == pair.right : (pair.leftWorlds >> VBGO_TAG_WORLD(tag) & 1) != 0);
     return VBGO_TAG_IS_OBJ(tag) && VBGO_TAG_WORLD(tag) == pair.left && EyeOnly(tag) == (eye ? 2 : 1);
 }
 
@@ -445,12 +476,12 @@ const TileColorPack::Tile *ColorPackRenderer::LayerTile(unsigned chr, unsigned w
     return layer.tile;
 }
 
-ColorPackRenderer::LeftTileCell *ColorPackRenderer::FindLeftTileCell(uint32_t hash, unsigned palette, unsigned world, bool add)
+ColorPackRenderer::LeftTileCell *ColorPackRenderer::FindLeftTileCell(uint32_t hash, unsigned palette, unsigned pair, bool add)
 {
     // (open addressing, entries of earlier frames count as free)
     if (m_leftTileCells.empty())
         m_leftTileCells.resize(1024);
-    const uint64_t key = 1ull << 40 | static_cast<uint64_t>(world) << 34 | static_cast<uint64_t>(palette) << 32 | hash;
+    const uint64_t key = 1ull << 40 | static_cast<uint64_t>(pair) << 34 | static_cast<uint64_t>(palette) << 32 | hash;
     const size_t mask = m_leftTileCells.size() - 1;
     for (size_t i = (key * 0x9E3779B97F4A7C15ull) >> 54 & mask, probes = 0; probes <= mask; i = (i + 1) & mask, ++probes)
     {
@@ -509,7 +540,7 @@ const TileColorPack::CellTile *ColorPackRenderer::MappedCell(int pair, uint64_t 
         const LeftPixel *best = nullptr;
         int bestOff = reach + 1;
         for (const LeftPixel &l : m_pairRows[y])
-            if (l.hash == hash && l.index == index && l.palette == palette && l.world == p.left && std::abs(l.x - target) < bestOff)
+            if (l.hash == hash && l.index == index && l.palette == palette && (p.leftWorlds >> l.world & 1) && std::abs(l.x - target) < bestOff)
                 best = &l, bestOff = std::abs(l.x - target);
         return best;
     };
@@ -520,7 +551,7 @@ const TileColorPack::CellTile *ColorPackRenderer::MappedCell(int pair, uint64_t 
         for (unsigned dy = 0; dy + subY < 8 && y + static_cast<int>(dy) < VBGO_TT_HEIGHT; ++dy)
             for (const LeftPixel &l : m_pairRows[y + dy])
             {
-                if (l.hash != hash || l.palette != palette || l.world != p.left || (l.index >> 3) != subY + dy)
+                if (l.hash != hash || l.palette != palette || !(p.leftWorlds >> l.world & 1) || (l.index >> 3) != subY + dy)
                     continue;
                 const int lsub = l.index & 7;
                 const int off = std::min(std::abs(l.x - lsub - (target - static_cast<int>(subX))),
@@ -546,7 +577,7 @@ const TileColorPack::CellTile *ColorPackRenderer::MappedCell(int pair, uint64_t 
     // Galactic Pinball's title letters) - its colors where the left
     // picture shows it at all (the first such cell from the top), if it does.
     if (!best)
-        if (const LeftTileCell *any = FindLeftTileCell(hash, palette, p.left, false))
+        if (const LeftTileCell *any = FindLeftTileCell(hash, palette, static_cast<unsigned>(pair), false))
         {
             entry = {key, m_frame, FindCell(any->cell, palette, hash)};
             return entry.cell;
@@ -673,7 +704,7 @@ ColorPackRenderer::Run ColorPackRenderer::SetUpRun(uint64_t t, unsigned eye, int
                 run.leftPicture = static_cast<uint8_t>(m_pairOfLeft[world] + 1);
                 run.record = slot.cellColored && VBGO_TAG_HAS_CELL(t);
                 if (run.record)
-                    if (LeftTileCell *first = FindLeftTileCell(slot.hash, palette, world, true))
+                    if (LeftTileCell *first = FindLeftTileCell(slot.hash, palette, static_cast<unsigned>(m_pairOfLeft[world]), true))
                         if (first->frame != m_frame)
                             *first = {first->key, m_frame, static_cast<uint16_t>(VBGO_TAG_CELL(t))};
             }
@@ -685,8 +716,12 @@ ColorPackRenderer::Run ColorPackRenderer::SetUpRun(uint64_t t, unsigned eye, int
                     run.ownPair = p;
                     m_pairs[p].wantedAt = m_frame;
                 }
-                else if (!run.cell && slot.cellColored && VBGO_TAG_HAS_CELL(t))
+                else if (slot.cellColored && VBGO_TAG_HAS_CELL(t))
                 {
+                    // (a tile the left picture draws too goes by the left picture's cells, never
+                    // its own cell's colors: right-eye paintings only paint the right picture's
+                    // own tiles, so those are some other screen's that used this map cell -
+                    // Galactic Pinball's tables share their maps' memory)
                     m_pairs[p].wantedAt = m_frame;
                     run.cell = MappedCell(p, t, static_cast<int>(x), static_cast<int>(y), slot.hash);
                 }
@@ -1091,10 +1126,17 @@ void ColorPackRenderer::EstimatePairs(const vbgo_tt_eye_view view[2], const uint
         std::array<uint16_t, 32> attributes;
         std::copy(&worlds[pair.left * 16], &worlds[pair.left * 16] + 16, attributes.begin());
         std::copy(&worlds[pair.right * 16], &worlds[pair.right * 16] + 16, attributes.begin() + 16);
+        // (a pair's other left worlds: any change there is another picture)
+        uint32_t others = 2166136261u;
+        for (int w = 0; w < 32; ++w)
+            if (w != pair.left && (pair.leftWorlds >> w & 1))
+                for (int f = 0; f < 16; ++f)
+                    others = (others ^ worlds[w * 16 + f]) * 16777619u;
         const uint32_t age = m_frame - pair.estimatedAt;
-        if (pair.estimated && attributes == pair.attributes && age < 64)
+        if (pair.estimated && attributes == pair.attributes && others == pair.otherAttributes && age < 64)
             continue;
-        bool scrolled = pair.estimated;
+        bool scrolled = pair.estimated && others == pair.otherAttributes;
+        pair.otherAttributes = others;
         for (int f = 0; f < 16 && scrolled; ++f)
             scrolled = f >= 1 && f <= 6 ? static_cast<uint16_t>(attributes[16 + f] - attributes[f]) ==
                                               static_cast<uint16_t>(pair.attributes[16 + f] - pair.attributes[f])
@@ -1117,7 +1159,12 @@ void ColorPackRenderer::EstimatePairs(const vbgo_tt_eye_view view[2], const uint
         if (pair.sprites)
             spriteSlot[pair.left] = static_cast<int8_t>(k);
         else
-            layerSlot[0][pair.left] = layerSlot[1][pair.right] = static_cast<int8_t>(k);
+        {
+            for (int w = 0; w < 32; ++w)
+                if (pair.leftWorlds >> w & 1)
+                    layerSlot[0][w] = static_cast<int8_t>(k);
+            layerSlot[1][pair.right] = static_cast<int8_t>(k);
+        }
     }
     const size_t eyeRows = static_cast<size_t>(VBGO_TT_HEIGHT) * 3 * kGuardedRow;
     m_estimateBits.assign(static_cast<size_t>(count) * 2 * eyeRows, 0);
