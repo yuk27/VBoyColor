@@ -219,6 +219,15 @@ screen pixel comes from (`core/emu/vbgo_tiletrack.h`, hooked in through
   plus a `.tiles` file mapping every pixel to its tile, so a painted copy can
   be turned into tile colors. **Shift+F10** does the same for the right eye
   (see "Both eyes" below).
+- **F12** starts/stops recording gameplay for side-by-side videos: every
+  emulated frame of the left eye twice - as the hardware shows it (red) and
+  as the app colors it, in the current color mode - as two numbered PNG
+  sequences (5x, 1920x1120) plus the game's audio, in
+  `roms/recordings/<rom name> NNN/` (`original/`, `colored/`,
+  `game audio.wav`). Import each folder into a video editor as an image
+  sequence at 50 fps; the two line up frame for frame, and the WAV lasts
+  exactly as long (it's stretched by the hardware's 50.27 to 50 fps). Stops
+  on its own after a minute.
 
 **Color packs.** Put painted copies of captures (same size, pixels not
 moved, saved as PNG) next to their `.tiles` files in

@@ -38,10 +38,12 @@ public:
     // is full - a slow/stalled audio thread shouldn't stall emulation.
     void PushSamples(const int16_t *interleaved, size_t frames);
 
+    // The core's output rate (see the class comment).
+    static constexpr size_t kSampleRate = 44100;
+
 private:
     static void DataCallback(ma_device *device, void *output, const void *input, uint32_t frameCount);
 
-    static constexpr size_t kSampleRate = 44100;
     static constexpr size_t kRingFrames = kSampleRate / 2; // 0.5s of buffering
 
     ma_device *m_device = nullptr;       // heap-allocated - see class comment

@@ -2,6 +2,7 @@
 
 #include "emu/AudioOutput.h"
 #include "emu/ColorPackRenderer.h"
+#include "emu/FrameRecorder.h"
 #include "emu/ShadeColorizer.h"
 #include "emu/TileColorPack.h"
 #include "emu/UncoloredCollector.h"
@@ -232,6 +233,14 @@ public:
     std::string SetCollectingUncolored(bool enabled);
     bool IsCollectingUncolored() const { return m_collecting; }
 
+    // Starts/stops recording gameplay for side-by-side videos (see
+    // FrameRecorder): every emulated frame of the left eye, as the original
+    // hardware showed it and as the app colors it (in the current color
+    // mode), plus the game's audio, into roms/recordings/<rom> NNN/. Returns a
+    // one-line summary. Stopping waits for the frames still being written.
+    std::string ToggleRecording();
+    bool IsRecording() const { return m_recorder.Active(); }
+
     // UI slots are 0-9 (10 total, matching FrontendGo's saveStates[10]) -
     // slot 0 is unsuffixed on disk, same as FrontendGo's slot 0 (see
     // StateFilePath). Raw retro_serialize dump, binary-compatible with
@@ -267,6 +276,9 @@ private:
     // palette is active, otherwise a straight copy with opaque alpha) and
     // uploads it to the screen texture.
     void UploadFrame();
+    // A frame the core just finished: keep it, color it, show it.
+    void PresentFrame();
+    void RecordFrame();
     void PaintTileDebugView();
     // Tells the tracker which fills to tag (see SetAuthoring).
     void UpdateFillTracking();
@@ -348,6 +360,7 @@ private:
     bool m_authoring = false;     // see SetAuthoring
     std::vector<uint64_t> m_records; // one eye's tile records, for the debug view / F7 collector
     UncoloredCollector m_collector; // see SetCollectingUncolored
+    FrameRecorder m_recorder;       // see ToggleRecording
     bool m_collecting = false;
     ShadeRgb m_shadeBackground{0.0f, 0.0f, 0.0f}; // active Multicolor palette's background - painted tiles fade toward it
 

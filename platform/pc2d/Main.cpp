@@ -316,9 +316,12 @@ int main()
         // re-imports its paintings (roms/colorpacks/<rom>/) after editing.
         // F7 starts/stops collecting what the pack doesn't color yet into
         // paint sheets (roms/captures/<rom> todo NNN); F6 saves the whole tile
-        // memory as a tile sheet (roms/captures/<rom> tiles NNN).
+        // memory as a tile sheet (roms/captures/<rom> tiles NNN). F12
+        // starts/stops recording gameplay for side-by-side videos - original
+        // red and colored, frame for frame (roms/recordings/<rom> NNN, see
+        // Emulator::ToggleRecording).
         bool f9WasPressed = false, f10WasPressed = false, f8WasPressed = false, f11WasPressed = false,
-             f7WasPressed = false, f6WasPressed = false;
+             f7WasPressed = false, f6WasPressed = false, f12WasPressed = false;
         bool keyboardWasDown[GLFW_KEY_LAST + 1]{};
 
         while (!glfwWindowShouldClose(window))
@@ -394,6 +397,14 @@ int main()
                             saved.c_str());
             }
             f6WasPressed = f6Pressed;
+            const bool f12Pressed = glfwGetKey(window, GLFW_KEY_F12) == GLFW_PRESS;
+            if (f12Pressed && !f12WasPressed)
+            {
+                if (emulator.IsRecording())
+                    std::printf("Recording: writing the last frames...\n");
+                std::printf("%s\n", emulator.ToggleRecording().c_str());
+            }
+            f12WasPressed = f12Pressed;
 
             std::memcpy(lastButtonStates, buttonStates, sizeof(buttonStates));
             PollDesktopButtonState(window, buttonStates);

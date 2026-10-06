@@ -251,6 +251,7 @@ add_library(vbgo_app STATIC
     core/emu/TileColorPack.cpp
     core/emu/ColorPackRenderer.cpp
     core/emu/UncoloredCollector.cpp
+    core/emu/FrameRecorder.cpp
     core/emu/AudioOutput.cpp
     core/input/XrInput.cpp
     core/input/ButtonMapping.cpp

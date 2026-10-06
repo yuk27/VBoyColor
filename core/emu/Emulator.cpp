@@ -52,6 +52,8 @@ namespace
     // when uninitialized, but the null check here also covers Emulator not
     // having called Initialize() at all yet.
     AudioOutput *g_audioOutput = nullptr;
+    // While recording (see Emulator::ToggleRecording): the game's audio goes there too.
+    FrameRecorder *g_recorder = nullptr;
 
     // The core has at least one call site (SettingChanged's "3D mode changed"
     // log line) that calls log_cb unconditionally with no null check, unlike
@@ -155,6 +157,8 @@ namespace
     {
         if (g_audioOutput)
             g_audioOutput->PushSamples(data, frames);
+        if (g_recorder)
+            g_recorder->AddAudio(data, frames);
         return frames;
     }
 
@@ -288,25 +292,19 @@ void Emulator::RunFrame(float deltaSeconds)
         m_frameAccumulator -= framePeriod;
         ranAny = true;
         ++runs;
+        // Recording: every emulated frame, not just the last one an app
+        // frame shows.
+        if (m_recorder.Active() && g_frameReady && m_ui)
+        {
+            PresentFrame();
+            RecordFrame();
+        }
     }
     if (runs > 1)
         ++m_catchUps;
 
     if (ranAny && g_frameReady && m_ui)
-    {
-        std::memcpy(m_rawFrame.data(), g_pendingFrame, m_rawFrame.size());
-        m_hasFrame = true;
-        if (m_collecting && vbgo_tiletrack_is_enabled() &&
-            vbgo_tiletrack_records(0, m_records.data(), nullptr, false))
-            m_collector.AddFrame(m_records.data(), m_rawFrame.data(), kFbWidth, m_colorPack, CapturePalette());
-        if (m_shadePaletteIndex >= 0 && m_shadeColorizer.IsGradient())
-            m_shadeColorizer.Observe(m_rawFrame.data(), std::min<uint32_t>(m_lastFrameWidth, kFbWidth),
-                                     std::min<uint32_t>(m_lastFrameHeight, kFbHeight), static_cast<size_t>(kFbWidth) * 4);
-        UploadFrame();
-        m_lastFrameWidth = g_pendingWidth > 0 ? g_pendingWidth : kSideBySideWidth;
-        m_lastFrameHeight = g_pendingHeight > 0 ? g_pendingHeight : kSideBySideHeight;
-        g_frameReady = false;
-    }
+        PresentFrame();
 
     // Frame times, logged every few seconds - to check them on the headset
     // (logcat: VirtualBoyGo). Both run on the render thread, once per
@@ -329,6 +327,76 @@ void Emulator::RunFrame(float deltaSeconds)
         m_emulationMs = m_emulationMaxMs = m_coloringMs = m_coloringMaxMs = 0.0;
         m_timedFrames = m_coloringFrames = m_catchUps = 0;
     }
+}
+
+void Emulator::PresentFrame()
+{
+    std::memcpy(m_rawFrame.data(), g_pendingFrame, m_rawFrame.size());
+    m_hasFrame = true;
+    if (m_collecting && vbgo_tiletrack_is_enabled() && vbgo_tiletrack_records(0, m_records.data(), nullptr, false))
+        m_collector.AddFrame(m_records.data(), m_rawFrame.data(), kFbWidth, m_colorPack, CapturePalette());
+    if (m_shadePaletteIndex >= 0 && m_shadeColorizer.IsGradient())
+        m_shadeColorizer.Observe(m_rawFrame.data(), std::min<uint32_t>(m_lastFrameWidth, kFbWidth),
+                                 std::min<uint32_t>(m_lastFrameHeight, kFbHeight), static_cast<size_t>(kFbWidth) * 4);
+    UploadFrame();
+    m_lastFrameWidth = g_pendingWidth > 0 ? g_pendingWidth : kSideBySideWidth;
+    m_lastFrameHeight = g_pendingHeight > 0 ? g_pendingHeight : kSideBySideHeight;
+    g_frameReady = false;
+}
+
+std::string Emulator::ToggleRecording()
+{
+    if (m_recorder.Active())
+    {
+        g_recorder = nullptr;
+        const size_t frames = m_recorder.Stop();
+        char line[512];
+        std::snprintf(line, sizeof(line),
+                      "Recorded %zu frames (%.1f s) into roms/%s/: original/ (red, as the hardware shows it), colored/ "
+                      "(as the app colors it), game audio.wav - import each folder as an image sequence at 50 fps",
+                      frames, frames / 50.0, m_recorder.Folder().c_str());
+        return line;
+    }
+    if (!m_romLoaded || !m_platform)
+        return "Recording: no game running";
+    std::string folder;
+    for (int n = 1; n < 1000 && folder.empty(); ++n)
+    {
+        char suffix[16];
+        std::snprintf(suffix, sizeof(suffix), " %03d", n);
+        if (!m_platform->RomsFileExists("recordings/" + m_romBaseName + suffix, false))
+            folder = "recordings/" + m_romBaseName + suffix;
+    }
+    if (folder.empty() || !m_recorder.Start(m_platform, folder, VBGO_TT_WIDTH, VBGO_TT_HEIGHT, AudioOutput::kSampleRate))
+        return "Recording: couldn't start";
+    // (the folder exists from the first frame on, so the next recording picks the next number)
+    g_recorder = &m_recorder;
+    return "Recording into roms/" + folder + "/ - press again to stop (stops on its own after a minute)";
+}
+
+void Emulator::RecordFrame()
+{
+    // The left eye, twice: the original's red (the core's shade brightness in
+    // the red channel - the hardware's look, the app's red Tint), and the
+    // frame as colored for the screen (BGRA).
+    std::vector<uint8_t> original(static_cast<size_t>(VBGO_TT_WIDTH) * VBGO_TT_HEIGHT * 3, 0), colored(original.size());
+    for (uint32_t y = 0; y < VBGO_TT_HEIGHT; ++y)
+    {
+        const uint8_t *raw = &m_rawFrame[static_cast<size_t>(y) * kFbWidth * 4];
+        const uint8_t *col = &m_frameBufferRgba[static_cast<size_t>(y) * kFbWidth * 4];
+        uint8_t *o = &original[static_cast<size_t>(y) * VBGO_TT_WIDTH * 3];
+        uint8_t *c = &colored[static_cast<size_t>(y) * VBGO_TT_WIDTH * 3];
+        for (uint32_t x = 0; x < VBGO_TT_WIDTH; ++x)
+        {
+            o[x * 3] = std::max({raw[x * 4], raw[x * 4 + 1], raw[x * 4 + 2]});
+            c[x * 3 + 0] = col[x * 4 + 2];
+            c[x * 3 + 1] = col[x * 4 + 1];
+            c[x * 3 + 2] = col[x * 4 + 0];
+        }
+    }
+    m_recorder.AddFrame(original.data(), colored.data());
+    if (m_recorder.Frames() >= 60 * 50)
+        std::fprintf(stderr, "[Emulator] %s\n", ToggleRecording().c_str());
 }
 
 void Emulator::SetShadePalette(int paletteIndex)
