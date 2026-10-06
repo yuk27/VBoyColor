@@ -11,6 +11,7 @@
 #include <stb_image_write.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdarg>
@@ -40,9 +41,10 @@ namespace
     unsigned g_pendingHeight = 0;
     bool g_frameReady = false;
 
-    // Set by Emulator::SetGameplayInput each app frame, read back by
-    // RetroInputState - see VBButtonBit in Emulator.h for what each bit means.
-    uint32_t g_joypadBitmask = 0;
+    // Set by Emulator::SetGameplayInput each app frame (render thread), read
+    // back by RetroInputState (emulation thread) - see VBButtonBit in
+    // Emulator.h for what each bit means.
+    std::atomic<uint32_t> g_joypadBitmask{0};
 
     // Set by Emulator::Initialize to &m_audioOutput - same "necessarily global"
     // reasoning as the rest of this block; RetroAudioSampleBatch forwards the
@@ -171,7 +173,7 @@ namespace
     {
         if (port != 0 || device != RETRO_DEVICE_JOYPAD || id > 31)
             return 0;
-        return (g_joypadBitmask & (1u << id)) ? 1 : 0;
+        return (g_joypadBitmask.load(std::memory_order_relaxed) & (1u << id)) ? 1 : 0;
     }
 } // namespace
 
@@ -201,11 +203,51 @@ void Emulator::Initialize(UiRenderer &ui, Platform &platform)
     m_screenTexture = ui.CreateStreamingImage(kFbWidth, kFbHeight, VK_FORMAT_B8G8R8A8_SRGB);
     m_frameBufferRgba.resize(static_cast<size_t>(kFbWidth) * kFbHeight * 4);
     m_rawFrame.resize(m_frameBufferRgba.size());
+    m_displayRgba.resize(m_frameBufferRgba.size());
     m_records.resize(VBGO_TT_EYE_PIXELS);
+
+    m_stopWorker = false;
+    m_worker = std::thread(&Emulator::WorkerLoop, this);
+}
+
+Emulator::~Emulator()
+{
+    StopWorker();
+}
+
+void Emulator::StopWorker()
+{
+    if (!m_worker.joinable())
+        return;
+    {
+        std::lock_guard<std::mutex> lock(m_workMutex);
+        m_stopWorker = true;
+    }
+    m_workCv.notify_all();
+    m_worker.join();
+}
+
+void Emulator::WorkerLoop()
+{
+    for (;;)
+    {
+        int runs = 0;
+        {
+            std::unique_lock<std::mutex> lock(m_workMutex);
+            m_workCv.wait(lock, [this] { return m_stopWorker || m_pendingRuns > 0; });
+            if (m_stopWorker)
+                return;
+            runs = m_pendingRuns;
+            m_pendingRuns = 0;
+        }
+        std::lock_guard<std::recursive_mutex> emu(m_emuMutex);
+        RunCoreFrames(runs);
+    }
 }
 
 bool Emulator::LoadRom(const std::string &romPath, const std::string &displayName)
 {
+    std::lock_guard<std::recursive_mutex> emu(m_emuMutex);
     if (!m_coreInitialized)
         return false;
 
@@ -237,6 +279,10 @@ bool Emulator::LoadRom(const std::string &romPath, const std::string &displayNam
 
     m_romLoaded = retro_load_game(&info);
     m_frameAccumulator = 0.0f;
+    {
+        std::lock_guard<std::mutex> lock(m_workMutex);
+        m_pendingRuns = 0;
+    }
     std::fprintf(stderr, "[Emulator] LoadRom(\"%s\"): %zu bytes read, retro_load_game -> %s\n", romPath.c_str(),
                  romBytes.size(), m_romLoaded ? "success" : "FAILED");
 
@@ -246,6 +292,7 @@ bool Emulator::LoadRom(const std::string &romPath, const std::string &displayNam
         m_romCrc = TileColorPack::Crc32(romBytes.data(), romBytes.size());
         m_romSize = static_cast<uint32_t>(romBytes.size());
         LoadRam();
+        m_ramCheckSeconds = 0.0f;
         std::fprintf(stderr, "[Emulator] %s\n", ReloadColorPack().c_str());
     }
 
@@ -256,6 +303,7 @@ void Emulator::SetGameplayInput(uint32_t joypadBitmask) { g_joypadBitmask = joyp
 
 bool Emulator::ResetGame()
 {
+    std::lock_guard<std::recursive_mutex> emu(m_emuMutex);
     if (!m_romLoaded)
         return false;
     g_joypadBitmask = 0;
@@ -279,9 +327,44 @@ void Emulator::RunFrame(float deltaSeconds)
     if (m_frameAccumulator > kMaxCatchUp)
         m_frameAccumulator = kMaxCatchUp;
 
-    bool ranAny = false;
     int runs = 0;
     while (m_frameAccumulator >= framePeriod)
+    {
+        m_frameAccumulator -= framePeriod;
+        ++runs;
+    }
+    if (runs > 0)
+    {
+        {
+            std::lock_guard<std::mutex> lock(m_workMutex);
+            // (the thread fell behind: drop frames rather than pile them up)
+            m_pendingRuns = std::min(m_pendingRuns + runs, 4);
+        }
+        m_workCv.notify_one();
+    }
+
+    UploadDisplay();
+
+    // The game's battery save, every few seconds if it changed - without
+    // waiting for the emulation (skipped while a frame is running).
+    m_ramCheckSeconds += deltaSeconds;
+    if (m_ramCheckSeconds >= 3.0f)
+    {
+        std::unique_lock<std::recursive_mutex> emu(m_emuMutex, std::try_to_lock);
+        if (emu.owns_lock())
+        {
+            m_ramCheckSeconds = 0.0f;
+            FlushRamIfChanged();
+        }
+    }
+}
+
+void Emulator::RunCoreFrames(int runs)
+{
+    if (!m_romLoaded)
+        return;
+
+    for (int i = 0; i < runs; ++i)
     {
         const auto runStart = std::chrono::steady_clock::now();
         retro_run();
@@ -289,12 +372,9 @@ void Emulator::RunFrame(float deltaSeconds)
         m_emulationMs += ms;
         m_emulationMaxMs = std::max(m_emulationMaxMs, ms);
         ++m_timedFrames;
-        m_frameAccumulator -= framePeriod;
-        ranAny = true;
-        ++runs;
         // Recording: every emulated frame, not just the last one an app
         // frame shows.
-        if (m_recorder.Active() && g_frameReady && m_ui)
+        if (m_recorder.Active() && g_frameReady && i + 1 < runs)
         {
             PresentFrame();
             RecordFrame();
@@ -303,13 +383,17 @@ void Emulator::RunFrame(float deltaSeconds)
     if (runs > 1)
         ++m_catchUps;
 
-    if (ranAny && g_frameReady && m_ui)
+    if (g_frameReady)
+    {
         PresentFrame();
+        if (m_recorder.Active())
+            RecordFrame();
+    }
 
     // Frame times, logged every few seconds - to check them on the headset
-    // (logcat: VBoyColor). Both run on the render thread, once per
-    // emulated frame (50 a second); "behind" counts app frames that had to
-    // run the core more than once to catch up (the app missed frames).
+    // (logcat: VBoyColor). Both run on the emulation thread, once per
+    // emulated frame (50 a second); "behind" counts the times it had to run
+    // the core more than once to catch up (it fell behind).
     if (m_timedFrames >= 250)
     {
         // (an unoptimized build's times say little about an optimized one's)
@@ -338,13 +422,50 @@ void Emulator::PresentFrame()
     if (m_shadePaletteIndex >= 0 && m_shadeColorizer.IsGradient())
         m_shadeColorizer.Observe(m_rawFrame.data(), std::min<uint32_t>(m_lastFrameWidth, kFbWidth),
                                  std::min<uint32_t>(m_lastFrameHeight, kFbHeight), static_cast<size_t>(kFbWidth) * 4);
-    UploadFrame();
+    ColorFrame();
     m_lastFrameWidth = g_pendingWidth > 0 ? g_pendingWidth : kSideBySideWidth;
     m_lastFrameHeight = g_pendingHeight > 0 ? g_pendingHeight : kSideBySideHeight;
     g_frameReady = false;
+    PublishFrame();
+}
+
+void Emulator::PublishFrame()
+{
+    const uint32_t height = std::min<uint32_t>(m_lastFrameHeight, kFbHeight);
+    std::lock_guard<std::mutex> lock(m_displayMutex);
+    std::memcpy(m_displayRgba.data(), m_frameBufferRgba.data(), static_cast<size_t>(height) * kFbWidth * 4);
+    m_displayWidth = m_lastFrameWidth;
+    m_displayHeight = height;
+    m_displayNew = true;
+}
+
+void Emulator::UploadDisplay()
+{
+    std::lock_guard<std::mutex> lock(m_displayMutex);
+    if (!m_displayNew || !m_ui)
+        return;
+    m_ui->UpdateStreamingImage(m_screenTexture, m_displayRgba.data(), static_cast<size_t>(m_displayHeight) * kFbWidth * 4);
+    m_shownWidth = m_displayWidth;
+    m_shownHeight = m_displayHeight;
+    m_displayNew = false;
+}
+
+void Emulator::RecolorShown()
+{
+    if (!m_hasFrame || !m_ui)
+        return;
+    ColorFrame();
+    PublishFrame();
+    UploadDisplay();
 }
 
 std::string Emulator::ToggleRecording()
+{
+    std::lock_guard<std::recursive_mutex> emu(m_emuMutex);
+    return ToggleRecordingLocked();
+}
+
+std::string Emulator::ToggleRecordingLocked()
 {
     if (m_recorder.Active())
     {
@@ -396,7 +517,7 @@ void Emulator::RecordFrame()
     }
     m_recorder.AddFrame(original.data(), colored.data());
     if (m_recorder.Frames() >= 60 * 50)
-        std::fprintf(stderr, "[Emulator] %s\n", ToggleRecording().c_str());
+        std::fprintf(stderr, "[Emulator] %s\n", ToggleRecordingLocked().c_str());
 }
 
 void Emulator::SetShadePalette(int paletteIndex)
@@ -406,6 +527,7 @@ void Emulator::SetShadePalette(int paletteIndex)
     if (paletteIndex == m_shadePaletteIndex)
         return;
 
+    std::lock_guard<std::recursive_mutex> emu(m_emuMutex);
     m_shadePaletteIndex = paletteIndex;
     m_packRenderer.SetAutoColors(paletteIndex == kAutoColors);
     if (paletteIndex == kAutoColors)
@@ -456,11 +578,10 @@ void Emulator::SetShadePalette(int paletteIndex)
     // Emulation is paused while the menu is open, so RunFrame won't upload
     // anything new until it closes - re-color the frame already on screen
     // now so palette changes show up immediately.
-    if (m_hasFrame && m_ui)
-        UploadFrame();
+    RecolorShown();
 }
 
-void Emulator::UploadFrame()
+void Emulator::ColorFrame()
 {
     // Only the part of the core's (bigger, fixed-size) buffer this frame
     // uses - both eyes side by side - is converted and uploaded.
@@ -503,7 +624,6 @@ void Emulator::UploadFrame()
     }
     if (m_tileDebugView)
         PaintTileDebugView();
-    m_ui->UpdateStreamingImage(m_screenTexture, m_frameBufferRgba.data(), height * stride);
 }
 
 namespace
@@ -561,6 +681,7 @@ void Emulator::PaintTileDebugView()
 
 void Emulator::SetTileTracking(bool enabled)
 {
+    std::lock_guard<std::recursive_mutex> emu(m_emuMutex);
     m_trackingWanted = enabled;
     if (!enabled && m_tileDebugView)
         SetTileDebugView(false);
@@ -579,14 +700,15 @@ bool Emulator::IsTileTracking() const { return vbgo_tiletrack_is_enabled(); }
 
 void Emulator::SetTileDebugView(bool enabled)
 {
+    std::lock_guard<std::recursive_mutex> emu(m_emuMutex);
     m_tileDebugView = enabled;
     UpdateTileTracking();
-    if (m_hasFrame && m_ui)
-        UploadFrame(); // show/hide it right away, even while paused
+    RecolorShown(); // show/hide it right away, even while paused
 }
 
 std::string Emulator::ReloadColorPack()
 {
+    std::lock_guard<std::recursive_mutex> emu(m_emuMutex);
     m_colorPack.Clear();
     if (!m_romLoaded)
         return "No ROM loaded";
@@ -674,8 +796,7 @@ std::string Emulator::ReloadColorPack()
         m_shadePaletteIndex = -1;
         SetShadePalette(index);
     }
-    if (m_hasFrame && m_ui)
-        UploadFrame();
+    RecolorShown();
     return summary;
 }
 
@@ -727,6 +848,7 @@ bool Emulator::FindPackForRom(std::string &from)
 
 void Emulator::SetAuthoring(bool enabled)
 {
+    std::lock_guard<std::recursive_mutex> emu(m_emuMutex);
     m_authoring = enabled;
     UpdateFillTracking();
 }
@@ -742,9 +864,9 @@ void Emulator::UpdateFillTracking()
 
 void Emulator::SetColorPackEnabled(bool enabled)
 {
+    std::lock_guard<std::recursive_mutex> emu(m_emuMutex);
     m_colorPackEnabled = enabled;
-    if (m_hasFrame && m_ui)
-        UploadFrame();
+    RecolorShown();
 }
 
 std::string Emulator::NextCaptureName(const char *infix) const
@@ -850,6 +972,7 @@ std::array<std::array<uint8_t, 3>, 4> Emulator::CapturePalette() const
 
 std::string Emulator::CaptureTileReference(bool rightEye)
 {
+    std::lock_guard<std::recursive_mutex> emu(m_emuMutex);
     if (!m_romLoaded || !m_hasFrame || !vbgo_tiletrack_is_enabled())
         return "";
     // The right eye: a right-eye painting, for what games draw for that eye
@@ -936,6 +1059,7 @@ std::string Emulator::CaptureTileReference(bool rightEye)
 
 std::string Emulator::CaptureTileSheet()
 {
+    std::lock_guard<std::recursive_mutex> emu(m_emuMutex);
     const uint16_t *chr = vbgo_tiletrack_chr_ram();
     if (!m_romLoaded || !m_hasFrame || !vbgo_tiletrack_is_enabled() || !chr)
         return "";
@@ -975,6 +1099,7 @@ std::string Emulator::CaptureTileSheet()
 
 std::string Emulator::SetCollectingUncolored(bool enabled)
 {
+    std::lock_guard<std::recursive_mutex> emu(m_emuMutex);
     if (enabled == m_collecting)
         return m_collecting ? "Collecting uncolored objects" : "Not collecting";
     m_collecting = enabled;
@@ -1014,8 +1139,8 @@ void Emulator::DrawScreen(UiRenderer &ui, float x, float y, float w, float h, Ey
     // "stretch to fill" behaviour the old static-image stub had. For a
     // single eye, crop that region's left/right half on top of the same
     // valid-region crop (the combined frame is left-eye-then-right-eye).
-    const float fullU1 = static_cast<float>(m_lastFrameWidth) / static_cast<float>(kFbWidth);
-    const float v1 = static_cast<float>(m_lastFrameHeight) / static_cast<float>(kFbHeight);
+    const float fullU1 = static_cast<float>(m_shownWidth) / static_cast<float>(kFbWidth);
+    const float v1 = static_cast<float>(m_shownHeight) / static_cast<float>(kFbHeight);
 
     float u0 = 0.0f;
     float u1 = fullU1;
@@ -1083,6 +1208,7 @@ void Emulator::CaptureScreenshotGrayscale(std::vector<uint8_t> &outGray) const
 
 bool Emulator::SaveState(int uiSlot)
 {
+    std::lock_guard<std::recursive_mutex> emu(m_emuMutex);
     if (!m_romLoaded)
         return false;
 
@@ -1106,6 +1232,7 @@ bool Emulator::SaveState(int uiSlot)
 
 bool Emulator::LoadState(int uiSlot)
 {
+    std::lock_guard<std::recursive_mutex> emu(m_emuMutex);
     if (!m_romLoaded)
         return false;
 
@@ -1159,6 +1286,20 @@ void Emulator::SaveRam()
         return; // this ROM has no battery-backed SRAM
 
     m_platform->WriteRomsFile(m_romBaseName + ".srm", false, data, size);
+    m_savedRam.assign(static_cast<const uint8_t *>(data), static_cast<const uint8_t *>(data) + size);
+}
+
+void Emulator::FlushRamIfChanged()
+{
+    if (!m_romLoaded)
+        return;
+    const size_t size = retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
+    const auto *data = static_cast<const uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
+    if (size == 0 || !data)
+        return;
+    if (m_savedRam.size() == size && std::memcmp(m_savedRam.data(), data, size) == 0)
+        return;
+    SaveRam();
 }
 
 void Emulator::LoadRam()
@@ -1174,12 +1315,21 @@ void Emulator::LoadRam()
     const std::vector<uint8_t> bytes = m_platform->ReadRomsFile(m_romBaseName + ".srm", false);
     // Ignore rather than feed the core a stale/mismatched-size buffer.
     if (bytes.size() != size)
+    {
+        // (nothing on disk yet: what the game starts with counts as saved)
+        m_savedRam.assign(static_cast<const uint8_t *>(data), static_cast<const uint8_t *>(data) + size);
         return;
+    }
     std::memcpy(data, bytes.data(), size);
+    m_savedRam = bytes;
 }
 
 void Emulator::Shutdown()
 {
+    StopWorker();
+    std::lock_guard<std::recursive_mutex> emu(m_emuMutex);
+    if (m_recorder.Active())
+        std::fprintf(stderr, "[Emulator] %s\n", ToggleRecordingLocked().c_str());
     if (m_romLoaded && m_collecting) // don't lose what was collected
         std::fprintf(stderr, "[Emulator] %s\n", SetCollectingUncolored(false).c_str());
     if (m_romLoaded)

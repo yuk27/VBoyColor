@@ -933,6 +933,9 @@ void OpenXrApp::RenderFrame()
 
 void OpenXrApp::Shutdown()
 {
+    // The game's battery save, and the emulation thread stopped before the
+    // renderer it uploads to goes away.
+    m_emulator.Shutdown();
     // Swapchains own Vulkan images backed by our VkDevice, so they (and the
     // session) must be torn down before the renderer destroys that device -
     // otherwise xrDestroySwapchain's driver-side vkDestroyImage call

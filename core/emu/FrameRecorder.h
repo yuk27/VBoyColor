@@ -58,7 +58,7 @@ private:
     Platform *m_platform = nullptr;
     std::string m_folder;
     uint32_t m_width = 0, m_height = 0, m_audioRate = 0;
-    bool m_active = false;
+    std::atomic<bool> m_active{false}; // (read from the render thread while the emulation thread records)
     size_t m_frames = 0;
     std::vector<int16_t> m_audio;
 

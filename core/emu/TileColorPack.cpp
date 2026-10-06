@@ -953,7 +953,8 @@ void TileColorPack::FinishImport(ImportStats &stats)
     // The common colors, bucketed by 16x16x16 color cells, so each rare
     // color only looks at the cells within reach (a painting can hold tens
     // of thousands of slightly different shades - e.g. a smoothed one).
-    constexpr int kCell = 16, kReach = (kMergeDistance + kCell - 1) / kCell;
+    // (static: older MSVC won't use a local constexpr in a lambda without capturing it)
+    static constexpr int kCell = 16, kReach = (kMergeDistance + kCell - 1) / kCell;
     auto cellOf = [](int r, int g, int b) { return (r / kCell) * 256 + (g / kCell) * 16 + b / kCell; };
     std::vector<std::vector<uint32_t>> cells(16 * 16 * 16);
     for (const auto &color : usage)

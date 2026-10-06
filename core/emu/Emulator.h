@@ -10,8 +10,11 @@
 #include "io/Platform.h"
 
 #include <array>
+#include <condition_variable>
 #include <cstdint>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 // Bit positions for Emulator::SetGameplayInput's bitmask - one bit per VB
@@ -53,9 +56,21 @@ namespace VBButtonBit
 // combined frame - which DrawScreen exposes as a single texture; splitting
 // that into two per-eye OpenXR quad layers (via subImage.imageRect crops)
 // is OpenXrApp's job, not this class's.
+//
+// Threads: the core and the coloring run on a thread of their own, so the
+// render thread never waits for them (a headset frame is 8.3 ms at 120 Hz;
+// an emulated frame gets the Virtual Boy's whole 20 ms). RunFrame only says
+// how many frames are due and uploads the newest finished one. Everything
+// else here is called from the render thread too, and waits for the frame
+// being emulated to finish first (m_emuMutex).
 class Emulator
 {
 public:
+    Emulator() = default;
+    ~Emulator();
+    Emulator(const Emulator &) = delete;
+    Emulator &operator=(const Emulator &) = delete;
+
     // Screens are shown at this fixed integer upscale (pixel-perfect,
     // nearest-neighbor - see UiRenderer::LoadImage) everywhere the emulator
     // screen is displayed, so PC2D and the headset builds look consistent.
@@ -107,9 +122,10 @@ public:
 
     // Fixed-timestep accumulator against the VB's native ~50.27Hz refresh -
     // call once per app frame with the same deltaSeconds already computed
-    // for AppMenu::Update. Runs retro_run() zero or more times to catch up,
-    // then re-uploads the latest video frame to the streaming texture if at
-    // least one retro_run() happened. A no-op before any ROM is loaded.
+    // for AppMenu::Update. Asks the emulation thread for the frames now due
+    // (it runs retro_run() and colors the result) and uploads the newest
+    // frame it has finished to the streaming texture. Never waits for the
+    // emulation. A no-op before any ROM is loaded.
     void RunFrame(float deltaSeconds);
 
     // Sets the VB gamepad state RunFrame's next retro_run() call(s) will
@@ -272,12 +288,29 @@ private:
 
     void CaptureScreenshotGrayscale(std::vector<uint8_t> &outGray) const;
 
+    // The emulation thread: waits for frames to run (m_pendingRuns).
+    void WorkerLoop();
+    void StopWorker();
+    // On the emulation thread, m_emuMutex held: runs the core `runs` times,
+    // colors the last frame (every one while recording) and publishes it.
+    void RunCoreFrames(int runs);
     // Converts m_rawFrame into m_frameBufferRgba (colorized if a shade
-    // palette is active, otherwise a straight copy with opaque alpha) and
-    // uploads it to the screen texture.
-    void UploadFrame();
-    // A frame the core just finished: keep it, color it, show it.
+    // palette is active, otherwise a straight copy with opaque alpha, then
+    // the pack's / Auto colors).
+    void ColorFrame();
+    // Hands m_frameBufferRgba to the render thread (m_displayRgba).
+    void PublishFrame();
+    // Render thread: uploads the newest published frame, if there's one.
+    void UploadDisplay();
+    // Render thread, m_emuMutex held: re-colors the frame on screen and
+    // shows it right away (a setting changed - emulation may be paused).
+    void RecolorShown();
+    // A frame the core just finished: keep it, color it, publish it.
     void PresentFrame();
+    std::string ToggleRecordingLocked();
+    // Saves cart SRAM when the game changed it (checked every few seconds
+    // from RunFrame, so a game's saves survive the app being closed).
+    void FlushRamIfChanged();
     void RecordFrame();
     void PaintTileDebugView();
     // Tells the tracker which fills to tag (see SetAuthoring).
@@ -316,7 +349,27 @@ private:
     uint32_t m_romCrc = 0, m_romSize = 0; // the loaded ROM's CRC-32 and size (color packs are matched by them too)
     bool FindPackForRom(std::string &from); // a pack made for this ROM (by its CRC), built in or in the ROMs folder
 
-    float m_frameAccumulator = 0.0f; // real time not yet consumed by retro_run() - see kCoreFps
+    float m_frameAccumulator = 0.0f; // real time not yet consumed by retro_run() - see kCoreFps (render thread)
+    float m_ramCheckSeconds = 0.0f;  // time since SRAM was last checked (render thread)
+    std::vector<uint8_t> m_savedRam; // SRAM as last written to disk
+
+    // The emulation thread (see the class comment). m_emuMutex guards the
+    // core and everything the coloring uses - held by the thread while it
+    // runs frames, and by every public method that touches them (recursive:
+    // those call each other). m_workMutex/m_workCv hand it frames to run.
+    std::thread m_worker;
+    std::recursive_mutex m_emuMutex;
+    std::mutex m_workMutex;
+    std::condition_variable m_workCv;
+    int m_pendingRuns = 0;
+    bool m_stopWorker = false;
+    // The newest colored frame, for the render thread to upload.
+    std::mutex m_displayMutex;
+    std::vector<uint8_t> m_displayRgba;
+    uint32_t m_displayWidth = kSideBySideWidth, m_displayHeight = kSideBySideHeight;
+    bool m_displayNew = false;
+    // What the screen texture holds (render thread; DrawScreen crops to it).
+    uint32_t m_shownWidth = kSideBySideWidth, m_shownHeight = kSideBySideHeight;
 
     // Updated by the video_cb callback each retro_run() call - the portion
     // of the fixed-size streaming texture that's actually valid for the
@@ -339,7 +392,7 @@ private:
     // Untouched copy of the core's last frame - gray RGB plus the shade
     // index tag in each pixel's top byte (cmake/PatchBeetleVip.cmake). Kept
     // so a shade palette change can re-color the frame on screen without
-    // running the core (UploadFrame), and so save-state previews stay true
+    // running the core (RecolorShown), and so save-state previews stay true
     // VB luminance whatever palette is active (CaptureScreenshotGrayscale).
     // Same size as m_frameBufferRgba; m_hasFrame is false until the first
     // frame lands in it.
@@ -353,7 +406,7 @@ private:
     ColorPackRenderer m_packRenderer;
     bool m_trackingWanted = false; // see SetTileTracking
     // Time per emulated frame (see RunFrame): the core's, and coloring both
-    // eyes' (UploadFrame) - summed / worst since the last log line.
+    // eyes' (ColorFrame) - summed / worst since the last log line.
     double m_emulationMs = 0.0, m_emulationMaxMs = 0.0, m_coloringMs = 0.0, m_coloringMaxMs = 0.0;
     int m_timedFrames = 0, m_coloringFrames = 0, m_catchUps = 0;
     bool m_colorPackEnabled = true;
