@@ -16,10 +16,12 @@
 #include <GLFW/glfw3.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -181,6 +183,50 @@ namespace
         y = std::floor((h - sh) / 2.0f);
     }
 
+    // A ROM dropped on the window (GLFW hands over UTF-8 paths), loaded by
+    // the render loop.
+    std::string g_droppedRom;
+    void OnDrop(GLFWwindow *, int count, const char **paths)
+    {
+        for (int i = 0; i < count; ++i)
+        {
+            std::string path = paths[i];
+            std::string ext = path.size() > 3 ? path.substr(path.size() - 3) : "";
+            std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (ext == ".vb")
+            {
+                g_droppedRom = path;
+                return;
+            }
+        }
+    }
+
+    // Loads a ROM from anywhere (dropped on the window, or named on the
+    // command line - "Open with"); its saves go to the roms folder as usual.
+    bool LoadRomFromPath(Emulator &emulator, AppMenu &appMenu, const std::string &utf8Path)
+    {
+        try
+        {
+#if defined(__cpp_char8_t)
+            const std::filesystem::path path(reinterpret_cast<const char8_t *>(utf8Path.c_str()));
+#else
+            const std::filesystem::path path = std::filesystem::u8path(utf8Path);
+#endif
+            if (!emulator.LoadRom(path.string(), path.stem().string()))
+            {
+                std::fprintf(stderr, "VBoy Color: couldn't load %s\n", utf8Path.c_str());
+                return false;
+            }
+            appMenu.Hide();
+            return true;
+        }
+        catch (const std::exception &ex)
+        {
+            std::fprintf(stderr, "VBoy Color: couldn't load %s (%s)\n", utf8Path.c_str(), ex.what());
+            return false;
+        }
+    }
+
     // Alt+Enter: fullscreen on the monitor the window is on, and back.
     void ToggleFullscreen(GLFWwindow *window)
     {
@@ -212,8 +258,16 @@ namespace
 
 } // namespace
 
-int main()
+int main(int argc, char **argv)
 {
+    // A ROM named on the command line (before the working directory moves
+    // to the exe's folder - see DesktopPlatform's constructor).
+    std::string startRom;
+    if (argc > 1)
+    {
+        std::error_code ec;
+        startRom = std::filesystem::absolute(argv[1], ec).string();
+    }
     DesktopPlatform platform;
 
     // Window is sized to exactly fit the upscaled game screen; the menu is
@@ -239,6 +293,7 @@ int main()
         glfwTerminate();
         return 1;
     }
+    glfwSetDropCallback(window, OnDrop);
 
     VulkanRenderer renderer;
     UiRenderer uiRenderer;
@@ -340,6 +395,14 @@ int main()
         CheckVk(vkCreateFence(renderer.GetDevice(), &fenceInfo, nullptr, &acquireFence), "vkCreateFence");
 
         std::printf("VBoy Color running (%ux%u)\n", extent.width, extent.height);
+        if (!startRom.empty())
+        {
+#if defined(_WIN32)
+            LoadRomFromPath(emulator, appMenu, std::filesystem::path(startRom).u8string());
+#else
+            LoadRomFromPath(emulator, appMenu, startRom);
+#endif
+        }
 
         uint32_t buttonStates[3]{};
         uint32_t lastButtonStates[3]{};
@@ -391,6 +454,12 @@ int main()
             const auto now = std::chrono::steady_clock::now();
             const float deltaSeconds = std::chrono::duration<float>(now - lastFrameTime).count();
             lastFrameTime = now;
+
+            if (!g_droppedRom.empty())
+            {
+                LoadRomFromPath(emulator, appMenu, g_droppedRom);
+                g_droppedRom.clear();
+            }
 
             const bool altDown = glfwGetKey(window, GLFW_KEY_LEFT_ALT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS;
             const bool fullscreenPressed = altDown && glfwGetKey(window, GLFW_KEY_ENTER) == GLFW_PRESS;

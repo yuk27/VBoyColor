@@ -40,7 +40,7 @@ pack).*
   see [docs/COLOR_PACKS.md](docs/COLOR_PACKS.md).
 - **Real 3D on Quest** - each eye gets its own picture, as on the hardware,
   and both eyes always show the same colors.
-- **Save states** - several slots per game, with thumbnails.
+- **Save states** - several slots per game, with thumbnails in color.
 - **Button mapping** - Quest controllers, gamepads and keyboard, all
   remappable.
 - **Screen placement** - size and distance of the screen in VR.
@@ -68,7 +68,8 @@ pack).*
 
 Download `VBoyColor-windows-<version>.zip` from
 [Releases](https://github.com/yuk27/VirtualBoyGo/releases), unzip it, put your
-ROMs in the `roms` folder and run `VBoyColor.exe`. `VBoyColorVR.exe` is the
+ROMs in the `roms` folder and run `VBoyColor.exe`. You can also drop a `.vb`
+file on the window, or open one with `VBoyColor.exe`. `VBoyColorVR.exe` is the
 VR version for a PC headset (Quest Link, Virtual Desktop or SteamVR).
 
 ### Linux

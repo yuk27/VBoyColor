@@ -1227,6 +1227,31 @@ bool Emulator::SaveState(int uiSlot)
         return false;
     m_platform->WriteRomsFile(StateFileName(uiSlot, "stateimg"), true, preview.data(), preview.size());
 
+    // And the left eye as the screen showed it (colors and all), for the
+    // menu's preview - .stateimg stays the plain luminance FrontendGo wrote.
+    if (m_hasFrame)
+    {
+        std::vector<uint8_t> rgb(static_cast<size_t>(kPreviewWidth) * kPreviewHeight * 3);
+        for (uint32_t y = 0; y < kPreviewHeight; ++y)
+            for (uint32_t x = 0; x < kPreviewWidth; ++x)
+            {
+                const uint8_t *src = &m_frameBufferRgba[(static_cast<size_t>(y) * kFbWidth + x) * 4];
+                uint8_t *dst = &rgb[(static_cast<size_t>(y) * kPreviewWidth + x) * 3];
+                dst[0] = src[2];
+                dst[1] = src[1];
+                dst[2] = src[0];
+            }
+        std::vector<uint8_t> png;
+        stbi_write_png_to_func([](void *ctx, void *bytes, int size)
+                               {
+                                   auto *out = static_cast<std::vector<uint8_t> *>(ctx);
+                                   out->insert(out->end(), static_cast<uint8_t *>(bytes), static_cast<uint8_t *>(bytes) + size);
+                               },
+                               &png, kPreviewWidth, kPreviewHeight, 3, rgb.data(), kPreviewWidth * 3);
+        if (!png.empty())
+            m_platform->WriteRomsFile(StateFileName(uiSlot, "statepng"), true, png.data(), png.size());
+    }
+
     return true;
 }
 
@@ -1253,6 +1278,25 @@ bool Emulator::SaveStateExists(int uiSlot) const
 bool Emulator::LoadStatePreview(int uiSlot, std::vector<uint8_t> &outRgba) const
 {
     constexpr size_t kGraySize = static_cast<size_t>(kPreviewWidth) * kPreviewHeight;
+
+    // The screen as it was, colors and all (saves from VBoy Color) - in the
+    // screen's own byte order (B, G, R, A), like the frames it shows.
+    const std::vector<uint8_t> png = m_platform->ReadRomsFile(StateFileName(uiSlot, "statepng"), true);
+    int w = 0, h = 0, channels = 0;
+    if (stbi_uc *pixels = png.empty() ? nullptr
+                                      : stbi_load_from_memory(png.data(), static_cast<int>(png.size()), &w, &h, &channels, 4))
+    {
+        const bool fits = w == static_cast<int>(kPreviewWidth) && h == static_cast<int>(kPreviewHeight);
+        if (fits)
+        {
+            outRgba.assign(pixels, pixels + kGraySize * 4);
+            for (size_t i = 0; i < kGraySize; ++i)
+                std::swap(outRgba[i * 4], outRgba[i * 4 + 2]);
+        }
+        stbi_image_free(pixels);
+        if (fits)
+            return true;
+    }
 
     std::vector<uint8_t> gray = m_platform->ReadRomsFile(StateFileName(uiSlot, "stateimg"), true);
     if (gray.size() != kGraySize)
