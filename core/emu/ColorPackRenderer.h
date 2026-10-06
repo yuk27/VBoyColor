@@ -202,6 +202,41 @@ private:
     const TileColorPack::CellTile *FindCell(unsigned cell, unsigned palette, uint32_t hash) const;
     std::unordered_set<uint32_t> m_cellHashes; // tiles some map cell has colors for
 
+    // What a run of pixels (down a column, from one tile in one map cell, or
+    // one sprite's tile) shares - looked up once for the run. A run's key
+    // (its tag but for the pixel in the tile) decides all of it within an
+    // eye's frame, so the last kRunCacheSize runs set up are kept by key: a
+    // tile's other columns, a layer's other cells showing it, reuse them.
+    struct Run
+    {
+        const TileColorPack::CellTile *cell = nullptr; // its map cell's colors (or the left partner's)
+        const TileColorPack::Tile *tile = nullptr;     // the tile's colors (palette, layer, context or its own) - never null
+        const AutoColors::Ramp *ramp = nullptr;        // automatic colors, if on
+        int ownPair = -1;                              // a pair's right picture's own tile: region colors
+        uint8_t leftPicture = 0;                       // a pair's left picture: that pair + 1
+        uint64_t rightPainted = 0;                     // (own tile: its pixels painted in right-eye captures)
+        bool record = false;                           // (a left picture's tile colored per map cell: remember where)
+        bool slow = false;                             // context, ambiguous or a marker: per 8 rows (see Paint)
+        bool extra = false;                            // any of the four above: more to do per pixel than color it
+        int band = -1;                                 // (slow: the row of grid cells its markers and tile are for)
+    };
+    struct CachedRun
+    {
+        uint64_t key = 0;
+        uint32_t at = 0; // m_runCacheAt when set up (0: never)
+        Run run;
+    };
+    struct RunSetUp // (what Paint has worked out for the frame that a run's set-up needs)
+    {
+        const TileColorPack *pack;
+        bool haveCells, markers, haveContexts, pairs;
+        uint8_t *leftPairSlot;
+    };
+    Run SetUpRun(uint64_t tag, unsigned eye, int x, int y, const RunSetUp &setUp);
+    static constexpr int kRunCacheBits = 10, kRunCacheSize = 1 << kRunCacheBits;
+    std::vector<CachedRun> m_runCache;
+    uint32_t m_runCacheAt = 0; // (one more each eye painted)
+
     // Pixels of ambiguous tiles (see TileColorPack::IsAmbiguous) painted this
     // eye, (x, y) - they take the color the same shade has next to them.
     std::vector<std::pair<uint16_t, uint16_t>> m_ambiguousPixels;

@@ -144,11 +144,19 @@ void ShadeColorizer::Observe(const uint8_t *src, size_t width, size_t height, si
 
 void ShadeColorizer::Colorize(const uint8_t *src, uint8_t *dst, size_t pixelCount) const
 {
+    // (a pixel as one little-endian word - B, G, R, tag from the low byte up,
+    // as on every platform this runs on; chosen without a branch, since
+    // switched-off pixels come and go with the picture)
+    uint32_t background;
+    std::memcpy(&background, m_background.data(), 4);
     for (size_t i = 0; i < pixelCount; ++i, src += 4, dst += 4)
     {
+        uint32_t pixel, color;
+        std::memcpy(&pixel, src, 4);
+        std::memcpy(&color, m_lut[pixel >> 24].data(), 4);
         // A shade switched fully off by the game (output 0) shows as
         // background, whatever the fade level says.
-        const bool off = (src[0] | src[1] | src[2]) == 0;
-        std::memcpy(dst, off ? m_background.data() : m_lut[src[3]].data(), 4);
+        color = (pixel & 0xFFFFFFu) ? color : background;
+        std::memcpy(dst, &color, 4);
     }
 }

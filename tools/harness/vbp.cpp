@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <vector>
@@ -233,19 +234,32 @@ extern "C"
     // (each on a fresh copy, after a warm-up - so caches are what they'd be).
     double vbp_time_paint(int reps)
     {
-        const size_t n = static_cast<size_t>(g_w) * g_h;
-        static std::vector<uint8_t> raw, bgra;
-        raw.resize(n * 4);
-        bgra.resize(n * 4);
-        vbp_raw(raw.data());
+        // As the app lays the frame out (see Emulator::UploadFrame): the
+        // core's buffer and the colored one 1024 pixels a row, the eyes side
+        // by side - two big buffers, so (allocated alike) the same offset
+        // into a 4 KB page (VBP_SKEW: shift the colored one by that many bytes).
+        constexpr uint32_t kWidth = 1024;
+        const size_t n = static_cast<size_t>(kWidth) * g_h;
+        static std::vector<uint8_t> raw, bgraBuffer;
+        static const size_t skew = getenv("VBP_SKEW") ? strtoul(getenv("VBP_SKEW"), nullptr, 0) : 0;
+        raw.assign(n * 4, 0);
+        bgraBuffer.resize(n * 4 + 4096);
+        uint8_t *bgra = bgraBuffer.data() + ((reinterpret_cast<uintptr_t>(raw.data()) - reinterpret_cast<uintptr_t>(bgraBuffer.data()) + skew) & 4095);
+        {
+            std::vector<uint8_t> frame(static_cast<size_t>(g_w) * g_h * 4);
+            vbp_raw(frame.data());
+            for (unsigned y = 0; y < g_h; ++y)
+                std::memcpy(&raw[static_cast<size_t>(y) * kWidth * 4], &frame[static_cast<size_t>(y) * g_w * 4], g_w * 4);
+        }
         const uint32_t eyeOffset[2] = {0, g_w - VBGO_TT_WIDTH};
         double best = 1e9;
         for (int k = 0; k < reps; ++k)
         {
             auto t0 = std::chrono::steady_clock::now();
-            g_colorizer.Colorize(raw.data(), bgra.data(), n);
+            for (unsigned y = 0; y < g_h; ++y)
+                g_colorizer.Colorize(&raw[static_cast<size_t>(y) * kWidth * 4], &bgra[static_cast<size_t>(y) * kWidth * 4], g_w);
             if (g_renderer.Active())
-                g_renderer.Paint(bgra.data(), raw.data(), g_w, eyeOffset, g_bg);
+                g_renderer.Paint(bgra, raw.data(), kWidth, eyeOffset, g_bg);
             best = std::min(best, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
         }
         return best;

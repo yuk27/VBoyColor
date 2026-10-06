@@ -37,5 +37,7 @@ games' content or Juan's work); they live on Juan's PC under `out\`.
   OBJ and tile pixel - the same color in the left eye? (0.00% expected.) Per-eye
   pairs apart: their shared tiles, and how much is the right picture's own.
 - `timing.py` - milliseconds per emulated frame for coloring both eyes
-  (colorize + paint, as the app's UploadFrame; the app logs the same on the
-  headset every 250 frames - logcat tag VirtualBoyGo).
+  (colorize + paint, as the app's UploadFrame - with the app's frame layout,
+  1024 pixels a row; the app logs the same on the headset every 250 frames -
+  logcat tag VirtualBoyGo). `VBP_SKEW=bytes` shifts the colored buffer
+  against the core's, to see whether their addresses' alignment matters.

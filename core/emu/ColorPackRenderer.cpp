@@ -67,6 +67,8 @@ const std::vector<NearSpot> kNearest = [] {
     return v;
 }();
 inline int MapAt(int x, int y) { return (y + kPad) * kMapW + x + kPad; }
+
+const TileColorPack::Tile kNoTile{}; // (no tile colors: nothing painted)
 } // namespace
 
 void ColorPackRenderer::SetPack(const TileColorPack *pack)
@@ -573,6 +575,70 @@ bool ColorPackRenderer::RegionColor(int p, int x, int y, unsigned shade, const u
     return true;
 }
 
+ColorPackRenderer::Run ColorPackRenderer::SetUpRun(uint64_t t, unsigned eye, int x, int y, const RunSetUp &c)
+{
+    // A new run: everything but the pixel inside the tile (see Run).
+    Run run;
+    const unsigned chr = VBGO_TAG_CHAR(t), palette = VBGO_TAG_PALETTE(t), world = VBGO_TAG_WORLD(t);
+    const bool sprite = VBGO_TAG_IS_OBJ(t) != 0;
+    const unsigned colors = m_worlds[world].colors;
+    if (m_auto)
+        run.ramp = sprite || (m_figureWorlds >> colors & 1) ? &AutoColors::kSpriteRamps[palette] : &m_autoLayer[colors];
+    if (c.pack)
+    {
+        const Slot &slot = m_slots[chr];
+        run.slow = slot.ambiguous || (c.markers && slot.markerBits) || (slot.contextCount && c.haveContexts);
+        if (c.haveCells && VBGO_TAG_HAS_CELL(t))
+            run.cell = FindCell(VBGO_TAG_CELL(t), palette, slot.hash);
+        if (!run.slow)
+        {
+            run.tile = slot.palette[palette];
+            if (slot.layered && run.tile == slot.base)
+                if (const TileColorPack::Tile *layer = m_pack->FindLayer(slot.hash, colors))
+                    run.tile = layer;
+        }
+        if (c.pairs && sprite && m_spritePairOf[world] >= 0)
+        {
+            const int only = EyeOnly(t);
+            if (!eye && only == 1)
+                c.leftPairSlot[chr] = 1, run.leftPicture = static_cast<uint8_t>(m_spritePairOf[world] + 1);
+            else if (eye && only == 2 && !SharedWithLeftPicture(chr, slot.hash))
+            {
+                run.ownPair = m_spritePairOf[world];
+                run.rightPainted = slot.rightPainted;
+                m_pairs[run.ownPair].wantedAt = m_frame;
+            }
+        }
+        if (c.pairs && !sprite)
+        {
+            if (!eye && m_pairOfLeft[world] >= 0)
+            {
+                c.leftPairSlot[chr] = 1;
+                run.leftPicture = static_cast<uint8_t>(m_pairOfLeft[world] + 1);
+                run.record = slot.cellColored && VBGO_TAG_HAS_CELL(t);
+            }
+            else if (eye && m_pairOfRight[world] >= 0)
+            {
+                const int p = m_pairOfRight[world];
+                if (!SharedWithLeftPicture(chr, slot.hash))
+                {
+                    run.ownPair = p;
+                    m_pairs[p].wantedAt = m_frame;
+                }
+                else if (!run.cell && slot.cellColored && VBGO_TAG_HAS_CELL(t))
+                {
+                    m_pairs[p].wantedAt = m_frame;
+                    run.cell = MappedCell(p, t, static_cast<int>(x), static_cast<int>(y), slot.hash);
+                }
+            }
+        }
+    }
+    if (!run.tile)
+        run.tile = &kNoTile;
+    run.extra = run.leftPicture || run.ownPair >= 0 || run.record || run.slow;
+    return run;
+}
+
 void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWidth, const uint32_t eyeOffset[2],
                               const ShadeRgb &background)
 {
@@ -666,9 +732,10 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
             dst[2] = static_cast<uint8_t>(bg[2] + (((rgb[0] - bg[2]) * fade + 128) >> 8));
         }
     };
-    // The tile's colors with context (the slow path - see Run::slow).
-    auto tileColors = [&](uint64_t t, unsigned eye, int x, int y, int &nearCell, uint64_t &nearBits) -> const uint8_t * {
-        const unsigned chr = VBGO_TAG_CHAR(t), index = VBGO_TAG_INDEX(t), palette = VBGO_TAG_PALETTE(t);
+    // The tile's colors with context (the slow path - see Run::slow): the
+    // same down a run's pixels in one row of grid cells (8 rows).
+    auto contextTile = [&](uint64_t t, unsigned eye, int x, int y, int &nearCell, uint64_t &nearBits) -> const TileColorPack::Tile * {
+        const unsigned chr = VBGO_TAG_CHAR(t), palette = VBGO_TAG_PALETTE(t);
         const unsigned world = m_worlds[VBGO_TAG_WORLD(t)].colors;
         const Slot &slot = m_slots[chr];
         const TileColorPack::Tile *tile = nullptr;
@@ -702,23 +769,14 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
                 if (const TileColorPack::Tile *layer = m_pack->FindLayer(slot.hash, world))
                     tile = layer;
         }
-        return tile && (tile->mask >> index & 1) ? tile->rgb[index] : nullptr;
+        return tile ? tile : &kNoTile;
     };
-    // What a run of pixels (down a column, from one tile in one map cell, or
-    // one sprite's tile) shares - looked up once for the run.
-    struct Run
-    {
-        const TileColorPack::CellTile *cell = nullptr; // its map cell's colors (or the left partner's)
-        const TileColorPack::Tile *tile = nullptr;     // the tile's colors (palette, layer or its own)
-        const AutoColors::Ramp *ramp = nullptr;        // automatic colors, if on
-        int ownPair = -1;                              // a pair's right picture's own tile: region colors
-        uint8_t leftPicture = 0;                       // a pair's left picture: that pair + 1
-        uint64_t rightPainted = 0;                     // (own tile: its pixels painted in right-eye captures)
-        bool record = false;                           // (a left picture's tile colored per map cell: remember where)
-        bool slow = false;                             // context, ambiguous or a marker: pixel by pixel
-    };
+    // (Run: see the header; set up once per key and eye - see m_runCache.)
+    if (m_runCache.empty())
+        m_runCache.resize(kRunCacheSize);
     constexpr uint64_t kRunMask = 0x7FFull | (3ull << 17) | (1ull << 19) | (31ull << 22) | (1ull << 27) | (0xFFFFull << 28);
 
+    const RunSetUp setUp{pack, haveCells, markers != nullptr, haveContexts, pairs, leftPairSlot.data()};
     for (unsigned eye = 0; eye < 2; ++eye)
     {
         if (!have[eye])
@@ -749,6 +807,13 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
                 }
         }
         const uint64_t stamp = v.stamp;
+        if (++m_runCacheAt == 0)
+        {
+            for (CachedRun &cached : m_runCache)
+                cached.at = 0;
+            m_runCacheAt = 1;
+        }
+        const uint32_t runAt = m_runCacheAt;
         // In strips of kStrip columns, row by row: the frame is stored by
         // rows, so a row of a strip is one cache line of it (the tags are by
         // columns - each column of the strip reads on down its own).
@@ -781,107 +846,74 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
                     const uint32_t x = x0 + k;
                     uint64_t &runKey = runKeys[k];
                     Run &run = runs[k];
-                    int &nearCell = nearCells[k];
-                    uint64_t &nearBits = nearBitsOf[k];
                     const size_t i = stripBase + k * 4 + y * rowBytes;
                     const uint8_t *r = &raw[i];
+                    uint32_t rawPixel; // B, G, R, tag (shade, brightness) from the low byte up (little-endian, as everywhere this runs)
+                    std::memcpy(&rawPixel, r, 4);
                     const unsigned pixel = VBGO_TAG_PIXEL(t);
-                    if (pixel && (r[0] | r[1] | r[2]) == 0)
+                    if (pixel && !(rawPixel & 0xFFFFFFu))
                         continue; // drawn in a shade the game switched off - stays background
                     if ((t & kRunMask) != runKey)
                     {
-                        // A new run: everything but the pixel inside the tile.
+                        // A new run (see Run): the layers' extents, the brightness...
                         runKey = t & kRunMask;
-                        run = Run{};
-                        const unsigned chr = VBGO_TAG_CHAR(t), palette = VBGO_TAG_PALETTE(t), world = VBGO_TAG_WORLD(t);
-                        const bool sprite = VBGO_TAG_IS_OBJ(t) != 0;
-                        const unsigned colors = m_worlds[world].colors;
-                        if (!sprite)
+                        if (!VBGO_TAG_IS_OBJ(t))
                         {
+                            const unsigned colors = m_worlds[VBGO_TAG_WORLD(t)].colors;
                             worldsDrawn |= 1u << colors;
                             left[colors] = std::min<int16_t>(left[colors], static_cast<int16_t>(x));
                             right[colors] = std::max<int16_t>(right[colors], static_cast<int16_t>(x));
                             top[colors] = std::min<int16_t>(top[colors], static_cast<int16_t>(y));
                             bottom[colors] = std::max<int16_t>(bottom[colors], static_cast<int16_t>(y));
                         }
-                        brightest = std::max<unsigned>(brightest, r[3] >> 2);
-                        if (m_auto)
-                            run.ramp = sprite || (m_figureWorlds >> colors & 1) ? &AutoColors::kSpriteRamps[palette] : &m_autoLayer[colors];
-                        if (pack)
+                        brightest = std::max<unsigned>(brightest, rawPixel >> 26);
+                        // ... and the rest: as the last run with this key in this eye, if any.
+                        CachedRun &cached = m_runCache[(runKey * 0x9E3779B97F4A7C15ull) >> (64 - kRunCacheBits)];
+                        if (cached.at == runAt && cached.key == runKey)
+                            run = cached.run;
+                        else
                         {
-                            const Slot &slot = m_slots[chr];
-                            run.slow = slot.ambiguous || (markers && slot.markerBits) || (slot.contextCount && haveContexts);
-                            if (haveCells && VBGO_TAG_HAS_CELL(t))
-                                run.cell = FindCell(VBGO_TAG_CELL(t), palette, slot.hash);
-                            if (!run.slow)
-                            {
-                                run.tile = slot.palette[palette];
-                                if (slot.layered && run.tile == slot.base)
-                                    if (const TileColorPack::Tile *layer = m_pack->FindLayer(slot.hash, colors))
-                                        run.tile = layer;
-                            }
-                            if (pairs && sprite && m_spritePairOf[world] >= 0)
-                            {
-                                const int only = EyeOnly(t);
-                                if (!eye && only == 1)
-                                    leftPairSlot[chr] = 1, run.leftPicture = static_cast<uint8_t>(m_spritePairOf[world] + 1);
-                                else if (eye && only == 2 && !SharedWithLeftPicture(chr, slot.hash))
-                                {
-                                    run.ownPair = m_spritePairOf[world];
-                                    run.rightPainted = slot.rightPainted;
-                                    m_pairs[run.ownPair].wantedAt = m_frame;
-                                }
-                            }
-                            if (pairs && !sprite)
-                            {
-                                if (!eye && m_pairOfLeft[world] >= 0)
-                                {
-                                    leftPairSlot[chr] = 1;
-                                    run.leftPicture = static_cast<uint8_t>(m_pairOfLeft[world] + 1);
-                                    run.record = slot.cellColored && VBGO_TAG_HAS_CELL(t);
-                                }
-                                else if (eye && m_pairOfRight[world] >= 0)
-                                {
-                                    const int p = m_pairOfRight[world];
-                                    if (!SharedWithLeftPicture(chr, slot.hash))
-                                    {
-                                        run.ownPair = p;
-                                        m_pairs[p].wantedAt = m_frame;
-                                    }
-                                    else if (!run.cell && slot.cellColored && VBGO_TAG_HAS_CELL(t))
-                                    {
-                                        m_pairs[p].wantedAt = m_frame;
-                                        run.cell = MappedCell(p, t, static_cast<int>(x), static_cast<int>(y), slot.hash);
-                                    }
-                                }
-                            }
+                            run = SetUpRun(t, eye, static_cast<int>(x), static_cast<int>(y), setUp);
+                            cached.at = runAt;
+                            cached.key = runKey;
+                            cached.run = run;
                         }
                     }
-                    const unsigned shade = r[3] & 3, index = VBGO_TAG_INDEX(t);
+                    const unsigned shade = (rawPixel >> 24) & 3, index = VBGO_TAG_INDEX(t);
                     const uint8_t *rgb = nullptr;
-                    if (run.leftPicture && pixel && shade)
-                        m_leftPicture[MapAt(x, y)] = static_cast<uint8_t>(run.leftPicture | (shade << 5));
-                    if (run.ownPair >= 0 && pixel)
-                        m_rightOwn[y * VBGO_TT_WIDTH + x] = 1;
-                    if (run.slow && pixel)
+                    if (run.extra && pixel)
                     {
-                        const unsigned chr = VBGO_TAG_CHAR(t);
-                        if (m_slots[chr].ambiguous)
-                            m_ambiguousPixels.emplace_back(static_cast<uint16_t>(x), static_cast<uint16_t>(y));
-                        if (markers && m_slots[chr].markerBits)
+                        if (run.leftPicture && shade)
+                            m_leftPicture[MapAt(x, y)] = static_cast<uint8_t>(run.leftPicture | (shade << 5));
+                        if (run.ownPair >= 0)
+                            m_rightOwn[y * VBGO_TT_WIDTH + x] = 1;
+                        if (run.slow)
                         {
-                            // Sprites' groups count sprite markers, background
-                            // figures' groups background ones (and remember the
-                            // layer) - at the marker's left-eye spot.
-                            const bool sprite = VBGO_TAG_IS_OBJ(t) != 0;
-                            const uint64_t bits = m_slots[chr].markerBits & (sprite ? ~m_layerBound : m_layerBound);
-                            const int lx = LeftX(t, static_cast<int>(x), eye, y);
-                            if (bits && lx >= 0 && lx < VBGO_TT_WIDTH)
+                            const unsigned chr = VBGO_TAG_CHAR(t);
+                            if (m_slots[chr].ambiguous)
+                                m_ambiguousPixels.emplace_back(static_cast<uint16_t>(x), static_cast<uint16_t>(y));
+                            // (markers and context: the same for the run's pixels in a row of grid cells)
+                            const bool newBand = static_cast<int>(y >> 3) != run.band;
+                            if (newBand)
                             {
-                                const unsigned cell = (y >> 3) * kGridW + (lx >> 3);
-                                markers[cell] |= bits;
-                                if (!sprite && markerLayers)
-                                    markerLayers[cell] = static_cast<uint8_t>(m_worlds[VBGO_TAG_WORLD(t)].colors);
+                                run.band = static_cast<int>(y >> 3);
+                                run.tile = contextTile(t, eye, static_cast<int>(x), static_cast<int>(y), nearCells[k], nearBitsOf[k]);
+                            }
+                            if (newBand && markers && m_slots[chr].markerBits)
+                            {
+                                // Sprites' groups count sprite markers, background
+                                // figures' groups background ones (and remember the
+                                // layer) - at the marker's left-eye spot.
+                                const bool sprite = VBGO_TAG_IS_OBJ(t) != 0;
+                                const uint64_t bits = m_slots[chr].markerBits & (sprite ? ~m_layerBound : m_layerBound);
+                                const int lx = LeftX(t, static_cast<int>(x), eye, y);
+                                if (bits && lx >= 0 && lx < VBGO_TT_WIDTH)
+                                {
+                                    const unsigned cell = (y >> 3) * kGridW + (lx >> 3);
+                                    markers[cell] |= bits;
+                                    if (!sprite && markerLayers)
+                                        markerLayers[cell] = static_cast<uint8_t>(m_worlds[VBGO_TAG_WORLD(t)].colors);
+                                }
                             }
                         }
                     }
@@ -903,10 +935,8 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
                         if (run.ownPair >= 0 && shade && !(run.rightPainted >> index & 1) &&
                             RegionColor(run.ownPair, static_cast<int>(x), static_cast<int>(y), shade, frame, fbWidth, eyeOffset[0], &frame[i]))
                             continue;
-                        // 2-4. Context, the palette's, the layer's, or the tile's own colors.
-                        if (run.slow)
-                            rgb = tileColors(t, eye, static_cast<int>(x), static_cast<int>(y), nearCell, nearBits);
-                        else if (run.tile && (run.tile->mask >> index & 1))
+                        // 2-4. Context (slow runs' tiles), the palette's, the layer's, or the tile's own colors.
+                        if (run.tile->mask >> index & 1)
                             rgb = run.tile->rgb[index];
                     }
                 automatic:
@@ -923,7 +953,7 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
                         m_pairRows[y].push_back({static_cast<int16_t>(x), static_cast<uint8_t>(index), static_cast<uint8_t>(VBGO_TAG_PALETTE(t)),
                                                  static_cast<uint8_t>(VBGO_TAG_WORLD(t)), static_cast<uint16_t>(VBGO_TAG_CELL(t)),
                                                  m_slots[VBGO_TAG_CHAR(t)].hash});
-                    write(&frame[i], rgb, r[3] >> 2);
+                    write(&frame[i], rgb, rawPixel >> 26);
                 }
         }
         if (!m_ambiguousPixels.empty())
@@ -1207,23 +1237,23 @@ void ColorPackRenderer::EstimatePair(Pair &pair, const uint64_t *leftBits, const
         for (int bx = 0; bx < kBlocksX; ++bx)
         {
             const int i = by * kBlocksX + bx;
-            int values[9], n = 0;
-            for (int dy = -1; dy <= 1; ++dy)
-                for (int dx = -1; dx <= 1; ++dx)
-                {
-                    const int yy = by + dy, xx = bx + dx;
-                    if (yy >= 0 && yy < kBands && xx >= 0 && xx < kBlocksX && blocks[yy * kBlocksX + xx] != kNoDisparity)
-                        values[n++] = blocks[yy * kBlocksX + xx];
-                }
-            if (exact[i])
-                pair.blockDisparity[i] = blocks[i]; // (as found)
-            else if (blocks[i] != kNoDisparity && n)
+            if (blocks[i] == kNoDisparity)
             {
-                std::nth_element(values, values + n / 2, values + n);
-                pair.blockDisparity[i] = static_cast<int16_t>(values[n / 2]);
-            }
-            else
                 pair.blockDisparity[i] = pair.disparity[by]; // (few pixels: its band's)
+                continue;
+            }
+            if (exact[i])
+            {
+                pair.blockDisparity[i] = blocks[i]; // (as found)
+                continue;
+            }
+            int values[9], n = 0;
+            for (int yy = std::max(0, by - 1); yy <= std::min(kBands - 1, by + 1); ++yy)
+                for (int xx = std::max(0, bx - 1); xx <= std::min(kBlocksX - 1, bx + 1); ++xx)
+                    if (blocks[yy * kBlocksX + xx] != kNoDisparity)
+                        values[n++] = blocks[yy * kBlocksX + xx];
+            std::nth_element(values, values + n / 2, values + n);
+            pair.blockDisparity[i] = static_cast<int16_t>(values[n / 2]);
         }
     pair.estimated = true;
     pair.estimatedAt = m_frame;
