@@ -402,8 +402,14 @@ void Emulator::UploadFrame()
         m_coloringMaxMs = std::max(m_coloringMaxMs, ms);
         if (++m_coloringFrames == 250)
         {
-            LogLine("[Emulator] Coloring both eyes: %.2f ms a frame on average, %.2f ms at most (last %d frames)",
-                    m_coloringMs / m_coloringFrames, m_coloringMaxMs, m_coloringFrames);
+            // (a Debug build isn't optimized - its times say little about a Release build's)
+#ifdef NDEBUG
+            const char *build = "";
+#else
+            const char *build = " - Debug build, unoptimized: build Release to measure";
+#endif
+            LogLine("[Emulator] Coloring both eyes: %.2f ms a frame on average, %.2f ms at most (last %d frames)%s",
+                    m_coloringMs / m_coloringFrames, m_coloringMaxMs, m_coloringFrames, build);
             m_coloringMs = m_coloringMaxMs = 0.0;
             m_coloringFrames = 0;
         }
