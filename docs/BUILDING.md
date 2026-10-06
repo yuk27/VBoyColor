@@ -109,18 +109,25 @@ Run button builds them) - unoptimized, the emulator and the coloring run 2-3x
 slower and games stutter on the headset. Configure with
 `-DVBGO_OPTIMIZE_DEBUG=OFF` to step through native code in a debugger.
 
-**Release builds** (`./gradlew assembleRelease`) are signed with your own
-key when `android/local.properties` names its folder:
+**Signing.** Android installs an APK over an existing one only when both
+are signed with the same key. VBoy Color's release key is made once with
 
 ```
-keystore.dir=C\:/path/to/keys
+powershell -ExecutionPolicy Bypass -File tools\make_release_key.ps1
 ```
 
-The folder holds `android.keystore` (key alias `key0`) and `keystore.txt`
-(line 1: store password, line 2: key password). The CI reads the same from
-the secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_STORE_PASSWORD` and
-`ANDROID_KEY_PASSWORD`. Without a key, release builds are signed with the
-debug key, so they still install.
+which puts `android.keystore` (alias `key0`) and `keystore.txt` (its
+password) in a folder outside the repo, points `keystore.dir` in
+`android/local.properties` at it (so your `assembleRelease` builds use it),
+and adds the repository secrets the CI signs with: `ANDROID_KEYSTORE_BASE64`
+and `ANDROID_STORE_PASSWORD` (plus `ANDROID_KEY_PASSWORD` only for a key whose
+password differs from the store's). Back that folder up - without it, updates
+can't install over the copies people already have. Without a key, branch
+builds are signed with a debug key (the CI's changes every run), and a
+release tag refuses to build. Each run's summary shows the APK's certificate
+SHA-256: the same value on every build means each one installs over the last.
+The `versionCode` is the commit count, so each build is also newer than the
+one before.
 
 **Color packs:** every build includes the repository's `colorpacks/`.
 Your own Quest builds can add a folder of `.vbcp` files with `colorpacks.dir`

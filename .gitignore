@@ -71,10 +71,11 @@ captures/
 # Comment next line if keeping position of elements in Navigation Editor is relevant for you
 .idea/navEditor.xml
 
-# Keystore files
-# Uncomment the following lines if you do not want to check your keystore files in.
-#*.jks
-#*.keystore
+# Signing keys and their passwords - never in the repo (see
+# tools/make_release_key.ps1)
+*.jks
+*.keystore
+keystore.txt
 
 # External native build folder generated in Android Studio 2.2 and later
 .externalNativeBuild

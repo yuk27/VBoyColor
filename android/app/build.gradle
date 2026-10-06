@@ -8,6 +8,19 @@ if (localPropsFile.exists()) {
     localPropsFile.withInputStream { localProps.load(it) }
 }
 
+// versionCode = the commit count, so every build is newer than the last and
+// installs over it (Android refuses to go back to a lower versionCode). 1 if
+// git isn't available.
+def gitCommitCount = {
+    try {
+        def proc = ["git", "rev-list", "--count", "HEAD"].execute(null, rootProject.file(".."))
+        def out = proc.inputStream.text.trim()
+        return proc.waitFor() == 0 && out.isInteger() ? out.toInteger() : 1
+    } catch (Exception ignored) {
+        return 1
+    }
+}
+
 // Color packs built into the app: the repo's colorpacks/ folder, plus - if
 // colorpacks.dir is set - a folder of your own "<rom name>.vbcp" files
 // (typically the desktop app's roms folder, where it rebuilds a game's pack
@@ -29,7 +42,7 @@ android {
         applicationId "io.github.yuk27.vboycolor"
         minSdk 29
         targetSdk 34
-        versionCode 1
+        versionCode gitCommitCount()
         versionName "1.0.0"
 
         ndk {
@@ -78,26 +91,28 @@ android {
         }
     }
 
-    // Release key, kept outside the repo: keystore.dir in
-    // android/local.properties (gitignored) names a folder with
-    // android.keystore (alias key0) and keystore.txt (line 1 = store
-    // password, line 2 = key password). The CI passes the same as
-    // environment variables (VBC_KEYSTORE = the keystore file,
-    // VBC_STORE_PASSWORD, VBC_KEY_PASSWORD). Neither = release builds are
-    // signed with the debug key, so they still install.
+    // Release key, kept outside the repo (tools/make_release_key.ps1 makes
+    // one): keystore.dir in android/local.properties (gitignored) names a
+    // folder with android.keystore (alias key0) and keystore.txt (line 1 =
+    // the password; an optional line 2 = a different key password). The CI
+    // passes the same as environment variables (VBC_KEYSTORE = the keystore
+    // file, VBC_STORE_PASSWORD, optional VBC_KEY_PASSWORD). Neither = release
+    // builds are signed with the debug key, so they still install - but only
+    // over builds from the same machine.
     def keystoreDir = localProps.getProperty("keystore.dir")
     def keystoreFile = null
     def ksStorePassword = null
     def ksKeyPassword = null
     if (keystoreDir != null && new File(keystoreDir, "keystore.txt").exists()) {
-        def keystoreProps = new File(keystoreDir, "keystore.txt").readLines()
+        def lines = new File(keystoreDir, "keystore.txt").readLines()
+                .collect { it.replace("\uFEFF", "").trim() }.findAll { !it.isEmpty() }
         keystoreFile = new File(keystoreDir, "android.keystore")
-        ksStorePassword = keystoreProps[0].trim()
-        ksKeyPassword = keystoreProps[1].trim()
+        ksStorePassword = lines[0]
+        ksKeyPassword = lines.size() > 1 ? lines[1] : lines[0]
     } else if (System.getenv("VBC_KEYSTORE") && new File(System.getenv("VBC_KEYSTORE")).exists()) {
         keystoreFile = new File(System.getenv("VBC_KEYSTORE"))
         ksStorePassword = System.getenv("VBC_STORE_PASSWORD")
-        ksKeyPassword = System.getenv("VBC_KEY_PASSWORD")
+        ksKeyPassword = System.getenv("VBC_KEY_PASSWORD") ?: ksStorePassword
     }
 
     signingConfigs {

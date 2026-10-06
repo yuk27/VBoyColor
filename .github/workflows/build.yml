@@ -5,12 +5,14 @@
 # A failed step reports the end of its log as an error annotation, so the
 # reason shows on the run's summary page.
 #
-# Android release signing (optional): repository secrets
-# ANDROID_KEYSTORE_BASE64 (base64 of the .keystore file, key alias key0),
-# ANDROID_STORE_PASSWORD and ANDROID_KEY_PASSWORD. Without them the APK is
-# signed with a throwaway debug key - fine for testing, but each build then
-# has a different signature, so installing a newer one means uninstalling
-# the old one first.
+# Android release signing: repository secrets ANDROID_KEYSTORE_BASE64
+# (base64 of the .keystore file, key alias key0) and ANDROID_STORE_PASSWORD
+# (+ ANDROID_KEY_PASSWORD only if the key's password differs) - made by
+# tools/make_release_key.ps1. With them every APK has the same signature, so
+# each one installs over the last. Without them a branch build is signed with
+# a throwaway debug key (a new one every run - installing it means
+# uninstalling the old one first), and a release tag fails: a release must
+# never ship with a key its updates can't match.
 
 name: Build
 
@@ -152,6 +154,9 @@ jobs:
           if [ -n "$KEYSTORE_BASE64" ]; then
             echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
             echo "VBC_KEYSTORE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "::error title=android::No signing key in the repository secrets (ANDROID_KEYSTORE_BASE64) - a release APK must be signed with the release key. See tools/make_release_key.ps1."
+            exit 1
           else
             echo "No signing key in the secrets: the APK is signed with a debug key."
           fi
@@ -174,6 +179,10 @@ jobs:
           base=$(sed -n 's/^set(VBGO_VERSION "\([^"]*\)")/\1/p' CMakeLists.txt)
           if [ "$OFFICIAL" = "ON" ]; then version="v$base"; else version="v$base-dev.$(git rev-list --count HEAD)"; fi
           cp android/app/build/outputs/apk/release/app-release.apk "VBoyColor-$version.apk"
+          # Which key signed it - the same SHA-256 on every build = each one
+          # installs over the last.
+          apksigner=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -n 1)apksigner
+          { echo "### APK signature"; echo '```'; "$apksigner" verify --print-certs "VBoyColor-$version.apk" | grep -E "certificate (DN|SHA-256)"; echo '```'; } >> "$GITHUB_STEP_SUMMARY" || true
           echo "PACKAGE=VBoyColor-$version" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
