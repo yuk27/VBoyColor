@@ -251,9 +251,10 @@ Galactic Pinball table). The right picture then takes its left partner's
 colors: tiles both pictures use by tile (and a map cell's own colors by the
 left picture's cell with that tile pixel); the right picture's own tiles
 from the left picture where they line up - a disparity per 8x8 block, worked
-out from the two pictures when they change, and the color of the nearest
-left-picture pixel of the same shade there - so the game's dither stays its
-own and nothing flickers. To paint the right eye's own pictures yourself,
+out from the two pictures when they change (things at very different depths
+side by side each get their own), and the color of the nearest left-picture
+pixel of the same shade there - so the game's dither stays its own and
+nothing flickers. To paint the right eye's own pictures yourself,
 **Shift+F10** captures the right eye: only its own pictures count there, and
 what you paint on them overrides what they'd take from the left (the left
 eye's colors stay the left paintings'). Unpainted, they keep following the

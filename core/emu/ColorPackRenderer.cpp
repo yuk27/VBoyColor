@@ -409,27 +409,28 @@ uint64_t ColorPackRenderer::Near(int x, int y, unsigned world)
     return bits;
 }
 
-bool ColorPackRenderer::SharedWithLeftPicture(unsigned chr, uint32_t hash)
+bool ColorPackRenderer::SharedWithLeftPicture(unsigned chr, uint32_t hash, int pair)
 {
-    const uint32_t yes = (m_frame << 1) | 1, no = m_frame << 1;
-    uint32_t &known = m_slotSharedAt[chr];
-    if (known == yes || known == no)
-        return known == yes;
-    bool found = false;
-    if (hash == 0)
-        found = m_leftPairHashZero;
-    else if (!m_leftPairHashes.empty())
+    // (per slot and frame: the pairs whose left pictures draw its tile)
+    if (m_slotSharedAt[chr] != m_frame)
     {
-        const uint32_t mask = static_cast<uint32_t>(m_leftPairHashes.size() - 1);
-        for (uint32_t i = (hash * 2654435761u) & mask; m_leftPairHashes[i]; i = (i + 1) & mask)
-            if (m_leftPairHashes[i] == hash)
-            {
-                found = true;
-                break;
-            }
+        m_slotSharedAt[chr] = m_frame;
+        uint32_t pairs = 0;
+        if (hash == 0)
+            pairs = m_leftPairHashZero;
+        else if (!m_leftPairHashes.empty())
+        {
+            const uint32_t mask = static_cast<uint32_t>(m_leftPairHashes.size() - 1);
+            for (uint32_t i = (hash * 2654435761u) & mask; m_leftPairHashes[i]; i = (i + 1) & mask)
+                if (m_leftPairHashes[i] == hash)
+                {
+                    pairs = m_leftPairMasks[i];
+                    break;
+                }
+        }
+        m_slotShared[chr] = pairs;
     }
-    known = found ? yes : no;
-    return found;
+    return m_slotShared[chr] >> pair & 1;
 }
 
 const TileColorPack::Tile *ColorPackRenderer::LayerTile(unsigned chr, unsigned world)
@@ -442,6 +443,29 @@ const TileColorPack::Tile *ColorPackRenderer::LayerTile(unsigned chr, unsigned w
         layer.tile = m_pack->FindLayer(m_slots[chr].hash, world);
     }
     return layer.tile;
+}
+
+ColorPackRenderer::LeftTileCell *ColorPackRenderer::FindLeftTileCell(uint32_t hash, unsigned palette, unsigned world, bool add)
+{
+    // (open addressing, entries of earlier frames count as free)
+    if (m_leftTileCells.empty())
+        m_leftTileCells.resize(1024);
+    const uint64_t key = 1ull << 40 | static_cast<uint64_t>(world) << 34 | static_cast<uint64_t>(palette) << 32 | hash;
+    const size_t mask = m_leftTileCells.size() - 1;
+    for (size_t i = (key * 0x9E3779B97F4A7C15ull) >> 54 & mask, probes = 0; probes <= mask; i = (i + 1) & mask, ++probes)
+    {
+        LeftTileCell &e = m_leftTileCells[i];
+        if (e.frame != m_frame)
+        {
+            if (!add)
+                return nullptr;
+            e = {key, 0, 0}; // (set by the caller)
+            return &e;
+        }
+        if (e.key == key)
+            return &e;
+    }
+    return nullptr;
 }
 
 const TileColorPack::CellTile *ColorPackRenderer::FindCell(unsigned cell, unsigned palette, uint32_t hash) const
@@ -517,6 +541,16 @@ const TileColorPack::CellTile *ColorPackRenderer::MappedCell(int pair, uint64_t 
         best = samePixel(kMaxDisparity);
     if (!best)
         best = sameTile(kMapReach);
+    // Not near: the two pictures use the tile in different places (Mario's
+    // Tennis's clouds at the screen's edge, where the left eye shows none;
+    // Galactic Pinball's title letters) - its colors where the left
+    // picture shows it at all (the first such cell from the top), if it does.
+    if (!best)
+        if (const LeftTileCell *any = FindLeftTileCell(hash, palette, p.left, false))
+        {
+            entry = {key, m_frame, FindCell(any->cell, palette, hash)};
+            return entry.cell;
+        }
     entry = {key, m_frame, best ? FindCell(best->cell, palette, hash) : nullptr};
     return entry.cell;
 }
@@ -623,8 +657,8 @@ ColorPackRenderer::Run ColorPackRenderer::SetUpRun(uint64_t t, unsigned eye, int
         {
             const int only = EyeOnly(t);
             if (!eye && only == 1)
-                c.leftPairSlot[chr] = 1, run.leftPicture = static_cast<uint8_t>(m_spritePairOf[world] + 1);
-            else if (eye && only == 2 && !SharedWithLeftPicture(chr, slot.hash))
+                c.leftPairSlot[chr] |= 1u << m_spritePairOf[world], run.leftPicture = static_cast<uint8_t>(m_spritePairOf[world] + 1);
+            else if (eye && only == 2 && !SharedWithLeftPicture(chr, slot.hash, m_spritePairOf[world]))
             {
                 run.ownPair = m_spritePairOf[world];
                 run.rightPainted = slot.rightPainted;
@@ -635,14 +669,18 @@ ColorPackRenderer::Run ColorPackRenderer::SetUpRun(uint64_t t, unsigned eye, int
         {
             if (!eye && m_pairOfLeft[world] >= 0)
             {
-                c.leftPairSlot[chr] = 1;
+                c.leftPairSlot[chr] |= 1u << m_pairOfLeft[world];
                 run.leftPicture = static_cast<uint8_t>(m_pairOfLeft[world] + 1);
                 run.record = slot.cellColored && VBGO_TAG_HAS_CELL(t);
+                if (run.record)
+                    if (LeftTileCell *first = FindLeftTileCell(slot.hash, palette, world, true))
+                        if (first->frame != m_frame)
+                            *first = {first->key, m_frame, static_cast<uint16_t>(VBGO_TAG_CELL(t))};
             }
             else if (eye && m_pairOfRight[world] >= 0)
             {
                 const int p = m_pairOfRight[world];
-                if (!SharedWithLeftPicture(chr, slot.hash))
+                if (!SharedWithLeftPicture(chr, slot.hash, p))
                 {
                     run.ownPair = p;
                     m_pairs[p].wantedAt = m_frame;
@@ -657,6 +695,8 @@ ColorPackRenderer::Run ColorPackRenderer::SetUpRun(uint64_t t, unsigned eye, int
     }
     if (!run.tile)
         run.tile = &kNoTile;
+    if (run.ownPair >= 0 && m_pairs[run.ownPair].estimated)
+        run.blockDisparity = m_pairs[run.ownPair].blockDisparity.data();
     run.extra = run.leftPicture || run.ownPair >= 0 || run.record || run.slow;
     return run;
 }
@@ -725,7 +765,8 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
                 m_pairs[p].blocks.resize(kBlocksX * kBands);
         }
         m_leftPairHashes.assign(4096, 0);
-        m_leftPairHashZero = false;
+        m_leftPairMasks.assign(4096, 0);
+        m_leftPairHashZero = 0;
         m_leftPicture.assign(kMapW * kMapH, 0);
         m_rightOwn.assign(VBGO_TT_EYE_PIXELS, 0);
         for (auto &row : m_pairRows)
@@ -733,7 +774,7 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
         if (m_mapCache.empty())
             m_mapCache.resize(4096);
     }
-    std::array<uint8_t, 2048> leftPairSlot{}; // slots the left pictures drew this frame
+    std::array<uint32_t, 2048> leftPairSlot{}; // slots the left pictures drew this frame (bit per pair)
     uint32_t worldsDrawn = 0; // background layers drawn this frame (by the world whose colors they take)
     unsigned brightest = 0;
     std::array<int16_t, 32> left, right, top, bottom; // (each layer's extent this frame, both eyes)
@@ -810,8 +851,8 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
             EstimatePairs(view, raw, fbWidth, eyeOffset);
         if (eye == 1 && pairs)
         {
-            // The tiles the left pictures drew (by contents: games keep a
-            // tile in a slot per eye - Mario Clash's digits).
+            // The tiles each pair's left picture drew (by contents: games
+            // keep a tile in a slot per eye - Mario Clash's digits).
             const uint32_t mask = static_cast<uint32_t>(m_leftPairHashes.size() - 1);
             for (unsigned c = 0; c < 2048; ++c)
                 if (leftPairSlot[c])
@@ -819,13 +860,14 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
                     const uint32_t hash = view[0].hashes[c];
                     if (!hash)
                     {
-                        m_leftPairHashZero = true;
+                        m_leftPairHashZero |= leftPairSlot[c];
                         continue;
                     }
                     uint32_t i = (hash * 2654435761u) & mask;
                     while (m_leftPairHashes[i] && m_leftPairHashes[i] != hash)
                         i = (i + 1) & mask;
                     m_leftPairHashes[i] = hash;
+                    m_leftPairMasks[i] |= leftPairSlot[c];
                 }
         }
         const uint64_t stamp = v.stamp;
@@ -954,9 +996,21 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
                         // A pair's right picture, a tile of its own: the left
                         // picture's color for its shade there, as shown (unless
                         // a right-eye capture painted it).
-                        if (run.ownPair >= 0 && shade && !(run.rightPainted >> index & 1) &&
-                            RegionColor(run.ownPair, static_cast<int>(x), static_cast<int>(y), shade, frame, fbWidth, eyeOffset[0], &frame[i]))
-                            continue;
+                        if (run.ownPair >= 0 && shade && !(run.rightPainted >> index & 1))
+                        {
+                            // (most often the left picture shows the same shade right where
+                            // the block's disparity puts it - else see RegionColor)
+                            const int d = run.blockDisparity ? run.blockDisparity[(y >> 3) * kBlocksX + (x >> 3)] : kNoDisparity;
+                            const int lx = static_cast<int>(x) + d;
+                            if (d != kNoDisparity && lx >= 0 && lx < VBGO_TT_WIDTH &&
+                                m_leftPicture[MapAt(lx, static_cast<int>(y))] == ((run.ownPair + 1) | (shade << 5)))
+                            {
+                                std::memcpy(&frame[i], &frame[(static_cast<size_t>(y) * fbWidth + eyeOffset[0] + lx) * 4], 3);
+                                continue;
+                            }
+                            if (RegionColor(run.ownPair, static_cast<int>(x), static_cast<int>(y), shade, frame, fbWidth, eyeOffset[0], &frame[i]))
+                                continue;
+                        }
                         // 2-4. Context (slow runs' tiles), the palette's, the layer's, or the tile's own colors.
                         if (run.tile->mask >> index & 1)
                             rgb = run.tile->rgb[index];
@@ -1112,6 +1166,7 @@ void ColorPackRenderer::EstimatePair(Pair &pair, const uint64_t *leftBits, const
     std::array<int16_t, kBands> found;
     found.fill(kNoDisparity);
     std::array<int8_t, kBands> wordFrom{}, wordTo{};
+    std::array<uint8_t, kBands> bandMatch{}; // (how much of the band lines up at its disparity, percent)
     for (int band = 0; band < kBands; ++band)
     {
         int lit = 0, from = kRowWords, to = -1;
@@ -1163,7 +1218,10 @@ void ColorPackRenderer::EstimatePair(Pair &pair, const uint64_t *leftBits, const
             best = search(coarse - 2, coarse + 2, 1, 1, bestD);
         }
         if (best > 0)
+        {
             found[band] = static_cast<int16_t>(bestD);
+            bandMatch[band] = static_cast<uint8_t>(100 * best / lit);
+        }
     }
     // Bands without enough to go on: the nearest band's.
     for (int band = 0; band < kBands; ++band)
@@ -1191,7 +1249,7 @@ void ColorPackRenderer::EstimatePair(Pair &pair, const uint64_t *leftBits, const
     // add up 8 columns at a time - at most 8 rows x 8 pixels, so no carry).
     // Then each block the median of itself and its neighbours (no lone
     // outliers), except blocks that are the left drawing shifted.
-    constexpr int kBlockReach = 8, kShifts = 2 * kBlockReach + 1;
+    constexpr int kBlockReach = 8, kShifts = 2 * kMaxDisparity + 1;
     std::vector<int16_t> blocks(kBlocksX * kBands, static_cast<int16_t>(kNoDisparity));
     std::vector<uint8_t> exact(kBlocksX * kBands, 0);
     const bool keepBlocks = scrolled && pair.blockDisparity.size() == blocks.size();
@@ -1211,10 +1269,16 @@ void ColorPackRenderer::EstimatePair(Pair &pair, const uint64_t *leftBits, const
                 for (int j = 0; j < 8; ++j)
                     lit[w * 8 + j] = static_cast<uint8_t>(sum[w] >> (8 * j));
         }
-        uint8_t score[kShifts][kBlocksX] = {};
-        const int dFrom = std::max(-kMaxDisparity, band - kBlockReach), dTo = std::min(kMaxDisparity, band + kBlockReach);
-        for (int d = dFrom; d <= dTo; ++d)
-        {
+        // Per shift (worked out when first needed), per block: how many of
+        // its pixels line up.
+        uint8_t score[kShifts][kBlocksX];
+        bool scored[kShifts] = {};
+        auto scoreAt = [&](int d) -> const uint8_t * {
+            uint8_t *row = score[d + kMaxDisparity];
+            if (scored[d + kMaxDisparity])
+                return row;
+            scored[d + kMaxDisparity] = true;
+            std::memset(row, 0, kBlocksX);
             uint64_t sum[kRowWords] = {};
             for (int y = by * 8; y < by * 8 + 8; ++y)
                 for (int s = 0; s < 3; ++s)
@@ -1226,8 +1290,9 @@ void ColorPackRenderer::EstimatePair(Pair &pair, const uint64_t *leftBits, const
                 }
             for (int w = from; w <= to; ++w)
                 for (int j = 0; j < 8; ++j)
-                    score[d - band + kBlockReach][w * 8 + j] = static_cast<uint8_t>(sum[w] >> (8 * j));
-        }
+                    row[w * 8 + j] = static_cast<uint8_t>(sum[w] >> (8 * j));
+            return row;
+        };
         for (int bx = 0; bx < kBlocksX; ++bx)
         {
             if (lit[bx] < 6)
@@ -1236,15 +1301,38 @@ void ColorPackRenderer::EstimatePair(Pair &pair, const uint64_t *leftBits, const
                 return row[bx] + (bx ? row[bx - 1] : 0) + (bx + 1 < kBlocksX ? row[bx + 1] : 0);
             };
             const int windowLit = window(lit);
-            const int previous = keepBlocks ? pair.blockDisparity[by * kBlocksX + bx] : kNoDisparity;
-            const int lo = std::max(dFrom, previous != kNoDisparity ? previous - 3 : dFrom);
-            const int hi = std::min(dTo, previous != kNoDisparity ? previous + 3 : dTo);
+            // (ties: the one nearer the band's)
             int best = -1, bestD = band;
-            for (int d = lo; d <= hi; ++d)
+            auto search = [&](int lo, int hi, int stride = 1) {
+                for (int d = std::max(-kMaxDisparity, lo); d <= std::min(kMaxDisparity, hi); d += stride)
+                {
+                    const int n = window(scoreAt(d));
+                    if (n > best || (n == best && std::abs(d - band) < std::abs(bestD - band)))
+                        best = n, bestD = d;
+                }
+            };
+            // Near the block's last estimate if the picture only scrolled,
+            // else near the band's...
+            const int previous = keepBlocks ? pair.blockDisparity[by * kBlocksX + bx] : kNoDisparity;
+            if (previous != kNoDisparity)
+                search(previous - 3, previous + 3);
+            else
+                search(band - kBlockReach, band + kBlockReach);
+            // ... unless under half its pixels line up there: then anywhere,
+            // if somewhere is clearly better (a band can hold things at very
+            // different depths - Galactic Pinball's title planets). But not
+            // where the band is sure and puts the block off the left eye's
+            // screen: it just doesn't show it (Mario's Tennis's clouds at
+            // the edge would match something else).
+            const int windowFrom = std::max(0, bx - 1) * 8 + bestD, windowTo = std::min(kBlocksX, bx + 2) * 8 + bestD;
+            const bool offScreen = windowFrom < 0 || windowTo > VBGO_TT_WIDTH;
+            if (best * 2 < windowLit && !(offScreen && bandMatch[by] >= 60))
             {
-                const int n = window(score[d - band + kBlockReach]);
-                if (n > best || (n == best && std::abs(d - band) < std::abs(bestD - band)))
-                    best = n, bestD = d;
+                const int near = best, nearD = bestD;
+                search(-kMaxDisparity, kMaxDisparity, 2); // (every other shift, then around the best)
+                search(bestD - 1, bestD + 1);
+                if ((best - near) * 5 < windowLit)
+                    best = near, bestD = nearD;
             }
             if (best > 0)
             {

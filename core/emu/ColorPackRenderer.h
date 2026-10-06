@@ -28,17 +28,20 @@
 //  - a per-eye pair - a left-only layer next to a right-only one, or a
 //    sprite world's left-only and right-only sprites (JLON / JRON): the
 //    right picture takes its left partner's layer colors (variants,
-//    automatic ramp). Tiles both pictures use are colored by tile like
-//    anything else (a tile the pack colors per map cell: by the left
-//    picture's cell showing the same tile pixel on the row). The right
-//    picture's own tiles (Galactic Pinball, Wario Land's title: each eye's
-//    picture drawn separately) by their own map cells' colors if the pack has
-//    them (right-eye paintings), else from the left picture: per 8x8 block a
+//    automatic ramp). Tiles its left partner also draws are colored by tile
+//    like anything else (a tile the pack colors per map cell: by the left
+//    picture's cell showing the same tile pixel on the row, else wherever
+//    the left picture shows the tile). The right picture's own tiles
+//    (Galactic Pinball, Wario Land's title: each eye's picture drawn
+//    separately) by their own map cells' colors if the pack has them
+//    (right-eye paintings), else from the left picture: per 8x8 block a
 //    disparity, found from the two pictures' shades when they change (not
-//    per frame), and the color of the nearest left-picture pixel of the same
-//    shade where it puts the pixel - the same spot of the same object,
-//    whatever the two dithers do - else the most common color of that shade
-//    around it. Nothing searches per pixel per frame, so nothing flickers.
+//    per frame) - near its band's, or anywhere if that lines up poorly
+//    (things at very different depths side by side) - and the color of the
+//    nearest left-picture pixel of the same shade where it puts the pixel -
+//    the same spot of the same object, whatever the two dithers do - else
+//    the most common color of that shade around it. Nothing searches per
+//    pixel per frame, so nothing flickers.
 //
 // Cost is kept per tile and per map cell rather than per pixel: a character
 // slot's colors (tile, palette variants) are looked up only when the slot's
@@ -172,13 +175,15 @@ private:
     void EstimatePairs(const vbgo_tt_eye_view view[2], const uint8_t *raw, uint32_t fbWidth, const uint32_t eyeOffset[2]);
     void EstimatePair(Pair &pair, const uint64_t *leftBits, const uint64_t *rightBits, bool scrolled);
     std::vector<uint64_t> m_estimateBits; // (EstimatePairs: the pictures' shades as bit rows)
-    // Tiles the left pictures of pairs draw this frame (by hash): a right
-    // picture's pixel of such a tile is colored by tile; the right
-    // picture's own tiles by region (see the class comment).
+    // Tiles the left pictures of pairs draw this frame (by hash, with the
+    // pairs whose left pictures draw them - bit per pair): a right
+    // picture's pixel of a tile its own left picture draws is colored by
+    // tile; the right picture's own tiles by region (see the class comment).
     std::vector<uint32_t> m_leftPairHashes; // open addressing, 0 = empty (hash 0 kept apart)
-    bool m_leftPairHashZero = false;
-    std::array<uint32_t, 2048> m_slotSharedAt{}; // per slot: 2 x frame (+1: shared) when last checked
-    bool SharedWithLeftPicture(unsigned chr, uint32_t hash);
+    std::vector<uint32_t> m_leftPairMasks;
+    uint32_t m_leftPairHashZero = 0;
+    std::array<uint32_t, 2048> m_slotSharedAt{}, m_slotShared{}; // per slot: the frame last checked, and the pairs then
+    bool SharedWithLeftPicture(unsigned chr, uint32_t hash, int pair);
     // The left pictures' pixels of tiles some map cell colors, by row - and
     // per right-picture cell, the left one it goes by (see MappedCell).
     struct LeftPixel
@@ -195,6 +200,16 @@ private:
         const TileColorPack::CellTile *cell = nullptr;
     };
     std::vector<MapEntry> m_mapCache;
+    // Per tile, palette and left world: the first left-picture cell showing
+    // it this frame (see MappedCell).
+    struct LeftTileCell
+    {
+        uint64_t key = 0;
+        uint32_t frame = 0;
+        uint16_t cell = 0;
+    };
+    std::vector<LeftTileCell> m_leftTileCells;
+    LeftTileCell *FindLeftTileCell(uint32_t hash, unsigned palette, unsigned world, bool add);
     static constexpr int kMapClose = 4, kMapReach = 16; // how far from the band's disparity a left tile is looked for (see MappedCell)
     // The left eye's pixels of pairs' left pictures this frame: that pair + 1
     // (bits 0-4), the shade (bits 5-6) - 0 elsewhere (and in a guard band
@@ -220,6 +235,7 @@ private:
         const TileColorPack::Tile *tile = nullptr;     // the tile's colors (palette, layer, context or its own) - never null
         const AutoColors::Ramp *ramp = nullptr;        // automatic colors, if on
         int ownPair = -1;                              // a pair's right picture's own tile: region colors
+        const int16_t *blockDisparity = nullptr;       // (own tile: its pair's per 8x8 block, if estimated)
         uint8_t leftPicture = 0;                       // a pair's left picture: that pair + 1
         uint64_t rightPainted = 0;                     // (own tile: its pixels painted in right-eye captures)
         bool record = false;                           // (a left picture's tile colored per map cell: remember where)
@@ -237,7 +253,7 @@ private:
     {
         const TileColorPack *pack;
         bool haveCells, markers, haveContexts, pairs;
-        uint8_t *leftPairSlot;
+        uint32_t *leftPairSlot;
     };
     Run SetUpRun(uint64_t tag, unsigned eye, int x, int y, const RunSetUp &setUp);
     static constexpr int kRunCacheBits = 10, kRunCacheSize = 1 << kRunCacheBits;
