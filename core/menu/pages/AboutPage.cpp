@@ -37,6 +37,7 @@ void AboutPage::Init(UiRenderer &ui, const UiMenuResources &resources)
         {"", true, dim},
         {"Not affiliated with Nintendo or Meta.", true, dim},
         {"github.com/yuk27/VBoyColor", true, dim},
+        {"Support it: github.com/sponsors/yuk27", true, dim},
     };
     float y = kMenuContentY + 4.0f;
     for (const Line &line : lines)

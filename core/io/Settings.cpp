@@ -79,18 +79,46 @@ namespace
 {
     std::string GameColorsFile(const std::string &game) { return game + ".colors"; }
 
-    // Games that look best in a particular palette when nobody has picked
-    // one: matched by a part of the ROM's name (lower case). Everything else
-    // starts in Auto.
+    // Games that look best in a particular scheme when nobody has picked one:
+    // by the ROM's CRC-32, else a part of its name (lower case). Picked by
+    // rendering each game's title and play screens in every scheme (Oct 2026,
+    // the games without a color pack). Everything else starts in Auto - the
+    // games with a pack, and those Auto suits (Space Pinball).
+    // Multicolor palettes, by index in kShadePalettes:
+    constexpr int kArcade = 0, kNeon = 1, kCandy = 2, kFireLeaf = 3, kOcean = 7, kSunsetM = 8, kLcdDark = 13;
     struct Suggestion
     {
+        uint32_t crc;
         const char *nameContains;
         int shadePalette; // kAutoColors, a Multicolor palette, or -1
         int pattern;      // a gradient (with shadePalette -1), else -1
     };
     constexpr Suggestion kSuggestions[] = {
-        // Sunset: its blocks, coins and treasure in warm, natural hues.
-        {"wario land", -1, 2},
+        // Gradient, Sunset: its blocks, coins and treasure in warm, natural hues (Juan's pick).
+        {0x133e9372, "wario land", -1, 2},
+        {0xbb71b522, "3-d tetris", kArcade, -1},
+        {0xe81a3703, "bound high", kArcade, -1},
+        {0x2199af41, "golf", kFireLeaf, -1}, // green fairways
+        {0x6ba07915, "virtual golf", kFireLeaf, -1},
+        {0x83cb6a00, "innsmouth", kOcean, -1}, // the sea town's deep blue
+        {0xdf4d56b4, "funky bowling", kCandy, -1},
+        {0xf3cd40dd, "niko-chan", kArcade, -1},
+        {0x19bb2dfb, "panic bomber", kArcade, -1},
+        {0x40498f5e, "panibon", kArcade, -1},
+        {0xaa10a7b4, "red alarm", kArcade, -1}, // blue wireframes, yellow ship
+        {0x7e85c45d, "red alarm", kArcade, -1},
+        {0x44788197, "gundam", kOcean, -1},
+        {0xfa44402d, "space invaders", kNeon, -1},
+        {0x60895693, "space squash", kNeon, -1},
+        {0x3ccb67ae, "v-tetris", kLcdDark, -1},
+        {0x4c32ba5e, "vertical force", kArcade, -1},
+        {0x9e9b8b92, "vertical force", kArcade, -1},
+        {0x20688279, "virtual bowling", kSunsetM, -1}, // wooden lanes
+        {0x526cc969, "virtual fishing", kOcean, -1},
+        {0x8989fe0a, "virtual lab", kCandy, -1},
+        {0x736b40d6, "league baseball", kArcade, -1},
+        {0x9ba8bb5e, "yakyuu", kArcade, -1},
+        {0x82a95e51, "waterworld", kOcean, -1},
     };
 } // namespace
 
@@ -105,7 +133,7 @@ void AppSettings::SaveGameColors(Platform &platform, const std::string &game) co
         platform.WriteRomsFile(GameColorsFile(game), true, text, static_cast<size_t>(n));
 }
 
-void AppSettings::ApplyGameColors(Platform &platform, const std::string &game)
+void AppSettings::ApplyGameColors(Platform &platform, const std::string &game, uint32_t romCrc)
 {
     if (game.empty())
         return;
@@ -133,11 +161,19 @@ void AppSettings::ApplyGameColors(Platform &platform, const std::string &game)
     std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     selectedShadePalette = kAutoColors;
     selectedPattern = -1;
+    const Suggestion *found = nullptr;
     for (const Suggestion &suggestion : kSuggestions)
-        if (lower.find(suggestion.nameContains) != std::string::npos)
+        if (romCrc && suggestion.crc == romCrc)
         {
-            selectedShadePalette = suggestion.shadePalette;
-            selectedPattern = suggestion.pattern;
+            found = &suggestion;
             break;
         }
+    for (const Suggestion &suggestion : kSuggestions)
+        if (!found && lower.find(suggestion.nameContains) != std::string::npos)
+            found = &suggestion;
+    if (found)
+    {
+        selectedShadePalette = found->shadePalette;
+        selectedPattern = found->pattern;
+    }
 }

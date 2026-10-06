@@ -130,7 +130,7 @@ android {
 def bundleColorPacks = tasks.register("bundleColorPacks") {
     def repoPacks = fileTree(repoColorPacksDir) { include "*.vbcp" }
     def packs = colorPacksDir != null ? fileTree(colorPacksDir) { include "*.vbcp" } : files()
-    inputs.files(repoPacks, packs)
+    inputs.files(repoPacks, packs, fileTree(repoColorPacksDir) { include "aliases.txt" })
     outputs.dir(colorPackAssets)
     doLast {
         if (colorPacksDir != null && !new File(colorPacksDir).isDirectory()) {
@@ -162,6 +162,11 @@ def bundleColorPacks = tasks.register("bundleColorPacks") {
                 logger.lifecycle("  ${pack.name}: made before packs recorded their ROM - found only by the ROM's file name")
             }
         }
+        // Other ROMs a pack fits (another region's release with the same
+        // graphics): the repo's colorpacks/aliases.txt, same format.
+        def aliases = new File(repoColorPacksDir, "aliases.txt")
+        if (aliases.exists())
+            aliases.readLines("UTF-8").findAll { it.trim() }.each { index << it.trim() }
         new File(destDir, "index.txt").setText(index.join("\n") + "\n", "UTF-8")
         def bundled = destDir.list().findAll { it.endsWith(".vbcp") }.sort()
         logger.lifecycle("Bundled ${bundled.size()} color pack(s) (${index.size()} findable by ROM checksum): ${bundled.join(', ')}")

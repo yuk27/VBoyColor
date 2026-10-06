@@ -105,6 +105,12 @@ Everything can be remapped in Settings → Button Mapping. On PC,
 See [docs/BUILDING.md](docs/BUILDING.md) - Windows, Linux and Quest, all from
 one CMake project. Every push is built by GitHub Actions.
 
+## Support
+
+VBoy Color is free and always will be. If it gave you a good time and you'd
+like to help it go further, you can support its development on
+[GitHub Sponsors](https://github.com/sponsors/yuk27). Thank you!
+
 ## License
 
 VBoy Color is free software under the **GNU General Public License v3.0**

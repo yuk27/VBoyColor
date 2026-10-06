@@ -218,7 +218,7 @@ namespace
                 std::fprintf(stderr, "VBoy Color: couldn't load %s\n", utf8Path.c_str());
                 return false;
             }
-            settings.ApplyGameColors(platform, emulator.RomName()); // this game's colors
+            settings.ApplyGameColors(platform, emulator.RomName(), emulator.RomCrc()); // this game's colors
             appMenu.Hide();
             return true;
         }

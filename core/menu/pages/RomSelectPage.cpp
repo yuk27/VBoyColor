@@ -45,7 +45,7 @@ void RomSelectPage::Init(UiRenderer &ui, const UiMenuResources &resources)
                     if (emulator && emulator->LoadRom(romPath, romName))
                     {
                         if (settings)
-                            settings->ApplyGameColors(*platform, emulator->RomName()); // this game's colors
+                            settings->ApplyGameColors(*platform, emulator->RomName(), emulator->RomCrc()); // this game's colors
                         if (appMenu)
                             appMenu->Hide(); // go straight to the game instead of back to the menu
                     }

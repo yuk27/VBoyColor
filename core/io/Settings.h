@@ -116,7 +116,9 @@ struct AppSettings
     // palette - see Settings.cpp), else Auto. The tint's R/G/B carry over
     // from game to game unless a game has its own.
     void SaveGameColors(Platform &platform, const std::string &game) const;
-    void ApplyGameColors(Platform &platform, const std::string &game);
+    // romCrc (the ROM's CRC-32, 0 if unknown) finds a game's suggestion
+    // whatever its file is called.
+    void ApplyGameColors(Platform &platform, const std::string &game, uint32_t romCrc = 0);
 };
 
 // Preset VB screen colors. Index 0 is the authentic red Virtual Boy display

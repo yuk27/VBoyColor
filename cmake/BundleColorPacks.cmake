@@ -3,7 +3,8 @@
 # was made for ("<CRC-32 hex> <ROM size> <pack file>" a line, from the pack's
 # 16-byte "VBGOROM1" footer), so a game finds its built-in pack whatever its
 # ROM file is called (Emulator::FindPackForRom) - the same index the Android
-# build writes (android/app/build.gradle). Run at build time:
+# build writes (android/app/build.gradle) - plus SRC/aliases.txt, other ROMs
+# a pack fits (lines in the same format). Run at build time:
 #   cmake -D SRC=<repo>/colorpacks -D DST=<exe dir>/colorpacks -P BundleColorPacks.cmake
 
 file(GLOB packs "${SRC}/*.vbcp")
@@ -35,4 +36,10 @@ foreach(pack IN LISTS packs)
     math(EXPR romSize "0x${size3}${size2}${size1}${size0}" OUTPUT_FORMAT DECIMAL)
     string(APPEND index "${crc} ${romSize} ${name}\n")
 endforeach()
+# Other ROMs a pack fits (another region's release with the same graphics):
+# aliases.txt, same format.
+if(EXISTS "${SRC}/aliases.txt")
+    file(READ "${SRC}/aliases.txt" aliases)
+    string(APPEND index "${aliases}")
+endif()
 file(WRITE "${DST}/index.txt" "${index}")

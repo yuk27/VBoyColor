@@ -233,6 +233,7 @@ public:
     // before one loads. Save states, battery saves and per-game colors are
     // stored under it.
     const std::string &RomName() const { return m_romBaseName; }
+    uint32_t RomCrc() const { return m_romCrc; } // the loaded ROM's CRC-32 (0 before one loads)
     // Painted tiles are drawn while a Multicolor palette is active (the
     // palette then colors everything the pack doesn't cover); this switches
     // the pack off/on for comparison. On by default.
