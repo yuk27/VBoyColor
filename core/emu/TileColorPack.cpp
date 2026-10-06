@@ -20,12 +20,15 @@ namespace
     constexpr char kContextMagic[8] = {'V', 'B', 'G', 'O', 'C', 'T', 'X', '1'}; // context variants, after the v3 pack
     constexpr char kLayerBoundMagic[8] = {'V', 'B', 'G', 'O', 'C', 'T', 'X', 'L'}; // which of them are layer-bound, after that
     constexpr char kAmbiguousMagic[8] = {'V', 'B', 'G', 'O', 'A', 'M', 'B', '1'};
+    constexpr char kEyeMagic[8] = {'V', 'B', 'G', 'O', 'E', 'Y', 'E', '1'};      // sidecar: per pixel, 1 = a right picture's own (right-eye capture)
+    constexpr char kEyeTilesMagic[8] = {'V', 'B', 'G', 'O', 'E', 'Y', 'T', '1'}; // pack: tiles painted in right-eye captures, after those
     constexpr char kRomMagic[8] = {'V', 'B', 'G', 'O', 'R', 'O', 'M', '1'}; // the pack's last 16 bytes: + ROM CRC-32, size   // tiles painted two ways in a frame, after those
 
     constexpr uint32_t kNoColor = 0x01000000;   // a magenta vote: leave uncolored
     constexpr uint32_t kBackground = 0x02000000; // a transparent pixel left as the background (fills only)
     constexpr uint32_t kFillVote = 0x100;     // Vote::extra: a transparent pixel painted over
     constexpr uint32_t kFigureVote = 0x200;   // Vote::extra (map cells): on a background figure
+    constexpr uint32_t kEyeVote = 0x400;      // Vote::extra (map cells): a right picture's own - its cell keeps every painted pixel
     // What captures without a palette block were made with: the Ember
     // Multicolor palette (see Settings.h), as 0-255 RGB.
     constexpr uint8_t kDefaultCapturePalette[4][3] = {{8, 3, 0}, {166, 38, 5}, {242, 140, 26}, {255, 242, 191}};
@@ -115,6 +118,8 @@ void TileColorPack::Clear()
     m_contextTiles.clear();
     m_contextLayerBound = 0;
     m_ambiguous.clear();
+    m_eyeTiles.clear();
+    m_eyePending.clear();
     m_objectTiles.clear();
     m_objectIsFigure.clear();
     m_objectFamily.clear();
@@ -146,6 +151,13 @@ void TileColorPack::AppendSidecarShown(std::vector<uint8_t> &sidecar, const uint
 {
     sidecar.insert(sidecar.end(), kShownMagic, kShownMagic + 8);
     sidecar.insert(sidecar.end(), rgb, rgb + pixels * 3);
+}
+
+void TileColorPack::AppendSidecarRightPicture(std::vector<uint8_t> &sidecar, const uint8_t *own, size_t pixels)
+{
+    sidecar.insert(sidecar.end(), kEyeMagic, kEyeMagic + 8);
+    for (size_t i = 0; i < pixels; ++i)
+        sidecar.push_back(own[i] ? 1 : 0);
 }
 
 const TileColorPack::Tile *TileColorPack::Find(uint32_t hash) const
@@ -208,6 +220,7 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
     //    figure had been painted on a screen of its own.
     const uint8_t *shownPixels = nullptr;
     const uint8_t *figureIds = nullptr;
+    const uint8_t *rightOwn = nullptr; // (a right-eye capture: its right pictures' own pixels)
     int level = -1;
     size_t offset = headerSize + count * (v2 ? 12 : 8);
     if (sidecar.size() >= offset + 4)
@@ -241,6 +254,11 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
             {
                 figureIds = &sidecar[offset + 8];
                 offset += 8 + count * 2;
+            }
+            else if (std::memcmp(&sidecar[offset], kEyeMagic, 8) == 0 && sidecar.size() >= offset + 8 + count)
+            {
+                rightOwn = &sidecar[offset + 8];
+                offset += 8 + count;
             }
             else
                 break;
@@ -427,12 +445,31 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
                                                                             : (p[0] << 16) | (p[1] << 8) | p[2];
             const uint64_t key = (static_cast<uint64_t>(VBGO_TT_HASH(t)) << 6) | (VBGO_TT_SUBY(t) * 8 + VBGO_TT_SUBX(t));
             const bool inFigure = !object.empty() && object[i] >= 0 && m_objectIsFigure[object[i]];
+            // A right-eye capture's right-picture pixel of a tile of its own
+            // (see ColorPackRenderer: drawn for that eye only): a layer's
+            // goes to its map cell, whole (the cell keeps every pixel painted
+            // there, so it overrides what the renderer takes from the left
+            // picture); a sprite's to its tile, marked as painted for the
+            // right eye. Neither votes for anything else - the left eye's
+            // colors stay the left paintings'.
+            const bool own = rightOwn && rightOwn[i] && !sheet;
             if (VBGO_TT_CELL_VALID(cell))
                 m_cellVotes.push_back({(static_cast<uint64_t>(VBGO_TT_CELL(cell)) << 40) |
                                            (static_cast<uint64_t>(VBGO_TT_PALETTE(t)) << 38) | key,
-                                       rgb, VBGO_TT_WORLD(t) | (fill ? kFillVote : 0) | (inFigure ? kFigureVote : 0)});
+                                       rgb, VBGO_TT_WORLD(t) | (fill ? kFillVote : 0) | (inFigure ? kFigureVote : 0) |
+                                                (own ? kEyeVote : 0)});
             if (fill)
                 continue;
+            if (own)
+            {
+                if (VBGO_TT_IS_OBJ(t))
+                {
+                    m_votes.push_back({key, rgb, 0});
+                    m_eyePending[VBGO_TT_HASH(t)] |= 1ull << (key & 63);
+                }
+                ++stats.rightPixels;
+                continue;
+            }
             if (sheet)
             {
                 m_sheetVotes.push_back({key, rgb, 0});
@@ -1079,6 +1116,9 @@ void TileColorPack::FinishImport(ImportStats &stats)
         size_t distinct;
         const uint32_t best = Winner(begin, end, bestVotes, allVotes, distinct);
         const unsigned index = key & 63;
+        bool rightPicture = false; // (painted on a right picture's own tile: kept, whatever the tile gets elsewhere)
+        for (auto vote = begin; vote != end && !rightPicture; ++vote)
+            rightPicture = (vote->extra & kEyeVote) != 0;
         if (begin->extra & kFillVote)
         {
             if (best == kNoColor || best == kBackground)
@@ -1094,7 +1134,7 @@ void TileColorPack::FinishImport(ImportStats &stats)
         uint32_t expected;
         if (!paletteChosen.Get((pixelKey << 2) | current.palette, expected) && !chosen.Get(pixelKey, expected))
             expected = kNoColor;
-        if (best == expected)
+        if (best == expected && !rightPicture)
             return;
         if (best == kNoColor)
             current.keep |= 1ull << index;
@@ -1106,6 +1146,16 @@ void TileColorPack::FinishImport(ImportStats &stats)
 
     // Cleanup 5: shared tiles that objects paint differently (context).
     ResolveContexts(stats);
+
+    // Right-eye sprites' tiles painted in right-eye captures: which of their
+    // pixels (the renderer uses those as painted, not from the left picture).
+    for (const auto &entry : m_eyePending)
+    {
+        const auto tile = m_tiles.find(entry.first);
+        if (tile != m_tiles.end() && (tile->second.mask & entry.second))
+            m_eyeTiles[entry.first] = tile->second.mask & entry.second;
+    }
+    m_eyePending.clear();
 
     m_tileRows.clear();
 
@@ -1235,6 +1285,22 @@ std::vector<uint8_t> TileColorPack::Serialize() const
         AppendLe(out, ambiguous.size(), 4);
         for (const uint32_t hash : ambiguous)
             AppendLe(out, hash, 4);
+    }
+    // Optional: "VBGOEYT1", count, (hash, mask) - right-eye sprites' tile
+    // pixels painted in right-eye captures.
+    if (!m_eyeTiles.empty())
+    {
+        std::vector<uint32_t> eye;
+        for (const auto &entry : m_eyeTiles)
+            eye.push_back(entry.first);
+        std::sort(eye.begin(), eye.end());
+        out.insert(out.end(), kEyeTilesMagic, kEyeTilesMagic + 8);
+        AppendLe(out, eye.size(), 4);
+        for (const uint32_t hash : eye)
+        {
+            AppendLe(out, hash, 4);
+            AppendLe(out, m_eyeTiles.at(hash), 8);
+        }
     }
     if (m_romCrc || m_romSize)
     {
@@ -1426,6 +1492,13 @@ bool TileColorPack::Deserialize(const std::vector<uint8_t> &bytes)
             offset += 12;
             for (uint32_t i = 0; i < n && have(4); ++i, offset += 4)
                 m_ambiguous.insert(ReadLe32(&bytes[offset]));
+        }
+        if (have(12) && std::memcmp(&bytes[offset], kEyeTilesMagic, 8) == 0)
+        {
+            const uint32_t n = ReadLe32(&bytes[offset + 8]);
+            offset += 12;
+            for (uint32_t i = 0; i < n && have(12); ++i, offset += 12)
+                m_eyeTiles[ReadLe32(&bytes[offset])] = ReadLe64(&bytes[offset + 4]);
         }
     }
     return true;

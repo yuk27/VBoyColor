@@ -662,7 +662,8 @@ std::string Emulator::NextCaptureName(const char *infix) const
 
 bool Emulator::WriteCapture(const std::string &base, const uint8_t *rgb, const uint64_t *tiles, uint32_t width,
                             uint32_t height, const uint16_t *chr, const uint32_t *cells,
-                            const std::array<std::array<uint8_t, 3>, 4> *shown, uint8_t brightnessLevel)
+                            const std::array<std::array<uint8_t, 3>, 4> *shown, uint8_t brightnessLevel,
+                            const uint8_t *rightOwn)
 {
     // 3x nearest-neighbor upscale, so single pixels are easy to hit with a brush.
     constexpr uint32_t kUp = 3;
@@ -719,6 +720,9 @@ bool Emulator::WriteCapture(const std::string &base, const uint8_t *rgb, const u
     // And exactly what each pixel showed: pixels left showing the pack's
     // colors (or anything else) don't count as painted.
     TileColorPack::AppendSidecarShown(sidecar, rgb, count);
+    // A right-eye capture: where the right eye shows a picture of its own.
+    if (rightOwn)
+        TileColorPack::AppendSidecarRightPicture(sidecar, rightOwn, count);
 
     return !png.empty() && m_platform->WriteRomsFile("captures/" + base + ".png", false, png.data(), png.size()) &&
            m_platform->WriteRomsFile("captures/" + base + ".tiles", false, sidecar.data(), sidecar.size());
@@ -744,12 +748,20 @@ std::array<std::array<uint8_t, 3>, 4> Emulator::CapturePalette() const
     return palette;
 }
 
-std::string Emulator::CaptureTileReference()
+std::string Emulator::CaptureTileReference(bool rightEye)
 {
     if (!m_romLoaded || !m_hasFrame || !vbgo_tiletrack_is_enabled())
         return "";
+    // The right eye: a right-eye painting, for what games draw for that eye
+    // only (see ColorPackRenderer) - its own pixels are marked, so the
+    // importer keeps what's painted there for that eye.
+    const unsigned eye = rightEye ? 1 : 0;
+    const uint32_t eyeX = rightEye ? m_lastFrameWidth - VBGO_TT_WIDTH : 0;
+    const std::vector<uint8_t> &rightOwn = m_packRenderer.RightPictureOwn();
+    if (rightEye && rightOwn.size() != VBGO_TT_EYE_PIXELS)
+        return ""; // (nothing drawn for the right eye only)
 
-    // Left eye, in the active Multicolor palette (easier to tell objects
+    // That eye, in the active Multicolor palette (easier to tell objects
     // apart while painting - e.g. Ember), or the core's grayscale otherwise.
     // Only pixel positions matter when reading a painted copy back, so the
     // palette is purely a painting aid. What's on screen - including
@@ -766,7 +778,7 @@ std::string Emulator::CaptureTileReference()
     for (int y = 0; y < VBGO_TT_HEIGHT; ++y)
         for (int x = 0; x < VBGO_TT_WIDTH; ++x)
         {
-            const uint8_t *src = &source[(static_cast<size_t>(y) * kFbWidth + x) * 4];
+            const uint8_t *src = &source[(static_cast<size_t>(y) * kFbWidth + eyeX + x) * 4];
             uint8_t *dst = &rgb[(static_cast<size_t>(y) * VBGO_TT_WIDTH + x) * 3];
             dst[0] = src[2];
             dst[1] = src[1];
@@ -781,13 +793,13 @@ std::string Emulator::CaptureTileReference()
     vbgo_tt_eye_view view;
     std::vector<uint64_t> tiles(VBGO_TT_EYE_PIXELS);
     std::vector<uint32_t> cells(VBGO_TT_EYE_PIXELS);
-    if (!vbgo_tiletrack_eye_view(0, &view) || !vbgo_tiletrack_records(0, tiles.data(), cells.data(), true))
+    if (!vbgo_tiletrack_eye_view(eye, &view) || !vbgo_tiletrack_records(eye, tiles.data(), cells.data(), true))
         return "";
     for (int y = 0; y < VBGO_TT_HEIGHT; ++y)
         for (int x = 0; x < VBGO_TT_WIDTH; ++x)
         {
             const size_t i = static_cast<size_t>(y) * VBGO_TT_WIDTH + x;
-            const uint8_t *raw = &m_rawFrame[(static_cast<size_t>(y) * kFbWidth + x) * 4];
+            const uint8_t *raw = &m_rawFrame[(static_cast<size_t>(y) * kFbWidth + eyeX + x) * 4];
             if (VBGO_TT_PIXEL(tiles[i]) && (raw[0] | raw[1] | raw[2]) == 0)
                 tiles[i] = 0, cells[i] = 0;
         }
@@ -797,7 +809,7 @@ std::string Emulator::CaptureTileReference()
     uint32_t levels[64] = {};
     for (int y = 0; y < VBGO_TT_HEIGHT; ++y)
         for (int x = 0; x < VBGO_TT_WIDTH; ++x)
-            ++levels[m_rawFrame[(static_cast<size_t>(y) * kFbWidth + x) * 4 + 3] >> 2];
+            ++levels[m_rawFrame[(static_cast<size_t>(y) * kFbWidth + eyeX + x) * 4 + 3] >> 2];
     const uint8_t level = static_cast<uint8_t>(std::max_element(levels, levels + 64) - levels);
     std::array<std::array<uint8_t, 3>, 4> shown = CapturePalette();
     if (m_shadePaletteIndex >= 0)
@@ -811,11 +823,12 @@ std::string Emulator::CaptureTileReference()
         for (int y = 0; y < VBGO_TT_HEIGHT; ++y)
             for (int x = 0; x < VBGO_TT_WIDTH; ++x)
             {
-                const uint8_t *raw = &m_rawFrame[(static_cast<size_t>(y) * kFbWidth + x) * 4];
+                const uint8_t *raw = &m_rawFrame[(static_cast<size_t>(y) * kFbWidth + eyeX + x) * 4];
                 shown[raw[3] & 3] = {raw[2], raw[1], raw[0]};
             }
-    const std::string base = NextCaptureName("");
-    if (!WriteCapture(base, rgb.data(), tiles.data(), VBGO_TT_WIDTH, VBGO_TT_HEIGHT, view.chr, cells.data(), &shown, level))
+    const std::string base = NextCaptureName(rightEye ? " right" : "");
+    if (!WriteCapture(base, rgb.data(), tiles.data(), VBGO_TT_WIDTH, VBGO_TT_HEIGHT, view.chr, cells.data(), &shown, level,
+                      rightEye ? rightOwn.data() : nullptr))
         return "";
     std::fprintf(stderr, "[Emulator] Captured tile reference \"%s\"\n", base.c_str());
     return base;

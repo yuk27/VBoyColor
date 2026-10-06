@@ -86,6 +86,11 @@ public:
     // A pair's right world, per 8-row band: right-eye x -> left-eye x
     // (kNoDisparity if not known) - as last estimated.
     int PairDisparity(unsigned rightWorld, unsigned band) const;
+    // The last frame's right eye (384x224): 1 where a right picture showed a
+    // tile of its own - colored from the left picture, what a right-eye
+    // capture lets the painter paint (see TileColorPack::
+    // AppendSidecarRightPicture). Empty if the frame had no pairs.
+    const std::vector<uint8_t> &RightPictureOwn() const { return m_rightOwn; }
 
 private:
     static constexpr int kBands = VBGO_TT_HEIGHT / 8, kBlocksX = VBGO_TT_WIDTH / 8;
@@ -100,6 +105,7 @@ private:
         uint32_t contextFirst = 0, contextCount = 0; // its context variants in the pack's ContextTiles()
         bool ambiguous = false;                      // painted two ways in a frame: takes its surroundings' colors
         bool cellColored = false;                    // some map cell has colors of its own for it
+        uint64_t rightPainted = 0;                   // its pixels painted in right-eye captures (right-eye sprites)
     };
 
     void ResolveSlots(const uint32_t *hashes);
@@ -182,6 +188,7 @@ private:
     // (bits 0-4), the shade (bits 5-6) - 0 elsewhere (and in a guard band
     // all round, see the .cpp).
     std::vector<uint8_t> m_leftPicture;
+    std::vector<uint8_t> m_rightOwn; // see RightPictureOwn
     int EyeOnly(uint64_t tag) const; // a sprite only the left (1) or right (2) eye shows, else 0
     bool InPicture(const Pair &pair, uint64_t tag, unsigned eye) const;
     // A pair's right picture, a tile of its own: its color from the left picture (see the .cpp).

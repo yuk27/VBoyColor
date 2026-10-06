@@ -213,7 +213,8 @@ screen pixel comes from (`core/emu/vbgo_tiletrack.h`, hooked in through
 - **F10** saves the current frame to `roms/captures/` as a paint-ready PNG
   (3x, in the active Multicolor palette - Ember works well - or grayscale)
   plus a `.tiles` file mapping every pixel to its tile, so a painted copy can
-  be turned into tile colors.
+  be turned into tile colors. **Shift+F10** does the same for the right eye
+  (see "Both eyes" below).
 
 **Color packs.** Put painted copies of captures (same size, pixels not
 moved, saved as PNG) next to their `.tiles` files in
@@ -237,17 +238,26 @@ for this ROM (the Android build lists them in `colorpacks/index.txt`), else
 ROM recorded the first time the game loads them by name, or with
 `tools/vbcp_rom.py PACK.vbcp ROM.vb`. In the
 desktop build, **F11** re-imports after editing a painting and **F8** toggles
-the pack for comparison. Packs are painted from the left eye; the right eye
-shows each pixel in the color the left eye gives the same thing, so both eyes
-always agree: the same tile pixel at its layer's disparity (per row - some
-games shift a layer by a different amount on every row), else the left pixel
-whose surroundings show the same shades (games often draw a layer once per
-eye with tiles of their own, or draw each eye's picture separately, like
-Galactic Pinball's title and tables). Specks that matched something else
-nearby are matched again within their surroundings' depth, a small object (a
-twinkling star) takes one depth, and a pixel nothing on the left looks like
-(scenery only one eye sees through Mario's Tennis's scoreboard net) takes the
-color of the nearest pixel of its layer and shade that did match.
+the pack for comparison.
+
+**Both eyes.** Packs are painted from the left eye, and both eyes always show
+the same thing in the same colors: a pixel's color depends only on what both
+eyes share, never on a search of the other eye. Layers both eyes draw and
+every sprite both eyes show are the same tile pixels in both eyes, so they're
+colored the same by construction. Some games draw a picture per eye instead -
+a left-only layer next to a right-only one (Mario Clash's stage, Wario Land's
+title, Galactic Pinball's tables), or sprites only one eye shows (much of a
+Galactic Pinball table). The right picture then takes its left partner's
+colors: tiles both pictures use by tile (and a map cell's own colors by the
+left picture's cell with that tile pixel); the right picture's own tiles
+from the left picture where they line up - a disparity per 8x8 block, worked
+out from the two pictures when they change, and the color of the nearest
+left-picture pixel of the same shade there - so the game's dither stays its
+own and nothing flickers. To paint the right eye's own pictures yourself,
+**Shift+F10** captures the right eye: only its own pictures count there, and
+what you paint on them overrides what they'd take from the left (the left
+eye's colors stay the left paintings'). Unpainted, they keep following the
+left paintings.
 
 **Painting rules.** Only what you change counts: pixels left in the capture's
 own colors are ignored, so a capture can be painted a bit at a time. Paint

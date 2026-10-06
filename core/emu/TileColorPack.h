@@ -87,6 +87,7 @@ public:
         size_t fillPixels = 0;      // transparent tile pixels painted (fills)
         size_t contextTiles = 0;    // shared tiles with an object's own colors (context variants)
         size_t contextGroups = 0;   // objects telling them apart (marker sets)
+        size_t rightPixels = 0;     // right-eye captures: right-picture pixels painted (their cells' / sprites' own colors)
         std::string lastError;      // why the last rejected painting was rejected
     };
 
@@ -134,6 +135,17 @@ public:
     // tell those apart, so the runtime gives such a tile's pixels the color
     // the same shade has right next to it (see ColorPackRenderer).
     bool IsAmbiguous(uint32_t hash) const { return !m_ambiguous.empty() && m_ambiguous.count(hash) != 0; }
+
+    // Tile pixels of right-eye-only sprites painted in right-eye captures (see
+    // AppendSidecarRightPicture): the renderer shows those as painted rather
+    // than taking the left picture's colors (0: none).
+    uint64_t RightEyePainted(uint32_t hash) const
+    {
+        if (m_eyeTiles.empty())
+            return 0;
+        const auto it = m_eyeTiles.find(hash);
+        return it == m_eyeTiles.end() ? 0 : it->second;
+    }
 
     bool HasLayerColors() const { return !m_layerTiles.empty(); }
     bool HasPaletteColors() const { return !m_paletteTiles.empty(); }
@@ -183,6 +195,13 @@ public:
     // vote (a stray color from another object that happened to show doesn't
     // get painted in for good).
     static void AppendSidecarShown(std::vector<uint8_t> &sidecar, const uint8_t *rgb, size_t pixels);
+    // Optional block: "VBGOEYE1" + a byte per pixel - a capture of the right
+    // eye, 1 where a right picture shows a tile of its own (a right-only
+    // layer's or right-eye-only sprite's tile the left picture doesn't use -
+    // see ColorPackRenderer): what's painted there is kept as is - a layer's
+    // in its map cell, whole; a sprite's as its tile's, marked as painted for
+    // that eye - and votes for nothing else.
+    static void AppendSidecarRightPicture(std::vector<uint8_t> &sidecar, const uint8_t *own, size_t pixels);
     // Another optional block: "VBGOFIG1" + a figure id per pixel (uint16, 0 =
     // none) - a sheet of separate figures (tools/export_sprite_map.py's
     // character sheets: every animation frame of one character side by side).
@@ -231,6 +250,8 @@ private:
     std::vector<ContextTile> m_contextTiles;
     uint64_t m_contextLayerBound = 0;
     std::unordered_set<uint32_t> m_ambiguous;
+    std::unordered_map<uint32_t, uint64_t> m_eyeTiles;   // hash -> right-eye sprite pixels painted (RightEyePainted)
+    std::unordered_map<uint32_t, uint64_t> m_eyePending; // (import: the same, before resolving)
     uint32_t m_romCrc = 0, m_romSize = 0;
     uint8_t m_referenceLevel = 63;
     // Objects in the screen paintings being imported (connected tile pixels

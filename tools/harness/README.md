@@ -25,7 +25,8 @@ games' content or Juan's work); they live on Juan's PC under `out\`.
   the app shows them, `paint_ms()` how long coloring them takes, `worlds()` the
   VIP's 32 world attribute blocks, `world_info()` how the renderer classified
   them (per-eye pairs, their disparities), save/load states; `import_folder()`
-  like F11, `capture(eye)` / `write_capture()` like F10, `lookup()` a pack's
+  like F11, `capture(eye)` / `write_capture()` like F10 (Shift+F10 with
+  `right_own=VB.right_own()`: a right-eye capture), `lookup()` a pack's
   color for a tile pixel).
 - `worlds.py` - the worlds (layers) a frame is drawn with: which eyes draw
   each one, its type and parallax registers, and for every pair of

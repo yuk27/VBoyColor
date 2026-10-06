@@ -209,6 +209,17 @@ extern "C"
         }
     }
 
+    // The last painted frame's right eye: 1 where a right picture showed a
+    // tile of its own (what a right-eye capture marks). 0 if no pairs.
+    int vbp_right_own(uint8_t *out)
+    {
+        const auto &own = g_renderer.RightPictureOwn();
+        if (own.size() != VBGO_TT_EYE_PIXELS)
+            return 0;
+        std::memcpy(out, own.data(), own.size());
+        return 1;
+    }
+
     // Milliseconds for coloring the current frame like the app's UploadFrame:
     // Colorize the whole frame + the renderer's Paint, best of reps runs
     // (each on a fresh copy, after a warm-up - so caches are what they'd be).
@@ -422,7 +433,7 @@ extern "C"
         out[0] = s.paintings; out[1] = s.sheets; out[2] = s.tilePixels; out[3] = s.fromSheets; out[4] = s.erased;
         out[5] = s.layerPixels; out[6] = s.inconsistent; out[7] = s.mergedColors;
         out[8] = s.palettePixels; out[9] = s.cellPixels; out[10] = s.fillPixels;
-        out[11] = s.contextTiles; out[12] = s.contextGroups;
+        out[11] = s.contextTiles; out[12] = s.contextGroups; out[13] = s.rightPixels;
     }
 
     uint8_t *vbp_wram() { return static_cast<uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM)); }

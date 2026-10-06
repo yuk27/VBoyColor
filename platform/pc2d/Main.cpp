@@ -309,7 +309,8 @@ int main()
         bool tabWasPressed = false;
         // Experimental tile colorization tools (see Emulator::SetTileDebugView /
         // CaptureTileReference): F9 toggles the per-tile debug view, F10 saves
-        // a paint-ready reference of the current frame. Tracking stays on in
+        // a paint-ready reference of the current frame (Shift+F10: of the
+        // right eye - for what games draw for that eye only). Tracking stays on in
         // this desktop debug build so captures always have tile data.
         // F8 toggles the game's color pack (if any) for comparison, F11
         // re-imports its paintings (roms/colorpacks/<rom>/) after editing.
@@ -359,8 +360,11 @@ int main()
             const bool f10Pressed = glfwGetKey(window, GLFW_KEY_F10) == GLFW_PRESS;
             if (f10Pressed && !f10WasPressed)
             {
-                const std::string captured = emulator.CaptureTileReference();
-                std::printf(captured.empty() ? "Tile reference capture failed (no game running?)\n"
+                const bool rightEye = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+                                      glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
+                const std::string captured = emulator.CaptureTileReference(rightEye);
+                std::printf(captured.empty() ? (rightEye ? "Right-eye capture: nothing here is drawn for the right eye only\n"
+                                                         : "Tile reference capture failed (no game running?)\n")
                                              : "Saved roms/captures/%s.png + .tiles\n",
                             captured.c_str());
             }

@@ -206,6 +206,7 @@ void ColorPackRenderer::ResolveSlots(const uint32_t *hashes)
         slot.layered = !m_layered.empty() && m_layered.count(slot.hash) != 0;
         slot.ambiguous = m_pack->IsAmbiguous(slot.hash);
         slot.cellColored = !m_cellHashes.empty() && m_cellHashes.count(slot.hash) != 0;
+        slot.rightPainted = m_pack->RightEyePainted(slot.hash);
         slot.markerBits = 0;
         slot.contextCount = 0;
         if (!m_markerBits.empty())
@@ -576,6 +577,8 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
     // Pairs: the left pictures' colors per block and shade, the tiles they
     // use, their pixels of tiles colored per map cell.
     const bool pairs = pack && m_pairCount > 0;
+    if (!pairs)
+        m_rightOwn.clear();
     if (pairs)
     {
         for (int p = 0; p < m_pairCount; ++p)
@@ -586,6 +589,7 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
         m_leftPairHashes.assign(4096, 0);
         m_leftPairHashZero = false;
         m_leftPicture.assign(kMapW * kMapH, 0);
+        m_rightOwn.assign(VBGO_TT_EYE_PIXELS, 0);
         for (auto &row : m_pairRows)
             row.clear();
         if (m_mapCache.empty())
@@ -659,6 +663,7 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
         const AutoColors::Ramp *ramp = nullptr;        // automatic colors, if on
         int ownPair = -1;                              // a pair's right picture's own tile: region colors
         uint8_t leftPicture = 0;                       // a pair's left picture: that pair + 1
+        uint64_t rightPainted = 0;                     // (own tile: its pixels painted in right-eye captures)
         bool record = false;                           // (a left picture's tile colored per map cell: remember where)
         bool slow = false;                             // context, ambiguous or a marker: pixel by pixel
     };
@@ -771,6 +776,7 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
                                 else if (eye && only == 2 && !SharedWithLeftPicture(chr, slot.hash))
                                 {
                                     run.ownPair = m_spritePairOf[world];
+                                    run.rightPainted = slot.rightPainted;
                                     EstimatePair(run.ownPair, view, raw, fbWidth, eyeOffset);
                                 }
                             }
@@ -803,6 +809,8 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
                     const uint8_t *rgb = nullptr;
                     if (run.leftPicture && pixel && shade)
                         m_leftPicture[MapAt(x, y)] = static_cast<uint8_t>(run.leftPicture | (shade << 5));
+                    if (run.ownPair >= 0 && pixel)
+                        m_rightOwn[y * VBGO_TT_WIDTH + x] = 1;
                     if (run.slow && pixel)
                     {
                         const unsigned chr = VBGO_TAG_CHAR(t);
@@ -838,8 +846,9 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
                         if (!pixel)
                             continue; // a fill nobody painted
                         // A pair's right picture, a tile of its own: the left
-                        // picture's color for its shade there, as shown.
-                        if (run.ownPair >= 0 && shade &&
+                        // picture's color for its shade there, as shown (unless
+                        // a right-eye capture painted it).
+                        if (run.ownPair >= 0 && shade && !(run.rightPainted >> index & 1) &&
                             RegionColor(run.ownPair, static_cast<int>(x), static_cast<int>(y), shade, frame, fbWidth, eyeOffset[0], &frame[i]))
                             continue;
                         // 2-4. Context, the palette's, the layer's, or the tile's own colors.

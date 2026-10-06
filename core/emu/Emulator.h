@@ -182,7 +182,11 @@ public:
     // and in-tile pixel every screen pixel is, for reading a painted copy
     // back later). Needs tracking on for at least one emulated frame first.
     // Returns the base name used ("<rom> NNN"), or "" on failure.
-    std::string CaptureTileReference();
+    // rightEye: the right eye instead ("<rom> right NNN"), with the pixels
+    // where it shows a picture of its own marked (see ColorPackRenderer) -
+    // paint those to set what that eye shows there; "" if nothing is drawn
+    // for the right eye only.
+    std::string CaptureTileReference(bool rightEye = false);
 
     // Saves everything in the game's tile memory right now - loaded for the
     // current area, on screen or not - as a paint-ready tile sheet:
@@ -274,7 +278,7 @@ private:
     bool WriteCapture(const std::string &base, const uint8_t *rgb, const uint64_t *tiles,
                       uint32_t width = 384, uint32_t height = 224, const uint16_t *chr = nullptr,
                       const uint32_t *cells = nullptr, const std::array<std::array<uint8_t, 3>, 4> *shown = nullptr,
-                      uint8_t brightnessLevel = 255);
+                      uint8_t brightnessLevel = 255, const uint8_t *rightOwn = nullptr);
     // The 4 colors uncolored pixels are shown in (Multicolor palette, else gray).
     std::array<std::array<uint8_t, 3>, 4> CapturePalette() const;
 

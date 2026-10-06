@@ -26,7 +26,7 @@ for name, args, res in [
     ("vbp_state_size", [], C.c_size_t), ("vbp_save", [C.c_void_p, C.c_size_t], C.c_int), ("vbp_load", [C.c_void_p, C.c_size_t], C.c_int),
     ("vbp_pack_load", [C.c_void_p, C.c_size_t], C.c_int), ("vbp_palette", [C.c_void_p], None), ("vbp_auto", [C.c_int, C.c_int], None),
     ("vbp_render", [C.c_void_p, C.c_int, C.c_void_p], None), ("vbp_render_full", [C.c_void_p, C.c_int], C.c_int),
-    ("vbp_worldinfo", [C.c_void_p], None), ("vbp_time_paint", [C.c_int], C.c_double),
+    ("vbp_worldinfo", [C.c_void_p], None), ("vbp_right_own", [C.c_void_p], C.c_int), ("vbp_time_paint", [C.c_int], C.c_double),
     ("vbp_capture_eye", [C.c_uint, C.c_void_p, C.c_void_p], C.c_int), ("vbp_import_begin", [], None),
     ("vbp_import_add", [C.c_void_p, C.c_int, C.c_int, C.c_void_p, C.c_size_t], C.c_int), ("vbp_import_finish", [], C.c_int),
     ("vbp_paint_bytes", [C.c_void_p], C.c_size_t), ("vbp_import_stats", [C.c_void_p], None),
@@ -112,6 +112,12 @@ class VB:
         lib.vbp_worldinfo(a.ctypes.data)
         return a[:128].reshape(32, 4), a[128:].reshape(32, 28)
 
+    def right_own(self):
+        """The last painted frame's right eye: True where a right picture showed a tile of its own (what a
+        right-eye capture marks for painting), 224x384; None if the frame had no per-eye pictures."""
+        a = np.zeros((224, 384), np.uint8)
+        return a.astype(bool) if lib.vbp_right_own(a.ctypes.data) else None
+
     def paint_ms(self, reps=5):
         """Milliseconds to color the current frame as the app does (colorize + paint), best of reps."""
         return lib.vbp_time_paint(reps)
@@ -162,10 +168,10 @@ def import_folder(folder):
     size = lib.vbp_paint_bytes(None)
     out = (C.c_uint8 * size)()
     lib.vbp_paint_bytes(out)
-    st = np.zeros(13, np.uint64)
+    st = np.zeros(14, np.uint64)
     lib.vbp_import_stats(st.ctypes.data)
     keys = ["paintings", "sheets", "tilePixels", "fromSheets", "erased", "layerPixels", "inconsistent", "merged",
-            "palettePixels", "cellPixels", "fillPixels", "contextTiles", "contextGroups"]
+            "palettePixels", "cellPixels", "fillPixels", "contextTiles", "contextGroups", "rightPixels"]
     return n, tiles, bytes(out), dict(zip(keys, (int(x) for x in st)))
 
 
@@ -184,8 +190,9 @@ def capture(eye=0):
     return t, c, lvl
 
 
-def write_capture(base, rgb, t, cells, level, scale=3):
-    """The app's F10 files: 3x PNG (rgb: what to paint over, or a painting) + VBGOTIL2 sidecar (records, cells, tile dictionary, palette)."""
+def write_capture(base, rgb, t, cells, level, scale=3, right_own=None):
+    """The app's F10 files: 3x PNG (rgb: what to paint over, or a painting) + VBGOTIL2 sidecar (records, cells, tile dictionary, palette).
+    right_own: a right-eye capture (Shift+F10) - where the right eye shows a picture of its own (VB.right_own())."""
     Image.fromarray(np.repeat(np.repeat(rgb, scale, 0), scale, 1)).save(base + ".png")
     lib.vbgo_tiletrack_hash_rows.restype = C.c_uint32
     lib.vbgo_tiletrack_hash_rows.argtypes = [C.c_void_p]
@@ -202,6 +209,8 @@ def write_capture(base, rgb, t, cells, level, scale=3):
         f.write(b"VBGOTIL2" + struct.pack("<II", 384, 224) + t.astype("<u8").tobytes() + cells.astype("<u4").tobytes() +
                 struct.pack("<I", len(entries)) + b"".join(entries) + b"VBGOPAL2" + bytes(c for col in shown for c in col) +
                 bytes([level if 0 <= level <= 63 else 255]))
+        if right_own is not None:
+            f.write(b"VBGOEYE1" + np.ascontiguousarray(right_own, np.uint8).tobytes())
 
 
 def tag_fields(t):
