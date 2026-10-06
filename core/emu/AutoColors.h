@@ -12,8 +12,12 @@
 // layer (world) drew it - and the game's draw order says how far back that
 // layer is - or that it's a sprite, and with which palette. So:
 //  - background layers take a ramp by their depth in the drawing order, far
-//    to near: indigo, teal, green, sand - the farthest layer the game draws
-//    is the first ramp, its nearest the last (over the layers seen so far);
+//    to near: dusk violet, brick orange, amber, olive sand - the farthest
+//    layer the game draws is the first ramp, its nearest the last (over the
+//    layers seen so far). Warm, like light on the hardware's red: blocks,
+//    bricks, wood and ground look natural in them, where cool hues (an
+//    earlier teal and green) made them look painted the wrong color; the
+//    farthest layer stays cool, so depth still reads;
 //  - sprites take a warm, saturated ramp by their palette (most games draw
 //    their characters with palette 0: red / orange / yellow), so they stand
 //    out against the scenery - and so do small layers that a game draws a
@@ -29,10 +33,10 @@ namespace AutoColors
 
     // Far to near.
     inline constexpr std::array<Ramp, 4> kLayerRamps = {{
-        {{{28, 30, 88}, {70, 88, 178}, {168, 186, 238}}},  // indigo
-        {{{14, 66, 78}, {36, 146, 150}, {158, 226, 214}}}, // teal
-        {{{38, 78, 26}, {104, 168, 58}, {208, 236, 150}}}, // green
-        {{{96, 54, 22}, {206, 128, 52}, {252, 224, 164}}}, // sand / orange
+        {{{36, 20, 66}, {112, 72, 150}, {212, 184, 232}}},  // dusk violet
+        {{{102, 34, 20}, {210, 100, 48}, {250, 198, 132}}}, // brick / orange
+        {{{116, 62, 18}, {230, 152, 56}, {255, 234, 176}}}, // amber
+        {{{70, 72, 40}, {168, 170, 92}, {240, 240, 196}}},  // olive / sand
     }};
     // By sprite palette (JPLT0-3).
     inline constexpr std::array<Ramp, 4> kSpriteRamps = {{

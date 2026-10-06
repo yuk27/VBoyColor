@@ -26,7 +26,7 @@ pack).*
 
 - **Color, four ways** (Settings → Color Mode):
   - **Auto** (default) - every pixel is colored by what drew it: background
-    layers by their depth (far to near: indigo, teal, green, sand),
+    layers by their depth (far to near: dusk violet, brick, amber, sand),
     characters by their palette, each with dark/light/lightest steps. Every
     game shows many colors with no setup.
   - **Multicolor** - each of the Virtual Boy's four shades gets its own color
@@ -35,9 +35,14 @@ pack).*
     (Jade, Ocean, Sunset, Ember, Frost, Toxic).
   - **Tint** - the classic look: red, or any color you mix.
 - **Color packs** - hand-painted colors for a game, tile by tile, shown in
-  Auto and Multicolor modes. A pack is one small `.vbcp` file next to the
-  ROM; it holds only colors, no game graphics. You can paint your own on PC:
-  see [docs/COLOR_PACKS.md](docs/COLOR_PACKS.md).
+  Auto and Multicolor modes. Packs for Galactic Pinball, Jack Bros., Mario
+  Clash, Mario's Tennis, Teleroboxer and Wario Land are built in; they hold
+  only colors, no game graphics. A `.vbcp` file next to a ROM overrides the
+  built-in one, and you can paint your own on PC: see
+  [docs/COLOR_PACKS.md](docs/COLOR_PACKS.md).
+- **Colors per game** - each game remembers its own Color Mode and palette.
+  A few start with a suggested one (Wario Land: Gradient, Sunset); the rest
+  start in Auto.
 - **Real 3D on Quest** - each eye gets its own picture, as on the hardware,
   and both eyes always show the same colors.
 - **Save states** - several slots per game, with thumbnails in color.
@@ -60,7 +65,7 @@ pack).*
    `adb install VBoyColor-<version>.apk` (the headset must be in developer
    mode).
 3. Copy your `.vb` ROMs to a folder on the headset (for example
-   `Download/VBoyColor`), along with any `.vbcp` color packs.
+   `Download/VBoyColor`). The color packs are built in.
 4. Open VBoy Color from **Unknown Sources** in the app library and pick that
    folder when it asks.
 
