@@ -11,6 +11,7 @@
 #include "gfx/UiRenderer.h"
 
 #include <cstdint>
+#include <vector>
 
 class Emulator;
 struct AppSettings;
@@ -111,6 +112,14 @@ private:
     MenuPage *m_pendingPage = nullptr;
 
     UiFontHandle m_titleFont;
+    // The header logo (see RebuildLogo): the source image (RGBA), and a
+    // texture holding it resampled for the current menu scale.
+    void RebuildLogo(UiRenderer &ui);
+    std::vector<uint8_t> m_logoPixels;
+    uint32_t m_logoWidth = 0, m_logoHeight = 0;
+    UiImageHandle m_logoTexture;
+    uint32_t m_logoTexWidth = 0, m_logoTexHeight = 0;
+    uint32_t m_logoDrawWidth = 0, m_logoDrawHeight = 0;
     UiIconSet m_icons;
     UiMenuResources m_resources; // menuFont/smallFont/&m_icons - see UiMenuResources.h
     UiImageHandle m_offscreenTexture;

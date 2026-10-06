@@ -1,67 +1,67 @@
-"""Draws VBoy Color's app icon (an original design: two lenses - the
-original's red and VBoy Color's colors - over the title's color stripe) and
-writes every size the platforms use. Pillow; run from the repo root:
+"""Makes VBoy Color's app icon from the logo (assets/logo/vboycolor-logo.png,
+Juan's artwork): the logo on a white rounded tile, in every size the
+platforms use. Pillow; run from the repo root after changing the logo:
 
     python tools/make_icon.py
 
-assets/icon/vboycolor-1024.png      the source image
+assets/icon/vboycolor-1024.png      the icon at full size
 platform/desktop/vboycolor.ico      Windows exe + window icon (16-256 px)
 assets/runtime/icon.png             window icon on Linux (64 px)
 android/app/res/mipmap-*/ic_launcher.png   Quest app icon
+
+The menu header uses assets/runtime/logo/vboycolor_header.png: the logo's
+two words side by side (see header()).
 """
 import os
 from PIL import Image, ImageDraw
 
+LOGO = "assets/logo/vboycolor-logo.png"
 S = 1024
-# The title's colors (the menu header's COLOR letters - AutoColors' ramps,
-# lifted a little toward white).
-COLORS = [(98, 113, 190), (69, 162, 166), (127, 181, 88), (213, 147, 83), (239, 108, 76)]
-BG = (18, 19, 27)
-RED = (226, 30, 24)
 
 
-def lerp(a, b, t):
-    return tuple(int(round(a[i] + (b[i] - a[i]) * t)) for i in range(3))
+def content(img):
+    """The logo cropped to what's drawn (alpha > 0)."""
+    return img.crop(img.getchannel("A").point(lambda a: 255 if a > 8 else 0).getbbox())
 
 
-def gradient(t):
-    t = min(max(t, 0.0), 1.0) * (len(COLORS) - 1)
-    i = min(int(t), len(COLORS) - 2)
-    return lerp(COLORS[i], COLORS[i + 1], t - i)
+def icon():
+    logo = content(Image.open(LOGO).convert("RGBA"))
+    tile = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    ImageDraw.Draw(tile).rounded_rectangle([0, 0, S - 1, S - 1], radius=200, fill=(255, 255, 255, 255))
+    inner = int(S * 0.8)
+    scale = min(inner / logo.width, inner / logo.height)
+    logo = logo.resize((round(logo.width * scale), round(logo.height * scale)), Image.LANCZOS)
+    tile.alpha_composite(logo, ((S - logo.width) // 2, (S - logo.height) // 2))
+    return tile
 
 
-def draw():
-    img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.rounded_rectangle([0, 0, S - 1, S - 1], radius=200, fill=BG)
-    # Two lenses side by side, like a stereo pair: left red, right in color.
-    lw, lh, gap, top = 370, 330, 44, 260
-    left_x = (S - 2 * lw - gap) // 2
-    right_x = left_x + lw + gap
-    for x0, painter in ((left_x, "red"), (right_x, "color")):
-        mask = Image.new("L", (S, S), 0)
-        ImageDraw.Draw(mask).rounded_rectangle([x0, top, x0 + lw, top + lh], radius=130, fill=255)
-        layer = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-        ld = ImageDraw.Draw(layer)
-        for y in range(top, top + lh + 1):
-            if painter == "red":
-                # scanlines, a nod to the hardware's line-by-line display
-                c = (150, 18, 14) if (y - top) % 36 >= 26 else RED
-                ld.line([(x0, y), (x0 + lw, y)], fill=c + (255,))
-            else:
-                for x in range(x0, x0 + lw + 1):
-                    layer.putpixel((x, y), gradient((x - x0) / lw * 0.7 + (y - top) / lh * 0.3) + (255,))
-        img.paste(layer, (0, 0), mask)
-    # The stripe in the title's colors.
-    seg = (2 * lw + gap) / 5
-    for i, c in enumerate(COLORS):
-        x0 = left_x + seg * i
-        d.rectangle([x0, top + lh + 90, x0 + seg + 1, top + lh + 122], fill=c)
-    return img
+def header():
+    """"VBOY" and "COLOR" side by side, 280 px tall - the two rows of the
+    logo, split where nothing is drawn between them."""
+    img = Image.open(LOGO).convert("RGBA")
+    alpha = img.getchannel("A")
+    rows = [any(alpha.getpixel((x, y)) > 8 for x in range(0, img.width, 2)) for y in range(img.height)]
+    words, start = [], None
+    for y, filled in enumerate(rows + [False]):
+        if filled and start is None:
+            start = y
+        elif not filled and start is not None:
+            words.append(content(img.crop((0, start, img.width, y))))
+            start = None
+    vboy, color = words[0], words[-1]
+    h = 280
+    v = vboy.resize((round(vboy.width * h / vboy.height), h), Image.LANCZOS)
+    ch = round(h * 0.8)
+    c = color.resize((round(color.width * ch / color.height), ch), Image.LANCZOS)
+    gap = round(h * 0.22)
+    out = Image.new("RGBA", (v.width + gap + c.width, h), (0, 0, 0, 0))
+    out.alpha_composite(v, (0, 0))
+    out.alpha_composite(c, (v.width + gap, (h - ch) // 2))
+    return out
 
 
 def main():
-    img = draw()
+    img = icon()
     os.makedirs("assets/icon", exist_ok=True)
     img.save("assets/icon/vboycolor-1024.png")
     img.save("platform/desktop/vboycolor.ico", sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
@@ -69,6 +69,8 @@ def main():
     for name, size in {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}.items():
         os.makedirs("android/app/res/mipmap-" + name, exist_ok=True)
         img.resize((size, size), Image.LANCZOS).save("android/app/res/mipmap-%s/ic_launcher.png" % name)
+    os.makedirs("assets/runtime/logo", exist_ok=True)
+    header().save("assets/runtime/logo/vboycolor_header.png", optimize=True)
 
 
 if __name__ == "__main__":

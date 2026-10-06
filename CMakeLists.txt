@@ -399,6 +399,8 @@ else()
                     "${CMAKE_SOURCE_DIR}/assets/runtime/fonts" "$<TARGET_FILE_DIR:VBoyColor>/fonts"
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                     "${CMAKE_SOURCE_DIR}/assets/runtime/icons" "$<TARGET_FILE_DIR:VBoyColor>/icons"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${CMAKE_SOURCE_DIR}/assets/runtime/logo" "$<TARGET_FILE_DIR:VBoyColor>/logo"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     "${CMAKE_SOURCE_DIR}/assets/runtime/icon.png" "$<TARGET_FILE_DIR:VBoyColor>/icon.png"
         )

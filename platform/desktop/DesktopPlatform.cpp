@@ -169,7 +169,7 @@ std::vector<uint8_t> DesktopPlatform::LoadAssetBytes(const std::string &name)
         LPCWSTR resourceId;
     };
     static const Entry kEmbedded[] = {
-        {"fonts/Audiowide-Regular.ttf", L"FONT_AUDIOWIDE"},
+        {"logo/vboycolor_header.png", L"LOGO_HEADER"},
         {"fonts/Roboto-Regular.ttf", L"FONT_ROBOTO_REGULAR"},
         {"fonts/Roboto-Bold.ttf", L"FONT_ROBOTO_BOLD"},
         {"icons/icons_atlas_10.png", L"ICON_ATLAS_10"},

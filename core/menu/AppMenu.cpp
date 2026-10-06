@@ -1,7 +1,8 @@
 #include "menu/AppMenu.h"
 #include "io/Platform.h"
 #include "io/Settings.h"
-#include "emu/AutoColors.h"
+
+#include <stb_image.h> // (implementation in VulkanRenderer.cpp)
 
 #include <algorithm>
 #include <cmath>
@@ -11,25 +12,30 @@
 namespace
 {
     constexpr XrColor4f kClearColor = {0.0f, 0.0f, 0.0f, 1.0f};
-    constexpr XrColor4f kHeaderTextColor = {0.94f, 0.94f, 0.96f, 1.0f};
     constexpr XrColor4f kHeaderTextBackColor = {0.0f, 0.0f, 0.0f, 0.45f};
     // Font pixel sizes are inherently integer (FreeType rasterizes whole
     // pixels only) - 65/2 doesn't land on a whole number like the other
     // logical-space constants do, so this one is just rounded. Still
     // rasterizes crisp: this is a font *size* fed to FreeType, unrelated to
     // kMenuScale's physical-vs-logical pixel mapping.
-    constexpr int kHeaderFontSize = 20;
+    constexpr int kHeaderFontSize = 16;
 
-    // The title: "VBOY" in white, then "COLOR" a letter at a time in the Auto
-    // mode's colors - its layers' far to near, then its sprites' red (see
-    // AutoColors.h): what the app paints games with.
+    // The logo's colors (Juan's VBoy Color logo): "VBOY" red, then "COLOR"
+    // a letter at a time.
+    constexpr XrColor4f kLogoRed = {1.0f, 30 / 255.0f, 18 / 255.0f, 1.0f};
     XrColor4f TitleLetterColor(int i)
     {
-        const AutoColors::Rgb &c = i < 4 ? AutoColors::kLayerRamps[i][1] : AutoColors::kSpriteRamps[0][1];
-        // (lifted a little toward white: the header is dark gray)
-        auto lift = [](uint8_t v) { return (v + (255 - v) * 0.15f) / 255.0f; };
-        return XrColor4f{lift(c[0]), lift(c[1]), lift(c[2]), 1.0f};
+        static constexpr uint8_t kLetters[5][3] = {{205, 37, 57}, {88, 81, 166}, {163, 198, 24}, {215, 179, 1}, {0, 155, 166}};
+        const uint8_t *c = kLetters[i % 5];
+        return XrColor4f{c[0] / 255.0f, c[1] / 255.0f, c[2] / 255.0f, 1.0f};
     }
+
+    // The header logo: assets/runtime/logo/vboycolor_header.png ("VBOY" and
+    // "COLOR" from Juan's logo, side by side), this tall in menu units -
+    // resampled for each menu scale up to kLogoMaxScale (the desktop window
+    // fullscreen at 4K), so it's drawn 1:1 and stays sharp.
+    constexpr float kLogoHeight = 22.0f;
+    constexpr int kLogoMaxScale = 12;
 
     // Clock + battery indicator, ported from FrontendGo's Menu.cpp
     // (SetTimeString/BatteryColors/DrawMenu's battery block) - two rows
@@ -96,18 +102,35 @@ namespace
 void AppMenu::Initialize(UiRenderer &ui, VkFormat targetFormat, Emulator &emulator, AppSettings &settings,
                          Platform &platform, ButtonMappingProfile mappingProfile, bool passthroughSupported)
 {
-    const std::vector<uint8_t> headerFontBytes = platform.LoadAssetBytes("fonts/Audiowide-Regular.ttf");
     const std::vector<uint8_t> menuFontBytes = platform.LoadAssetBytes("fonts/Roboto-Regular.ttf");
     const std::vector<uint8_t> smallFontBytes = platform.LoadAssetBytes("fonts/Roboto-Bold.ttf");
 
     // Bake glyphs at physical resolution (kMenuScale x the logical size) for
     // crisp text - see UiFontManager::LoadFont's renderScale doc comment.
-    m_titleFont = ui.LoadFont(headerFontBytes, static_cast<int>(kHeaderFontSize * m_menuScale), m_menuScale);
+    // (The title font only shows if the logo image is missing.)
+    m_titleFont = ui.LoadFont(smallFontBytes, static_cast<int>(kHeaderFontSize * m_menuScale), m_menuScale);
     m_resources.menuFont = ui.LoadFont(menuFontBytes, static_cast<int>(kMenuFontSize * m_menuScale), m_menuScale);
     m_resources.smallFont = ui.LoadFont(smallFontBytes, static_cast<int>(kSmallFontSize * m_menuScale), m_menuScale);
 
     m_icons.Load(ui, platform, m_menuScale);
     m_resources.icons = &m_icons;
+
+    // The logo, decoded once (RGBA) and resampled per menu scale.
+    {
+        const std::vector<uint8_t> png = platform.LoadAssetBytes("logo/vboycolor_header.png");
+        int w = 0, h = 0, channels = 0;
+        if (stbi_uc *pixels = png.empty() ? nullptr : stbi_load_from_memory(png.data(), static_cast<int>(png.size()), &w, &h, &channels, 4))
+        {
+            m_logoPixels.assign(pixels, pixels + static_cast<size_t>(w) * h * 4);
+            m_logoWidth = static_cast<uint32_t>(w);
+            m_logoHeight = static_cast<uint32_t>(h);
+            stbi_image_free(pixels);
+            m_logoTexHeight = static_cast<uint32_t>(std::ceil(kLogoHeight * kLogoMaxScale));
+            m_logoTexWidth = static_cast<uint32_t>(std::ceil(m_logoTexHeight * static_cast<float>(w) / h)) + 1;
+            m_logoTexture = ui.CreateStreamingImage(m_logoTexWidth, m_logoTexHeight, VK_FORMAT_B8G8R8A8_SRGB);
+            RebuildLogo(ui);
+        }
+    }
     m_resources.emulator = &emulator;
     m_resources.appMenu = this;
     m_resources.settings = &settings;
@@ -142,12 +165,61 @@ void AppMenu::SetMenuScale(UiRenderer &ui, float scale)
     ui.ResizeRenderTexture(m_offscreenTexture, static_cast<uint32_t>(kMenuWidth * m_menuScale),
                            static_cast<uint32_t>(kMenuHeight * m_menuScale));
 
-    const std::vector<uint8_t> headerFontBytes = m_resources.platform->LoadAssetBytes("fonts/Audiowide-Regular.ttf");
     const std::vector<uint8_t> menuFontBytes = m_resources.platform->LoadAssetBytes("fonts/Roboto-Regular.ttf");
     const std::vector<uint8_t> smallFontBytes = m_resources.platform->LoadAssetBytes("fonts/Roboto-Bold.ttf");
-    ui.RebakeFont(m_titleFont, headerFontBytes, static_cast<int>(kHeaderFontSize * m_menuScale), m_menuScale);
+    ui.RebakeFont(m_titleFont, smallFontBytes, static_cast<int>(kHeaderFontSize * m_menuScale), m_menuScale);
     ui.RebakeFont(m_resources.menuFont, menuFontBytes, static_cast<int>(kMenuFontSize * m_menuScale), m_menuScale);
     ui.RebakeFont(m_resources.smallFont, smallFontBytes, static_cast<int>(kSmallFontSize * m_menuScale), m_menuScale);
+    RebuildLogo(ui);
+}
+
+void AppMenu::RebuildLogo(UiRenderer &ui)
+{
+    if (!m_logoTexture.IsValid() || m_logoPixels.empty())
+        return;
+    // Exactly as many pixels as the logo covers at this scale (at most the
+    // texture's), each the average of the source pixels under it - in
+    // premultiplied alpha, so the edges don't darken.
+    const float scale = std::min(m_menuScale, static_cast<float>(kLogoMaxScale));
+    const uint32_t h = std::max(1u, std::min(m_logoTexHeight, static_cast<uint32_t>(std::lround(kLogoHeight * scale))));
+    const uint32_t w = std::max(1u, std::min(m_logoTexWidth, static_cast<uint32_t>(std::lround(h * static_cast<float>(m_logoWidth) / m_logoHeight))));
+    std::vector<uint8_t> bgra(static_cast<size_t>(m_logoTexWidth) * m_logoTexHeight * 4, 0);
+    const float sx = static_cast<float>(m_logoWidth) / w, sy = static_cast<float>(m_logoHeight) / h;
+    for (uint32_t y = 0; y < h; ++y)
+    {
+        const float y0 = y * sy, y1 = (y + 1) * sy;
+        for (uint32_t x = 0; x < w; ++x)
+        {
+            const float x0 = x * sx, x1 = (x + 1) * sx;
+            float sum[4] = {0, 0, 0, 0}, area = 0;
+            for (uint32_t iy = static_cast<uint32_t>(y0); iy < m_logoHeight && iy < y1; ++iy)
+            {
+                const float wy = std::min(y1, iy + 1.0f) - std::max(y0, static_cast<float>(iy));
+                for (uint32_t ix = static_cast<uint32_t>(x0); ix < m_logoWidth && ix < x1; ++ix)
+                {
+                    const float wgt = wy * (std::min(x1, ix + 1.0f) - std::max(x0, static_cast<float>(ix)));
+                    const uint8_t *p = &m_logoPixels[(static_cast<size_t>(iy) * m_logoWidth + ix) * 4];
+                    const float a = p[3] / 255.0f * wgt;
+                    sum[0] += p[0] * a;
+                    sum[1] += p[1] * a;
+                    sum[2] += p[2] * a;
+                    sum[3] += a;
+                    area += wgt;
+                }
+            }
+            uint8_t *out = &bgra[(static_cast<size_t>(y) * m_logoTexWidth + x) * 4];
+            if (sum[3] > 0.0f && area > 0.0f)
+            {
+                out[0] = static_cast<uint8_t>(std::lround(std::min(255.0f, sum[2] / sum[3])));
+                out[1] = static_cast<uint8_t>(std::lround(std::min(255.0f, sum[1] / sum[3])));
+                out[2] = static_cast<uint8_t>(std::lround(std::min(255.0f, sum[0] / sum[3])));
+                out[3] = static_cast<uint8_t>(std::lround(std::min(255.0f, sum[3] / area * 255.0f)));
+            }
+        }
+    }
+    ui.UpdateStreamingImage(m_logoTexture, bgra.data(), bgra.size());
+    m_logoDrawWidth = w;
+    m_logoDrawHeight = h;
 }
 
 void AppMenu::InitPages(UiRenderer &ui)
@@ -350,14 +422,25 @@ void AppMenu::RenderContent(UiRenderer &ui)
         ui.DrawText(m_resources.smallFont, "Select", selectX + kHintIconSize + kHintIconGap, textY, 1.0f, kMenuTextColor);
     }
 
-    // Centred header title
+    // Centred header: the logo (or, without it, its words in its colors)
     const float headerTextY = kHeaderHeight / 2.0f - ui.GetFontPHeight(m_titleFont) / 2.0f - ui.GetFontPStart(m_titleFont);
+    if (m_logoTexture.IsValid() && m_logoDrawHeight > 0)
+    {
+        // 1:1 with the texture's pixels: its size in menu units at this
+        // scale, on whole pixels.
+        const float w = m_logoDrawWidth / m_menuScale, h = m_logoDrawHeight / m_menuScale;
+        const float x = std::round((kMenuWidth - w) / 2.0f * m_menuScale) / m_menuScale;
+        const float y = std::round((kHeaderHeight - 1.5f - h) / 2.0f * m_menuScale) / m_menuScale;
+        ui.DrawImageRegion(m_logoTexture, x, y, w, h, 0.0f, 0.0f, static_cast<float>(m_logoDrawWidth) / m_logoTexWidth,
+                           static_cast<float>(m_logoDrawHeight) / m_logoTexHeight);
+    }
+    else
     {
         const char *kFirst = "VBOY ";
         const char *kSecond = "COLOR";
         float x = (kMenuWidth - ui.GetTextWidth(m_titleFont, std::string(kFirst) + kSecond)) / 2.0f;
         ui.DrawText(m_titleFont, kFirst, x + 0.5f, headerTextY + 0.5f, 1.0f, kHeaderTextBackColor);
-        ui.DrawText(m_titleFont, kFirst, x, headerTextY, 1.0f, kHeaderTextColor);
+        ui.DrawText(m_titleFont, kFirst, x, headerTextY, 1.0f, kLogoRed);
         x += ui.GetTextWidth(m_titleFont, kFirst);
         for (int i = 0; kSecond[i]; ++i)
         {

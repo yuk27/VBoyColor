@@ -15,7 +15,7 @@ OpenXR SDK, FreeType, GLFW) on the first configure. The emulator core is a
 git submodule:
 
 ```
-git clone --recursive https://github.com/yuk27/VirtualBoyGo
+git clone --recursive https://github.com/yuk27/VBoyColor
 # or, in an existing clone:
 git submodule update --init
 ```
@@ -145,13 +145,15 @@ for a numbered release passes `-DVBGO_RELEASE_BUILD=ON` (Android:
 `v<VBGO_VERSION>`. Bump `VBGO_VERSION` in `CMakeLists.txt` and `versionCode` /
 `versionName` in `android/app/build.gradle` for each release.
 
-## App icon
+## Logo and app icon
 
-`tools/make_icon.py` (Pillow) draws the icon and writes every size: the
-Windows `.ico` (embedded in both desktop exes), the Linux window icon
-(`assets/runtime/icon.png`) and the Quest launcher icon
-(`android/app/res/mipmap-*`). Replace its drawing, run it, commit the
-outputs.
+The logo is `assets/logo/vboycolor-logo.png`. `tools/make_icon.py`
+(Pillow) makes everything else from it: the app icon (the logo on a white
+tile) for Windows (`platform/desktop/vboycolor.ico`, embedded in both
+desktop exes), Linux (`assets/runtime/icon.png`) and the Quest
+(`android/app/res/mipmap-*`), and the menu header
+(`assets/runtime/logo/vboycolor_header.png`, the logo's two words side by
+side). Change the logo, run it, commit the outputs.
 
 ## Test harness
 

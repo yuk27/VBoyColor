@@ -10,8 +10,8 @@ Full license texts are in `licenses/` unless noted.
 [github.com/CidVonHighwind/VirtualBoyGo](https://github.com/CidVonHighwind/VirtualBoyGo).
 VBoy Color started as a fork of its 2026 OpenXR + Vulkan rework: the VR app,
 renderer, menu, save states, button mapping and the menu icons
-(`assets/icons/`) come from there. GPL-3.0 (`LICENSE`). The app icon
-(`tools/make_icon.py`) is VBoy Color's own.
+(`assets/icons/`) come from there. GPL-3.0 (`LICENSE`). The VBoy Color
+logo (`assets/logo/`) is Juan's own artwork.
 
 ## Compiled into the app
 
@@ -35,7 +35,6 @@ Portions of this software are copyright © 2023 The FreeType Project
 | Font | License |
 |---|---|
 | Roboto (Regular, Bold) - Copyright 2011 Google Inc. | Apache-2.0 (`licenses/Apache-2.0.txt`) |
-| Audiowide - Copyright (c) 2012 Brian J. Bonislawsky DBA Astigmatic (AOETI) | SIL Open Font License 1.1 (`licenses/OFL-Audiowide.txt`) |
 
 ## Build tools (not shipped)
 

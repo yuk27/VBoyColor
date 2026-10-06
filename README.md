@@ -1,6 +1,6 @@
-# VBoy Color
+<h1 align="center"><img src="assets/logo/vboycolor-logo.png" alt="VBoy Color" width="380"></h1>
 
-**Virtual Boy games in color - in 3D on Meta Quest, and on PC.**
+<p align="center"><b>Virtual Boy games in color - in 3D on Meta Quest, and on PC.</b></p>
 
 VBoy Color is a free, open-source Virtual Boy emulator. On a Quest headset
 it shows games the way the Virtual Boy was meant to be seen, in stereoscopic
@@ -55,7 +55,7 @@ pack).*
 ### Quest (Quest 2, 3, 3S, Pro)
 
 1. Download `VBoyColor-<version>.apk` from
-   [Releases](https://github.com/yuk27/VirtualBoyGo/releases).
+   [Releases](https://github.com/yuk27/VBoyColor/releases).
 2. Install it with [SideQuest](https://sidequestvr.com) or
    `adb install VBoyColor-<version>.apk` (the headset must be in developer
    mode).
@@ -67,7 +67,7 @@ pack).*
 ### Windows
 
 Download `VBoyColor-windows-<version>.zip` from
-[Releases](https://github.com/yuk27/VirtualBoyGo/releases), unzip it, put your
+[Releases](https://github.com/yuk27/VBoyColor/releases), unzip it, put your
 ROMs in the `roms` folder and run `VBoyColor.exe`. You can also drop a `.vb`
 file on the window, or open one with `VBoyColor.exe`. `VBoyColorVR.exe` is the
 VR version for a PC headset (Quest Link, Virtual Desktop or SteamVR).
