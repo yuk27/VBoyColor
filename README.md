@@ -111,13 +111,6 @@ one CMake project. Every push is built by GitHub Actions.
 
 ## Support the project
 
-The Virtual Boy only ever showed the world in red. VBoy Color is my attempt
-to give it the rest of the rainbow, one game at a time - free, open source,
-and staying that way.
-
-If it put some color into your day and you'd like to help paint the next
-game, you can chip in here:
-
 [![Support VBoy Color](images/support-badge.svg)](https://github.com/sponsors/yuk27)
 
 https://github.com/sponsors/yuk27
