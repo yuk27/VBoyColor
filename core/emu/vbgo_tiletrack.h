@@ -175,6 +175,37 @@ static inline uint64_t *vbgo_tt_slot(const void *target_ptr)
       }                                                                                                     \
    } while (0)
 
+/* Background (map) drawing - DrawBG/DrawAffine - only ever draws pixels 0-383
+ * of one row, so its tags are found once per call: pixel x of the row
+ * row_target (that call's target) is tagged at row[x * VBGO_TT_COLUMN].
+ * NULL while tracking is off. */
+static inline uint64_t *vbgo_tt_row(const void *row_target)
+{
+   ptrdiff_t i;
+   if (!vbgo_tt_on)
+      return (uint64_t *)0;
+   i = (const uint8_t *)row_target - vbgo_tt_block_base;
+   return &vbgo_tt_dst[(i >> 12) & 1][(i >> 9) & 7];
+}
+
+/* What's the same for every tag of one drawing call: the pass's stamp and
+ * the world drawing. */
+static inline uint64_t vbgo_tt_call_bits(void) { return vbgo_tt_stamp_bits | ((uint64_t)vbgo_tt_world << 22); }
+
+/* The rest of a BG pixel's tag (pv 0 = a fill). */
+#define VBGO_TT_BG_BITS(chr, sx, sy, pal, pv, cell)                                                       \
+   (VBGO_TT_CELL_BITS(cell) | (uint64_t)((uint32_t)(chr) | ((uint32_t)(sx) << 11) | ((uint32_t)(sy) << 14) | \
+                                         ((uint32_t)(pal) << 17) | ((uint32_t)(pv) << 20)))
+
+/* A transparent pixel of a BG tile (only if vbgo_tt_fills_from) at d: tagged
+ * as a fill (tag: pv 0) unless something was already drawn or filled there
+ * this pass - the backmost tile wins, drawn pixels always win. */
+static inline void vbgo_tt_fill_at(uint64_t *d, uint64_t tag)
+{
+   if ((*d >> 48) != (tag >> 48))
+      *d = tag;
+}
+
 /* Whether a BG tile drawn from this cell may leave fills: non-blank tiles
  * only, and in VBGO_TT_FILLS_PACK mode only cells the pack fills. */
 static inline int vbgo_tt_fills_from(unsigned chr, unsigned cell)
@@ -183,16 +214,38 @@ static inline int vbgo_tt_fills_from(unsigned chr, unsigned cell)
           (vbgo_tt_fill == 2 || ((vbgo_tt_fill_cells[cell >> 3] >> (cell & 7)) & 1));
 }
 
-/* A transparent pixel of a BG tile (call only if vbgo_tt_fills_from):
- * tagged as a fill unless something was already drawn or filled there this
- * pass - the backmost tile wins, drawn pixels always win. */
-static inline void vbgo_tt_fill_px(const void *target_ptr, unsigned chr, unsigned sx, unsigned sy, unsigned pal,
-                                   unsigned cell)
+/* A whole character row drawn by DrawBG's 8-pixel path: its 8 screen pixels
+ * are tagged at d, d + VBGO_TT_COLUMN, ... pixels: the row as stored (tile
+ * pixel n in bits 2n); flipped: drawn mirrored (screen pixel k shows tile
+ * pixel 7 - k). bits: vbgo_tt_call_bits() | VBGO_TT_BG_BITS(chr, 0, sy, pal,
+ * 0, cell). Drawn pixels and fills as one at a time would tag them. */
+static inline void vbgo_tt_tag_row8(uint64_t *d, unsigned pixels, int flipped, uint64_t bits, unsigned chr, unsigned cell)
 {
-   uint64_t *d = vbgo_tt_slot(target_ptr);
-   if (d && (*d >> 48) != (vbgo_tt_stamp_bits >> 48))
-      *d = vbgo_tt_stamp_bits | VBGO_TT_CELL_BITS(cell) |
-           (uint64_t)(chr | (sx << 11) | (sy << 14) | (pal << 17) | (vbgo_tt_world << 22));
+   /* (a row with every pixel drawn leaves no fills) */
+   const int fills = ((pixels | (pixels >> 1)) & 0x5555) != 0x5555 && vbgo_tt_fills_from(chr, cell);
+   const unsigned x7 = flipped ? 7 : 0;
+   unsigned k;
+   if (flipped) /* screen order: reverse the 8 2-bit fields */
+   {
+      pixels = ((pixels >> 2) & 0x3333) | ((pixels & 0x3333) << 2);
+      pixels = ((pixels >> 4) & 0x0F0F) | ((pixels & 0x0F0F) << 4);
+      pixels = ((pixels >> 8) & 0x00FF) | ((pixels & 0x00FF) << 8);
+   }
+   if (!fills)
+   {
+      for (k = 0; k < 8 && pixels; k++, d += VBGO_TT_COLUMN, pixels >>= 2)
+         if (pixels & 3)
+            *d = bits | (uint64_t)(((k ^ x7) << 11) | ((pixels & 3) << 20));
+      return;
+   }
+   for (k = 0; k < 8; k++, d += VBGO_TT_COLUMN, pixels >>= 2)
+   {
+      const uint64_t t = bits | (uint64_t)(((k ^ x7) << 11) | ((pixels & 3) << 20));
+      if (pixels & 3)
+         *d = t;
+      else
+         vbgo_tt_fill_at(d, t);
+   }
 }
 
 /* dram: the VIP's DRAM (VIP 0x20000-0x3FFFF as halfwords), for the world and

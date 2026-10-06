@@ -159,10 +159,14 @@ cd android
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Or `assembleRelease` / `app/build/outputs/apk/release/app-release.apk` - an
-optimized build for testing on-device (fast enough to actually play), but
-still just a dev build (`v2.0.0-dev.<commit count>` in Settings) unless you
-add `-Pofficial=true`:
+The native code is optimized in both (also when Android Studio's Run button
+builds the debug variant) - unoptimized, the emulator and the coloring run 2-3x
+slower and games stutter on the headset. Configure with
+`-DVBGO_OPTIMIZE_DEBUG=OFF` to step through native code in a debugger.
+
+Or `assembleRelease` / `app/build/outputs/apk/release/app-release.apk` - still
+just a dev build (`v2.0.0-dev.<commit count>` in Settings) unless you add
+`-Pofficial=true`:
 
 ```
 ./gradlew assembleRelease -Pofficial=true
@@ -223,9 +227,9 @@ moved, saved as PNG) next to their `.tiles` files in
 the majority wins where a tile was painted differently in different places,
 and stray near-duplicate shades are merged. The pack then colors every
 occurrence of those tiles anywhere in the game in Auto mode or while a
-Multicolor palette is active - or in Gradient mode, which then colors per
-shade too, from the gradient's 5 colors (see above); unpainted tiles keep the
-mode's colors. The `.vbcp` file alone is enough on other platforms: copy it
+Multicolor palette is active (a gradient one too - see above); unpainted
+tiles keep the mode's colors. Tint and Gradient modes never show a pack -
+they only tint the game's shades. The `.vbcp` file alone is enough on other platforms: copy it
 next to the ROM on the Quest, or build it into the app - set `colorpacks.dir`
 in `android/local.properties` to a folder of `.vbcp` files (the desktop
 build's `roms` folder, say, with forward slashes:
@@ -329,17 +333,20 @@ shape stays the same. Games load some graphics only while they're shown (Wario
 Land streams Wario's poses, for example), so sheets and F7 complement each
 other: a sheet per area for most things, F7 for what only appears briefly.
 
-**Cost.** Tile tracking is only switched on for games that have a pack (or in
-the desktop debug build). The core tags each pixel with one 64-bit store
-while it draws (tile, pixel, palette, layer and map cell together), and the
-pack is painted from those tags with a few table reads per pixel - a tile's
-colors are looked up when its graphics change, not per pixel. Measured on one
-desktop core, against the core's ~1.9 ms per emulated frame: tracking adds
-~0.25 ms (fills only where the pack has some), and painting a full pack with
-map cells and fills ~0.2-0.35 ms per eye. Matching the right eye to the left
-adds ~1.5-4 ms (most where each eye's picture is drawn separately, which is
-matched by looks; a pixel's match is remembered from frame to frame).
-Output is otherwise identical.
+**Cost.** Tile tracking only runs while something uses it: Auto mode, a
+Multicolor palette with a pack, or (desktop) the capture tools and debug
+view. The core tags each pixel with one 64-bit store while it draws (tile,
+pixel, palette, layer and map cell together - a whole tile row at once where
+it can), and the pack is painted from those tags with a few table reads per
+pixel - a tile's colors are looked up when its graphics change, not per pixel.
+Measured on one desktop core (2.1 GHz Xeon, optimized build), against the
+core's own ~2-2.7 ms per emulated frame: tracking adds ~0.4-0.8 ms (most in
+games that draw many layers over each other, like Jack Bros.), and coloring
+both eyes takes ~0.8-1.9 ms (most where each eye's picture is drawn
+separately - Galactic Pinball, Mario Clash - which is matched by looks once
+per picture and remembered). The app logs both every 250 frames (logcat tag
+`VirtualBoyGo` on the headset: emulation, coloring, and how often it fell
+behind). Output is otherwise identical.
 
 **Formats.** `.tiles` version 2 (`VBGOTIL2`) adds the map cell of every
 pixel after the per-pixel records (version 1 files from older captures still

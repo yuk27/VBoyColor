@@ -42,6 +42,6 @@ games' content or Juan's work); they live on Juan's PC under `out\`.
   lower is closer).
 - `timing.py` - milliseconds per emulated frame for coloring both eyes
   (colorize + paint, as the app's UploadFrame - with the app's frame layout,
-  1024 pixels a row; the app logs the same on the headset every 250 frames -
-  logcat tag VirtualBoyGo). `VBP_SKEW=bytes` shifts the colored buffer
+  1024 pixels a row; the app logs the same, with the emulation's time, on the
+  headset every 250 frames - logcat tag VirtualBoyGo). `VBP_SKEW=bytes` shifts the colored buffer
   against the core's, to see whether their addresses' alignment matters.
