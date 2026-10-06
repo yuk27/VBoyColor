@@ -12,10 +12,15 @@ in a window, no headset needed.
 > of Nintendo. No games are included - use only ROMs you made from cartridges
 > you own.
 
-|   |   |
-|---|---|
-| ![](images/0.png) | ![](images/1.png) |
-| ![](images/2.png) | ![](images/3.png) |
+*Left: the original. Right: VBoy Color (Auto mode with the game's color
+pack).*
+
+![Galactic Pinball](images/galactic-pinball.png)
+![Mario Clash](images/mario-clash.png)
+![Wario Land](images/wario-land.png)
+![Teleroboxer](images/teleroboxer.png)
+![Jack Bros.](images/jack-bros.png)
+![Mario's Tennis](images/marios-tennis.png)
 
 ## Features
 
