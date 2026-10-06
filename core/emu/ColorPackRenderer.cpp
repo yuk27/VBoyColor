@@ -689,11 +689,16 @@ ColorPackRenderer::Run ColorPackRenderer::SetUpRun(uint64_t t, unsigned eye, int
             const int only = EyeOnly(t);
             if (!eye && only == 1)
                 c.leftPairSlot[chr] |= 1u << m_spritePairOf[world], run.leftPicture = static_cast<uint8_t>(m_spritePairOf[world] + 1);
-            else if (eye && only == 2 && !SharedWithLeftPicture(chr, slot.hash, m_spritePairOf[world]))
+            else if (eye && only == 2)
             {
-                run.ownPair = m_spritePairOf[world];
-                run.rightPainted = slot.rightPainted;
-                m_pairs[run.ownPair].wantedAt = m_frame;
+                if (!SharedWithLeftPicture(chr, slot.hash, m_spritePairOf[world]))
+                {
+                    run.ownPair = m_spritePairOf[world];
+                    run.rightPainted = slot.rightPainted;
+                    m_pairs[run.ownPair].wantedAt = m_frame;
+                }
+                else
+                    run.copyPair = m_spritePairOf[world];
             }
         }
         if (c.pairs && !sprite)
@@ -716,22 +721,30 @@ ColorPackRenderer::Run ColorPackRenderer::SetUpRun(uint64_t t, unsigned eye, int
                     run.ownPair = p;
                     m_pairs[p].wantedAt = m_frame;
                 }
-                else if (slot.cellColored && VBGO_TAG_HAS_CELL(t))
+                else
                 {
+                    run.copyPair = p;
                     // (a tile the left picture draws too goes by the left picture's cells, never
                     // its own cell's colors: right-eye paintings only paint the right picture's
                     // own tiles, so those are some other screen's that used this map cell -
                     // Galactic Pinball's tables share their maps' memory)
-                    m_pairs[p].wantedAt = m_frame;
-                    run.cell = MappedCell(p, t, static_cast<int>(x), static_cast<int>(y), slot.hash);
+                    if (slot.cellColored && VBGO_TAG_HAS_CELL(t))
+                        run.cell = MappedCell(p, t, static_cast<int>(x), static_cast<int>(y), slot.hash);
                 }
             }
         }
     }
     if (!run.tile)
         run.tile = &kNoTile;
-    if (run.ownPair >= 0 && m_pairs[run.ownPair].estimated)
-        run.blockDisparity = m_pairs[run.ownPair].blockDisparity.data();
+    const int pairOf = run.ownPair >= 0 ? run.ownPair : run.copyPair;
+    if (pairOf >= 0 && m_pairs[pairOf].estimated)
+    {
+        run.blockDisparity = m_pairs[pairOf].blockDisparity.data();
+        run.blockExact = m_pairs[pairOf].blockExact.data();
+        m_pairs[pairOf].wantedAt = m_frame;
+    }
+    else
+        run.copyPair = -1;
     run.extra = run.leftPicture || run.ownPair >= 0 || run.record || run.slow;
     return run;
 }
@@ -1014,6 +1027,27 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
                                         markerLayers[cell] = static_cast<uint8_t>(m_worlds[VBGO_TAG_WORLD(t)].colors);
                                 }
                             }
+                        }
+                    }
+                    // 0. A tile its left picture draws too, where the pair's pictures are the same
+                    // drawing shifted: the very pixel the left eye shows there (Mario Clash's
+                    // stage: the right picture's tiles can be other tiles of the same look, or
+                    // ones the left picture uses elsewhere in other colors).
+                    if (run.copyPair >= 0 && pixel && shade)
+                    {
+                        if (static_cast<int>(y >> 3) != run.copyBand)
+                        {
+                            // (per 8 rows: the block's shift, if it's the left drawing shifted and on screen)
+                            run.copyBand = static_cast<int>(y >> 3);
+                            const int block = run.copyBand * kBlocksX + static_cast<int>(x >> 3);
+                            const int lx = static_cast<int>(x) + run.blockDisparity[block];
+                            run.copyDx = run.blockExact[block] && lx >= 0 && lx < VBGO_TT_WIDTH ? lx - static_cast<int>(x) : kNoDisparity;
+                        }
+                        if (run.copyDx != kNoDisparity &&
+                            m_leftPicture[MapAt(static_cast<int>(x) + run.copyDx, static_cast<int>(y))] == ((run.copyPair + 1) | (shade << 5)))
+                        {
+                            std::memcpy(&frame[i], &frame[(static_cast<size_t>(y) * fbWidth + eyeOffset[0] + x + run.copyDx) * 4], 3);
+                            continue;
                         }
                     }
                     // 1. The map cell's own colors for this tile (and fills).
@@ -1389,6 +1423,7 @@ void ColorPackRenderer::EstimatePair(Pair &pair, const uint64_t *leftBits, const
             }
         }
     }
+    pair.blockExact = exact;
     pair.blockDisparity.assign(blocks.size(), static_cast<int16_t>(kNoDisparity));
     for (int by = 0; by < kBands; ++by)
         for (int bx = 0; bx < kBlocksX; ++bx)

@@ -168,6 +168,7 @@ private:
         uint32_t estimatedAt = 0, wantedAt = 0; // (frames: last estimated, last needed)
         std::array<int16_t, kBands> disparity{}; // right x -> left x, per band
         std::vector<int16_t> blockDisparity;     // the same per 8x8 block of the right picture
+        std::vector<uint8_t> blockExact;         // per block: 1 where nearly all its pixels line up (the left drawing, shifted)
         std::vector<Block> blocks; // per 8x8 block of the right eye: its region colors this frame (see RegionColor)
     };
     std::array<Pair, kMaxPairs> m_pairs{};
@@ -237,13 +238,16 @@ private:
         const TileColorPack::Tile *tile = nullptr;     // the tile's colors (palette, layer, context or its own) - never null
         const AutoColors::Ramp *ramp = nullptr;        // automatic colors, if on
         int ownPair = -1;                              // a pair's right picture's own tile: region colors
-        const int16_t *blockDisparity = nullptr;       // (own tile: its pair's per 8x8 block, if estimated)
+        int copyPair = -1;                             // a pair's right picture, a tile its left picture draws too
+        const int16_t *blockDisparity = nullptr;       // (own or copy: the pair's per 8x8 block, if estimated)
+        const uint8_t *blockExact = nullptr;           // (and whether the block is the left drawing shifted)
         uint8_t leftPicture = 0;                       // a pair's left picture: that pair + 1
         uint64_t rightPainted = 0;                     // (own tile: its pixels painted in right-eye captures)
         bool record = false;                           // (a left picture's tile colored per map cell: remember where)
         bool slow = false;                             // context, ambiguous or a marker: per 8 rows (see Paint)
         bool extra = false;                            // any of the four above: more to do per pixel than color it
         int band = -1;                                 // (slow: the row of grid cells its markers and tile are for)
+        int copyBand = -1, copyDx = 0;                 // (copy: the row of blocks, and its shift there or kNoDisparity)
     };
     struct CachedRun
     {

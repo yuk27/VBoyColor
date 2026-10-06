@@ -8,6 +8,11 @@ sprite: the same OBJ and tile pixel), nearest on the same row within 64
 pixels. Those must be identical: that's the "same point, same color" rule,
 and it should be 0.00%.
 
+Per-eye content, judged from the pictures alone (per_eye): every right pixel
+of a pair's right picture or a right-only sprite, against the left pixel where
+the left eye's per-eye content best matches the shades around it - the same
+color there? (Not 0: the two pictures are often different drawings.)
+
 Per-eye pairs (a left-only layer next to a right-only one, as the renderer
 classifies them): a right-picture pixel of a tile the left picture also uses,
 at the spot nearest to where its band's disparity puts it that the left
@@ -22,8 +27,59 @@ import collections
 import random
 import sys
 
+import ctypes as C
+
 import numpy as np
-from vbp import VB, tag_fields
+from vbp import VB, lib, tag_fields
+
+lib.VIP_Read16.restype = C.c_uint16
+lib.VIP_Read16.argtypes = [C.c_int32, C.c_uint32]
+
+
+def per_eye_truth(vb, F, shade, off, left, right, reach=64, win=(7, 13)):
+    """Per-eye content (pairs' right pictures, right-only sprites): for every right pixel, where the left eye's
+    per-eye content best matches the shades around it (a 13x7 window, any shift within reach - found from the
+    two pictures alone, not from the renderer) - and whether it shows the same color as the left pixel there
+    (when that pixel has the same shade and the window lines up well). Returns (counted, differing)."""
+    info, _ = vb.world_info()
+    flags = np.array([lib.VIP_Read16(0, 0x3E000 + k * 8 + 2) & 0xC000 for k in range(1024)])
+    masks, shades = [], []
+    for e in (0, 1):
+        f = F[e]
+        one_eye_world = ((info[:, 0] & 3) == (1 << e)) & (info[:, 1] != 3)
+        m = f["drawn"] & (f["pixel"] > 0) & ((~f["obj"] & one_eye_world[f["world"]]) |
+                                              (f["obj"] & (flags[f["obj_no"]] == (0x8000 if e == 0 else 0x4000))))
+        sh = shade[:, off * e:off * e + 384].astype(np.int8)
+        masks.append(m & (sh > 0))
+        shades.append(np.where(masks[-1], sh, 0))
+    if not masks[1].any():
+        return 0, 0
+    Ls, Rs = shades
+    lit = masks[1].astype(np.int32)
+    hy, hx = win[0] // 2, win[1] // 2
+
+    def box(a):
+        c = np.pad(a, ((hy + 1, hy), (hx + 1, hx))).cumsum(0).cumsum(1)
+        return c[win[0]:, win[1]:] - c[:-win[0], win[1]:] - c[win[0]:, :-win[1]] + c[:-win[0], :-win[1]]
+
+    best = np.full(Rs.shape, -1, np.int32)
+    bestd = np.zeros(Rs.shape, np.int32)
+    for d in sorted(range(-reach, reach + 1), key=abs):  # (ties: the smaller shift)
+        sl = np.zeros_like(Ls)
+        if d >= 0:
+            sl[:, :384 - d] = Ls[:, d:]
+        else:
+            sl[:, -d:] = Ls[:, :384 + d]
+        score = box(((Rs > 0) & (sl == Rs)).astype(np.int32))
+        better = score > best
+        best[better], bestd[better] = score[better], d
+    ys, xs = np.nonzero(masks[1])
+    lx = xs + bestd[ys, xs]
+    ok = (lx >= 0) & (lx < 384)
+    ys, xs, lx = ys[ok], xs[ok], lx[ok]
+    ok = (Ls[ys, lx] == Rs[ys, xs]) & (best[ys, xs] * 10 >= box(lit)[ys, xs] * 6)
+    ys, xs, lx = ys[ok], xs[ok], lx[ok]
+    return len(xs), int((left[ys, lx] != right[ys, xs]).any(1).sum())
 
 
 def measure(vb, left, right):
@@ -65,6 +121,7 @@ def measure(vb, left, right):
                 continue
             st[kind] += 1
             st[kind + "_differ"] += bool((left[y, xl] != right[y, x]).any())
+    st["per_eye"], st["per_eye_differ"] = per_eye_truth(vb, F, shade, off, left, right)
     return st
 
 

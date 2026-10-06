@@ -36,6 +36,10 @@ games' content or Juan's work); they live on Juan's PC under `out\`.
   eyes draw, sprites), is the same point - layer, map cell and tile pixel, or
   OBJ and tile pixel - the same color in the left eye? (0.00% expected.) Per-eye
   pairs apart: their shared tiles, and how much is the right picture's own.
+  And per-eye content judged from the pictures alone: each right pixel against
+  the left pixel where the left eye's per-eye content best matches the shades
+  around it (not 0 - the two pictures are often different drawings - but
+  lower is closer).
 - `timing.py` - milliseconds per emulated frame for coloring both eyes
   (colorize + paint, as the app's UploadFrame - with the app's frame layout,
   1024 pixels a row; the app logs the same on the headset every 250 frames -
