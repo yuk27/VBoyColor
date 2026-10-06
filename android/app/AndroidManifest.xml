@@ -25,6 +25,7 @@
 
     <application
             android:allowBackup="false"
+            android:icon="@mipmap/ic_launcher"
             android:label="VBoy Color">
 
         <meta-data android:name="com.oculus.supportedDevices" android:value="all" />

@@ -14,6 +14,7 @@
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
+#include <stb_image.h> // (implementation in VulkanRenderer.cpp)
 
 #include <algorithm>
 #include <cctype>
@@ -294,6 +295,18 @@ int main(int argc, char **argv)
         return 1;
     }
     glfwSetDropCallback(window, OnDrop);
+#if !defined(_WIN32) // (Windows: the exe's GLFW_ICON resource)
+    {
+        const std::vector<uint8_t> png = platform.LoadAssetBytes("icon.png");
+        int w = 0, h = 0, channels = 0;
+        if (stbi_uc *pixels = png.empty() ? nullptr : stbi_load_from_memory(png.data(), static_cast<int>(png.size()), &w, &h, &channels, 4))
+        {
+            const GLFWimage icon{w, h, pixels};
+            glfwSetWindowIcon(window, 1, &icon);
+            stbi_image_free(pixels);
+        }
+    }
+#endif
 
     VulkanRenderer renderer;
     UiRenderer uiRenderer;

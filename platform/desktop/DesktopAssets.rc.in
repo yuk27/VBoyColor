@@ -5,6 +5,9 @@
 // LockResource in DesktopPlatform::LoadAssetBytes. Configured from
 // DesktopAssets.rc.in (see CMakeLists.txt) so the paths below are absolute,
 // independent of whatever working directory rc.exe runs from.
+// The app icon: the exe's in Explorer (the first icon resource) and the
+// window's (GLFW looks for one named GLFW_ICON). From tools/make_icon.py.
+GLFW_ICON           ICON   "@CMAKE_SOURCE_DIR@/platform/desktop/vboycolor.ico"
 FONT_AUDIOWIDE      RCDATA "@VBGO_ASSETS_DIR@/runtime/fonts/Audiowide-Regular.ttf"
 FONT_ROBOTO_REGULAR RCDATA "@VBGO_ASSETS_DIR@/runtime/fonts/Roboto-Regular.ttf"
 FONT_ROBOTO_BOLD    RCDATA "@VBGO_ASSETS_DIR@/runtime/fonts/Roboto-Bold.ttf"

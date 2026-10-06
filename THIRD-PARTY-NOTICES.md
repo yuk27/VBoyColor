@@ -10,7 +10,8 @@ Full license texts are in `licenses/` unless noted.
 [github.com/CidVonHighwind/VirtualBoyGo](https://github.com/CidVonHighwind/VirtualBoyGo).
 VBoy Color started as a fork of its 2026 OpenXR + Vulkan rework: the VR app,
 renderer, menu, save states, button mapping and the menu icons
-(`assets/icons/`) come from there. GPL-3.0 (`LICENSE`).
+(`assets/icons/`) come from there. GPL-3.0 (`LICENSE`). The app icon
+(`tools/make_icon.py`) is VBoy Color's own.
 
 ## Compiled into the app
 

@@ -109,7 +109,7 @@ jobs:
           mkdir -p "$dir/roms"
           cp build-pc/VBoyColor "$dir/"
           strip "$dir/VBoyColor"
-          cp -r build-pc/fonts build-pc/icons "$dir/"
+          cp -r build-pc/fonts build-pc/icons build-pc/icon.png "$dir/"
           cp assets/PlaceRomsHere.txt "$dir/roms/"
           cp -r README.md LICENSE THIRD-PARTY-NOTICES.md licenses "$dir/"
           tar czf "$dir.tar.gz" "$dir"
