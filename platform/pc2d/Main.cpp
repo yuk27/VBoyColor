@@ -204,7 +204,7 @@ namespace
 
     // Loads a ROM from anywhere (dropped on the window, or named on the
     // command line - "Open with"); its saves go to the roms folder as usual.
-    bool LoadRomFromPath(Emulator &emulator, AppMenu &appMenu, const std::string &utf8Path)
+    bool LoadRomFromPath(Emulator &emulator, AppMenu &appMenu, AppSettings &settings, Platform &platform, const std::string &utf8Path)
     {
         try
         {
@@ -218,6 +218,7 @@ namespace
                 std::fprintf(stderr, "VBoy Color: couldn't load %s\n", utf8Path.c_str());
                 return false;
             }
+            settings.ApplyGameColors(platform, emulator.RomName()); // this game's colors
             appMenu.Hide();
             return true;
         }
@@ -411,9 +412,9 @@ int main(int argc, char **argv)
         if (!startRom.empty())
         {
 #if defined(_WIN32)
-            LoadRomFromPath(emulator, appMenu, std::filesystem::path(startRom).u8string());
+            LoadRomFromPath(emulator, appMenu, settings, platform, std::filesystem::path(startRom).u8string());
 #else
-            LoadRomFromPath(emulator, appMenu, startRom);
+            LoadRomFromPath(emulator, appMenu, settings, platform, startRom);
 #endif
         }
 
@@ -470,7 +471,7 @@ int main(int argc, char **argv)
 
             if (!g_droppedRom.empty())
             {
-                LoadRomFromPath(emulator, appMenu, g_droppedRom);
+                LoadRomFromPath(emulator, appMenu, settings, platform, g_droppedRom);
                 g_droppedRom.clear();
             }
 

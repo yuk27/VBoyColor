@@ -229,6 +229,10 @@ public:
     // one-line summary.
     std::string ReloadColorPack();
     bool HasColorPack() const { return !m_colorPack.Empty(); }
+    // The loaded game's name (its ROM file's, without the extension) - ""
+    // before one loads. Save states, battery saves and per-game colors are
+    // stored under it.
+    const std::string &RomName() const { return m_romBaseName; }
     // Painted tiles are drawn while a Multicolor palette is active (the
     // palette then colors everything the pack doesn't cover); this switches
     // the pack off/on for comparison. On by default.

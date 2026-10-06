@@ -43,6 +43,11 @@ public:
     // save preview here.
     virtual void ResetSelection() { m_menu.ResetSelection(); }
 
+    // Called whenever this page is about to show (navigated to, or the menu
+    // reopening on it) - for pages that show settings something else may
+    // have changed meanwhile.
+    virtual void OnShow() {}
+
     // Whether this page has anywhere for B (or A, if swapped) to go - drives
     // the bottom-bar "Back" hint (see AppMenu::RenderContent). MainPage has
     // no BackPress (it's the root), every other page navigates back to it.

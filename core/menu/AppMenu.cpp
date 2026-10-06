@@ -288,6 +288,7 @@ void AppMenu::StartTransition(MenuPage *target, int dir)
     m_nextPage = target;
     m_transitionDir = dir;
     m_transitionState = 1.0f;
+    target->OnShow();
 }
 
 // -----------------------------------------------------------------------
@@ -320,6 +321,7 @@ void AppMenu::Update(uint32_t buttonStates[3], uint32_t lastButtonStates[3], flo
         m_currentPage = m_pendingPage;
         m_pendingPage = nullptr;
         m_currentPage->ResetSelection();
+        m_currentPage->OnShow();
     }
 
     if (!m_open)

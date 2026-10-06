@@ -6,6 +6,7 @@
 class MenuList;
 struct AppSettings;
 class Platform;
+class Emulator;
 
 // Settings: Button Mapping, Adjust Screen, and the VB screen colors - a
 // Color Mode (tint / gradient / multicolor), that mode's Color Palette
@@ -23,6 +24,7 @@ public:
     MenuPage *aboutPage = nullptr;
 
     void Init(UiRenderer &ui, const UiMenuResources &resources) override;
+    void OnShow() override;
 
 private:
     static constexpr float kColorStep = 0.05f; // matches FrontendGo's COLOR_STEP_SIZE
@@ -44,7 +46,8 @@ private:
     void ChangeColorMode(int delta);
     void ChangePalette(int delta);
     void ChangeColorChannel(float AppSettings::*channel, float delta);
-    void RefreshLabels();
+    // save: also autosave settings.dat and the game's colors (a change).
+    void RefreshLabels(bool save = true);
     void RequestChangeRomsFolder();
 
     std::shared_ptr<MenuList::Entry> m_colorModeEntry;
@@ -58,4 +61,5 @@ private:
     int m_lastShadePalette = 0;
     AppSettings *m_settings = nullptr;
     Platform *m_platform = nullptr;
+    Emulator *m_emulator = nullptr;
 };

@@ -83,9 +83,20 @@ public:
         return (m_suppressedMenuButtons[ButtonMapper::DeviceRightTouch] & ButtonMapper::ButtonMapping[emuButton]) != 0;
     }
     bool IsVisible() const { return m_visibility > 0.0f; }
-    void Show() { m_open = true; }
+    void Show()
+    {
+        if (!m_open && m_currentPage)
+            m_currentPage->OnShow();
+        m_open = true;
+    }
     void Hide() { m_open = false; }
-    void ToggleOpen() { m_open = !m_open; }
+    void ToggleOpen()
+    {
+        if (m_open)
+            m_open = false;
+        else
+            Show();
+    }
 
     // 0 (fully closed) .. 1 (fully open) - drives the panel's fade/scale.
     // Composite callers multiply this into the panel's draw alpha.

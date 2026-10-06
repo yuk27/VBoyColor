@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdint>
+#include <string>
 
 class Platform;
 
@@ -106,6 +107,16 @@ struct AppSettings
     // Replaces every field; returns false (self left untouched) if the file
     // doesn't exist or its version doesn't match kVersion.
     bool Load(Platform &platform);
+
+    // Colors per game: the color settings (Color Mode, its palette, the
+    // tint) are remembered for each game - SaveGameColors whenever they
+    // change while it's loaded ("<game>.colors" in the States folder) - and
+    // ApplyGameColors puts them back when it loads. A game with none saved
+    // yet gets its suggested ones (a few games look best in a particular
+    // palette - see Settings.cpp), else Auto. The tint's R/G/B carry over
+    // from game to game unless a game has its own.
+    void SaveGameColors(Platform &platform, const std::string &game) const;
+    void ApplyGameColors(Platform &platform, const std::string &game);
 };
 
 // Preset VB screen colors. Index 0 is the authentic red Virtual Boy display

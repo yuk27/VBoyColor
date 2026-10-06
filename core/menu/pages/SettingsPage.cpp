@@ -1,5 +1,6 @@
 #include "menu/pages/SettingsPage.h"
 #include "emu/AutoColors.h"
+#include "emu/Emulator.h"
 #include "io/Platform.h"
 #include "io/Settings.h"
 #include "menu/MenuPage.h"
@@ -107,6 +108,7 @@ void SettingsPage::Init(UiRenderer &ui, const UiMenuResources &resources)
 {
     m_settings = resources.settings;
     m_platform = resources.platform;
+    m_emulator = resources.emulator;
 
     auto list = std::make_shared<MenuList>(ui, resources.menuFont, kMenuContentX, kMenuContentY, kListWidth, kListHeight,
                                            kMenuItemSize, resources.icons);
@@ -269,7 +271,12 @@ void SettingsPage::RequestChangeRomsFolder()
         m_changeRomsFolderEntry->SetText("Folder cleared - restart the app!");
 }
 
-void SettingsPage::RefreshLabels()
+void SettingsPage::OnShow()
+{
+    RefreshLabels(false); // (a game's own colors may have loaded since)
+}
+
+void SettingsPage::RefreshLabels(bool save)
 {
     if (!m_settings)
         return;
@@ -292,5 +299,10 @@ void SettingsPage::RefreshLabels()
     m_colorGEntry->Visible = tintMode;
     m_colorBEntry->Visible = tintMode;
 
+    if (!save)
+        return;
     m_settings->Save(*m_platform); // always-on autosave - no explicit save action anywhere in the menu anymore
+    // ...and remembered for the game being played (see AppSettings::SaveGameColors).
+    if (m_emulator)
+        m_settings->SaveGameColors(*m_platform, m_emulator->RomName());
 }

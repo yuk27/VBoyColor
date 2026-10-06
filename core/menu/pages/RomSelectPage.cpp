@@ -1,6 +1,7 @@
 #include "menu/pages/RomSelectPage.h"
 #include "emu/Emulator.h"
 #include "io/Platform.h"
+#include "io/Settings.h"
 #include "menu/AppMenu.h"
 #include "menu/MenuPage.h"
 #include "menu/pages/AppMenuLayout.h"
@@ -35,13 +36,19 @@ void RomSelectPage::Init(UiRenderer &ui, const UiMenuResources &resources)
         {
             Emulator *emulator = resources.emulator;
             AppMenu *appMenu = resources.appMenu;
+            AppSettings *settings = resources.settings;
             for (const RomEntry &rom : roms)
             {
                 const std::string romPath = rom.fullPath;
                 const std::string romName = rom.name;
-                list->AddEntry(rom.name, [this, emulator, appMenu, romPath, romName](MenuItem *) {
-                    if (emulator && emulator->LoadRom(romPath, romName) && appMenu)
-                        appMenu->Hide(); // go straight to the game instead of back to the menu
+                list->AddEntry(rom.name, [this, emulator, appMenu, settings, platform, romPath, romName](MenuItem *) {
+                    if (emulator && emulator->LoadRom(romPath, romName))
+                    {
+                        if (settings)
+                            settings->ApplyGameColors(*platform, emulator->RomName()); // this game's colors
+                        if (appMenu)
+                            appMenu->Hide(); // go straight to the game instead of back to the menu
+                    }
                     if (mainPage)
                         Navigate(mainPage, -1);
                 }, nullptr, nullptr, UiIconId::VbCartridge);
