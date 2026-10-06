@@ -81,6 +81,7 @@ void ColorPackRenderer::SetPack(const TileColorPack *pack)
     m_contextRange.clear();
     for (Slot &slot : m_slots)
         slot = Slot{};
+    m_slotLayer.fill(SlotLayer{});
     for (auto &grid : m_markerGrid)
         grid.clear();
     for (auto &grid : m_markerLayer)
@@ -206,6 +207,7 @@ void ColorPackRenderer::ResolveSlots(const uint32_t *hashes)
             slot.palette[p] = variant ? variant : slot.base;
         }
         slot.layered = !m_layered.empty() && m_layered.count(slot.hash) != 0;
+        m_slotLayer[c].world = 0xFF;
         slot.ambiguous = m_pack->IsAmbiguous(slot.hash);
         slot.cellColored = !m_cellHashes.empty() && m_cellHashes.count(slot.hash) != 0;
         slot.rightPainted = m_pack->RightEyePainted(slot.hash);
@@ -373,12 +375,19 @@ int ColorPackRenderer::LeftX(const uint64_t tag, int x, unsigned eye, unsigned y
     return x - m_rightShift[world];
 }
 
-uint64_t ColorPackRenderer::Near(int x, int y, unsigned world) const
+uint64_t ColorPackRenderer::Near(int x, int y, unsigned world)
 {
     // Markers drawn within reach over the last two frames (of a layer-bound
-    // group, only ones drawn on this pixel's layer) - in left-eye terms.
-    // (Sprites' groups: m_nearSprites.)
+    // group, only ones drawn on this pixel's layer) - in left-eye terms;
+    // kept per grid cell and layer for the frame. (Sprites' groups:
+    // m_nearSprites.)
     const int cx = x >> 3, cy = y >> 3;
+    std::vector<NearCell> &cache = m_nearCache[world & 31];
+    if (cache.empty())
+        cache.resize(kGridW * kGridH);
+    NearCell &known = cache[cy * kGridW + cx];
+    if (known.frame == m_frame)
+        return known.bits;
     uint64_t bits = 0;
     for (unsigned k = 1; k <= 2; ++k)
     {
@@ -396,6 +405,7 @@ uint64_t ColorPackRenderer::Near(int x, int y, unsigned world) const
                     bits |= (here & ~m_layerBound) | (layers[i] == world ? here & m_layerBound : 0);
             }
     }
+    known = {m_frame, bits};
     return bits;
 }
 
@@ -420,6 +430,18 @@ bool ColorPackRenderer::SharedWithLeftPicture(unsigned chr, uint32_t hash)
     }
     known = found ? yes : no;
     return found;
+}
+
+const TileColorPack::Tile *ColorPackRenderer::LayerTile(unsigned chr, unsigned world)
+{
+    // (a tile is mostly drawn on one layer: the last one's colors are kept)
+    SlotLayer &layer = m_slotLayer[chr];
+    if (layer.world != world)
+    {
+        layer.world = static_cast<uint8_t>(world);
+        layer.tile = m_pack->FindLayer(m_slots[chr].hash, world);
+    }
+    return layer.tile;
 }
 
 const TileColorPack::CellTile *ColorPackRenderer::FindCell(unsigned cell, unsigned palette, uint32_t hash) const
@@ -594,7 +616,7 @@ ColorPackRenderer::Run ColorPackRenderer::SetUpRun(uint64_t t, unsigned eye, int
         {
             run.tile = slot.palette[palette];
             if (slot.layered && run.tile == slot.base)
-                if (const TileColorPack::Tile *layer = m_pack->FindLayer(slot.hash, colors))
+                if (const TileColorPack::Tile *layer = LayerTile(chr, colors))
                     run.tile = layer;
         }
         if (c.pairs && sprite && m_spritePairOf[world] >= 0)
@@ -766,7 +788,7 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
         {
             tile = slot.palette[palette];
             if (slot.layered && tile == slot.base)
-                if (const TileColorPack::Tile *layer = m_pack->FindLayer(slot.hash, world))
+                if (const TileColorPack::Tile *layer = LayerTile(chr, world))
                     tile = layer;
         }
         return tile ? tile : &kNoTile;
@@ -1269,28 +1291,28 @@ void ColorPackRenderer::PaintAmbiguous(uint8_t *frame, uint32_t fbWidth, uint32_
     // Only what both eyes show the same way around it counts: on a layer,
     // its own layer; among sprites, sprites at the same depth (parallax) -
     // their pixels sit the same way around it in both eyes.
-    auto tagAt = [&](int x, int y, uint64_t &t) {
-        if (x < 0 || x >= VBGO_TT_WIDTH || y < 0 || y >= VBGO_TT_HEIGHT || !view.columns[x])
-            return false;
-        t = view.columns[x][y];
-        return (t >> 48) == view.stamp;
-    };
-    auto depth = [&](uint64_t t) { return m_oam && VBGO_TAG_IS_OBJ(t) ? vbgo_obj_parallax(m_oam, VBGO_TAG_OBJ_NO(t)) : 0; };
+    // (a neighbour's tag must match in these: drawn this frame, the pixel's value, its layer, sprite or not)
+    constexpr uint64_t kSame = (0xFFFFull << 48) | (31ull << 22) | (3ull << 20) | (1ull << 19);
     static constexpr int kDirections[4][2] = {{0, -1}, {0, 1}, {-1, 0}, {1, 0}};
     for (const auto &p : m_ambiguousPixels)
     {
         const int x = p.first, y = p.second;
-        uint64_t t = 0, n = 0;
-        if (!tagAt(x, y, t))
+        const uint64_t t = view.columns[x] ? view.columns[x][y] : 0;
+        if ((t >> 48) != view.stamp)
             continue;
-        const int jp = depth(t);
+        const uint64_t same = t & kSame;
+        const bool sprite = m_oam && VBGO_TAG_IS_OBJ(t);
+        const int jp = sprite ? vbgo_obj_parallax(m_oam, VBGO_TAG_OBJ_NO(t)) : 0;
         int from = -1;
         for (int d = 1; d <= 8 && from < 0; ++d)
             for (const auto &dir : kDirections)
             {
                 const int nx = x + dir[0] * d, ny = y + dir[1] * d;
-                if (tagAt(nx, ny, n) && VBGO_TAG_PIXEL(n) == VBGO_TAG_PIXEL(t) && VBGO_TAG_WORLD(n) == VBGO_TAG_WORLD(t) &&
-                    VBGO_TAG_IS_OBJ(n) == VBGO_TAG_IS_OBJ(t) && !m_slots[VBGO_TAG_CHAR(n)].ambiguous && depth(n) == jp)
+                if (nx < 0 || nx >= VBGO_TT_WIDTH || ny < 0 || ny >= VBGO_TT_HEIGHT || !view.columns[nx])
+                    continue;
+                const uint64_t n = view.columns[nx][ny];
+                if ((n & kSame) == same && !m_slots[VBGO_TAG_CHAR(n)].ambiguous &&
+                    (!sprite || vbgo_obj_parallax(m_oam, VBGO_TAG_OBJ_NO(n)) == jp))
                 {
                     from = ny * static_cast<int>(fbWidth) + static_cast<int>(eyeOffset) + nx;
                     break;

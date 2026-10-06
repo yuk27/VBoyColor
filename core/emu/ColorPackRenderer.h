@@ -110,8 +110,15 @@ private:
         bool cellColored = false;                    // some map cell has colors of its own for it
         uint64_t rightPainted = 0;                   // its pixels painted in right-eye captures (right-eye sprites)
     };
+    struct SlotLayer // (a layered slot's last layer looked up, and its colors - see LayerTile)
+    {
+        uint8_t world = 0xFF;
+        const TileColorPack::Tile *tile = nullptr;
+    };
+    std::array<SlotLayer, 2048> m_slotLayer{};
 
     void ResolveSlots(const uint32_t *hashes);
+    const TileColorPack::Tile *LayerTile(unsigned chr, unsigned world); // the pack's colors for the slot's tile on that layer, or nullptr
     void SetFadeReference(unsigned level);
     void ClassifyWorlds(const uint16_t *worlds);
 
@@ -258,7 +265,13 @@ private:
     std::vector<uint8_t> m_markerLayer[3];
     uint64_t m_layerBound = 0;
     unsigned m_gridCurrent = 0;
-    uint64_t Near(int x, int y, unsigned world) const;
+    uint64_t Near(int x, int y, unsigned world);
+    struct NearCell
+    {
+        uint32_t frame = 0; // (when worked out)
+        uint64_t bits = 0;
+    };
+    std::array<std::vector<NearCell>, 32> m_nearCache; // (Near's, per layer and grid cell)
     std::vector<uint64_t> m_nearSprites; // per grid cell: sprites' groups with a marker within reach (last two frames)
 
     const TileColorPack *m_pack = nullptr;
