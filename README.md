@@ -40,9 +40,10 @@ pack).*
   only colors, no game graphics. A `.vbcp` file next to a ROM overrides the
   built-in one, and you can paint your own on PC: see
   [docs/COLOR_PACKS.md](docs/COLOR_PACKS.md).
-- **Colors per game** - each game remembers its own Color Mode and palette.
-  A few start with a suggested one (Wario Land: Gradient, Sunset); the rest
-  start in Auto.
+- **Colors per game** - every Virtual Boy game starts in the scheme that
+  suits it best (picked game by game: Red Alarm's wireframes in Arcade
+  blue, Golf's fairways green, Virtual Bowling's lanes in Sunset wood...),
+  and remembers yours once you change it.
 - **Real 3D on Quest** - each eye gets its own picture, as on the hardware,
   and both eyes always show the same colors.
 - **Save states** - several slots per game, with thumbnails in color.
