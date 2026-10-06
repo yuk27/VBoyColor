@@ -338,6 +338,16 @@ int ColorPackRenderer::PairDisparity(unsigned rightWorld, unsigned band) const
     return pair.estimated ? pair.disparity[band] : kNoDisparity;
 }
 
+int ColorPackRenderer::PairBlockDisparity(unsigned rightWorld, unsigned bx, unsigned by, bool sprites) const
+{
+    if (rightWorld >= 32 || bx >= static_cast<unsigned>(kBlocksX) || by >= static_cast<unsigned>(kBands))
+        return kNoDisparity;
+    const int p = sprites ? m_spritePairOf[rightWorld] : m_pairOfRight[rightWorld];
+    if (p < 0 || !m_pairs[p].estimated || m_pairs[p].blockDisparity.empty())
+        return kNoDisparity;
+    return m_pairs[p].blockDisparity[by * kBlocksX + bx];
+}
+
 int ColorPackRenderer::LeftX(const uint64_t tag, int x, unsigned eye, unsigned y) const
 {
     if (!eye)
@@ -451,7 +461,7 @@ bool ColorPackRenderer::RegionColor(int p, int x, int y, unsigned shade, const u
                                     uint32_t leftOffset, uint8_t *out)
 {
     // Where the pixel's 8x8 block lines up with the left picture (the
-    // block's disparity - see EstimatePair, worked out when the picture
+    // block's disparity - see EstimatePairs, worked out when the picture
     // changes, not every frame): the color of the nearest left-picture pixel
     // of the same shade - the very pixel it shows there if the block is the
     // left drawing shifted; on a picture drawn separately for each eye, the
@@ -677,6 +687,8 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
         if (pack)
             ResolveSlots(v.hashes);
         if (eye == 1 && pairs)
+            EstimatePairs(view, raw, fbWidth, eyeOffset);
+        if (eye == 1 && pairs)
         {
             // The tiles the left pictures drew (by contents: games keep a
             // tile in a slot per eye - Mario Clash's digits).
@@ -777,7 +789,7 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
                                 {
                                     run.ownPair = m_spritePairOf[world];
                                     run.rightPainted = slot.rightPainted;
-                                    EstimatePair(run.ownPair, view, raw, fbWidth, eyeOffset);
+                                    m_pairs[run.ownPair].wantedAt = m_frame;
                                 }
                             }
                             if (pairs && !sprite)
@@ -794,11 +806,11 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
                                     if (!SharedWithLeftPicture(chr, slot.hash))
                                     {
                                         run.ownPair = p;
-                                        EstimatePair(p, view, raw, fbWidth, eyeOffset);
+                                        m_pairs[p].wantedAt = m_frame;
                                     }
                                     else if (!run.cell && slot.cellColored && VBGO_TAG_HAS_CELL(t))
                                     {
-                                        EstimatePair(p, view, raw, fbWidth, eyeOffset);
+                                        m_pairs[p].wantedAt = m_frame;
                                         run.cell = MappedCell(p, t, static_cast<int>(x), static_cast<int>(y), slot.hash);
                                     }
                                 }
@@ -900,72 +912,132 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
     }
 }
 
-void ColorPackRenderer::EstimatePair(int p, const vbgo_tt_eye_view view[2], const uint8_t *raw, uint32_t fbWidth,
-                                     const uint32_t eyeOffset[2])
+namespace
 {
-    // Per 8-row band: the shift that lines up the most right-picture pixels
-    // with left-picture pixels of the same shade (within kMaxDisparity).
-    // Kept while the pair's registers stay put; while both worlds scroll
-    // together, refined around the last estimate every few frames; anything
-    // else searches again.
-    Pair &pair = m_pairs[p];
-    if (pair.checkedAt == m_frame)
-        return;
-    pair.checkedAt = m_frame;
+// Per byte of x, how many of its bits are set (0-8).
+inline uint64_t ByteCounts(uint64_t x)
+{
+    x = x - ((x >> 1) & 0x5555555555555555ull);
+    x = (x & 0x3333333333333333ull) + ((x >> 2) & 0x3333333333333333ull);
+    return (x + (x >> 4)) & 0x0F0F0F0F0F0F0F0Full;
+}
+} // namespace
+
+void ColorPackRenderer::EstimatePairs(const vbgo_tt_eye_view view[2], const uint8_t *raw, uint32_t fbWidth,
+                                      const uint32_t eyeOffset[2])
+{
+    // The pairs whose disparities are out of date (once a frame, before the
+    // right eye is painted): kept while a pair's registers stay put (64
+    // frames at most); while both its worlds scroll together, refined
+    // around the last estimate every few frames; anything else searches
+    // again. Only pairs that needed them lately (or never had any).
     const uint16_t *worlds = view[0].worlds ? view[0].worlds : view[1].worlds;
     if (!worlds)
         return;
-    std::array<uint16_t, 32> attributes;
-    std::copy(&worlds[pair.left * 16], &worlds[pair.left * 16] + 16, attributes.begin());
-    std::copy(&worlds[pair.right * 16], &worlds[pair.right * 16] + 16, attributes.begin() + 16);
-    const uint32_t age = m_frame - pair.estimatedAt;
-    if (pair.estimated && attributes == pair.attributes && age < 64)
+    std::array<int, kMaxPairs> todo{};
+    std::array<bool, kMaxPairs> local{};
+    int count = 0;
+    for (int p = 0; p < m_pairCount; ++p)
+    {
+        Pair &pair = m_pairs[p];
+        if (pair.estimated && m_frame - pair.wantedAt > 64)
+            continue;
+        std::array<uint16_t, 32> attributes;
+        std::copy(&worlds[pair.left * 16], &worlds[pair.left * 16] + 16, attributes.begin());
+        std::copy(&worlds[pair.right * 16], &worlds[pair.right * 16] + 16, attributes.begin() + 16);
+        const uint32_t age = m_frame - pair.estimatedAt;
+        if (pair.estimated && attributes == pair.attributes && age < 64)
+            continue;
+        bool scrolled = pair.estimated;
+        for (int f = 0; f < 16 && scrolled; ++f)
+            scrolled = f >= 1 && f <= 6 ? static_cast<uint16_t>(attributes[16 + f] - attributes[f]) ==
+                                              static_cast<uint16_t>(pair.attributes[16 + f] - pair.attributes[f])
+                                        : attributes[f] == pair.attributes[f] && attributes[16 + f] == pair.attributes[16 + f];
+        if (scrolled && age < 4)
+            continue;
+        pair.attributes = attributes;
+        local[count] = scrolled;
+        todo[count++] = p;
+    }
+    if (!count)
         return;
-    bool scrolled = pair.estimated;
-    for (int f = 0; f < 16 && scrolled; ++f)
-        scrolled = f >= 1 && f <= 6 ? static_cast<uint16_t>(attributes[16 + f] - attributes[f]) ==
-                                          static_cast<uint16_t>(pair.attributes[16 + f] - pair.attributes[f])
-                                    : attributes[f] == pair.attributes[f] && attributes[16 + f] == pair.attributes[16 + f];
-    if (scrolled && age < 4)
-        return;
-    pair.attributes = attributes;
-    // Both pictures' pixels, by row: per eye, per row, per shade 1-3, a guarded bit row.
+    // Both pictures of every one of them, in one pass: per pair, per eye,
+    // per row, per shade 1-3, a guarded bit row.
+    std::array<int8_t, 32> layerSlot[2], spriteSlot;
+    layerSlot[0].fill(-1), layerSlot[1].fill(-1), spriteSlot.fill(-1);
+    for (int k = 0; k < count; ++k)
+    {
+        const Pair &pair = m_pairs[todo[k]];
+        if (pair.sprites)
+            spriteSlot[pair.left] = static_cast<int8_t>(k);
+        else
+            layerSlot[0][pair.left] = layerSlot[1][pair.right] = static_cast<int8_t>(k);
+    }
     const size_t eyeRows = static_cast<size_t>(VBGO_TT_HEIGHT) * 3 * kGuardedRow;
-    m_estimateBits.assign(2 * eyeRows, 0);
+    m_estimateBits.assign(static_cast<size_t>(count) * 2 * eyeRows, 0);
     uint64_t *bits = m_estimateBits.data();
     for (unsigned eye = 0; eye < 2; ++eye)
-    {
         for (int x = 0; x < VBGO_TT_WIDTH; ++x)
         {
             const uint64_t *column = view[eye].columns[x];
             if (!column)
                 continue;
+            const uint8_t *shades = &raw[(static_cast<size_t>(eyeOffset[eye]) + x) * 4 + 3];
             for (int y = 0; y < VBGO_TT_HEIGHT; ++y)
             {
                 const uint64_t t = column[y];
-                if ((t >> 48) != view[eye].stamp || !VBGO_TAG_PIXEL(t) || !InPicture(pair, t, eye))
+                if ((t >> 48) != view[eye].stamp || !VBGO_TAG_PIXEL(t))
                     continue;
-                const unsigned shade = raw[(static_cast<size_t>(y) * fbWidth + eyeOffset[eye] + x) * 4 + 3] & 3;
+                int k;
+                if (VBGO_TAG_IS_OBJ(t))
+                {
+                    k = spriteSlot[VBGO_TAG_WORLD(t)];
+                    if (k >= 0 && EyeOnly(t) != (eye ? 2 : 1))
+                        continue;
+                }
+                else
+                    k = layerSlot[eye][VBGO_TAG_WORLD(t)];
+                if (k < 0)
+                    continue;
+                const unsigned shade = shades[static_cast<size_t>(y) * fbWidth * 4] & 3;
                 if (shade)
-                    bits[eye * eyeRows + (static_cast<size_t>(y) * 3 + shade - 1) * kGuardedRow + 1 + (x >> 6)] |= 1ull << (x & 63);
+                    bits[(static_cast<size_t>(k) * 2 + eye) * eyeRows + (static_cast<size_t>(y) * 3 + shade - 1) * kGuardedRow + 1 +
+                         (x >> 6)] |= 1ull << (x & 63);
             }
         }
-    }
-    const uint64_t *leftBits = bits, *rightBits = bits + eyeRows;
+    for (int k = 0; k < count; ++k)
+        EstimatePair(m_pairs[todo[k]], &bits[static_cast<size_t>(k) * 2 * eyeRows], &bits[(static_cast<size_t>(k) * 2 + 1) * eyeRows],
+                     local[k]);
+}
+
+void ColorPackRenderer::EstimatePair(Pair &pair, const uint64_t *leftBits, const uint64_t *rightBits, bool scrolled)
+{
+    // Per 8-row band: the shift that lines up the most right-picture pixels
+    // with left-picture pixels of the same shade (within kMaxDisparity) -
+    // coarse (every other shift and row) then fine around it, or near the
+    // last estimate if the pair only scrolled. Only the words of a row the
+    // right picture covers in that band count.
     std::array<int16_t, kBands> found;
     found.fill(kNoDisparity);
+    std::array<int8_t, kBands> wordFrom{}, wordTo{};
     for (int band = 0; band < kBands; ++band)
     {
-        int lit = 0;
+        int lit = 0, from = kRowWords, to = -1;
         for (int y = band * 8; y < band * 8 + 8; ++y)
             for (int s = 0; s < 3; ++s)
                 for (int w = 0; w < kRowWords; ++w)
-                    lit += CountSet(rightBits[(y * 3 + s) * kGuardedRow + 1 + w]);
+                    if (const uint64_t r = rightBits[(y * 3 + s) * kGuardedRow + 1 + w])
+                    {
+                        lit += CountSet(r);
+                        from = std::min(from, w);
+                        to = std::max(to, w);
+                    }
+        wordFrom[band] = static_cast<int8_t>(from);
+        wordTo[band] = static_cast<int8_t>(to);
         if (lit < 16)
             continue;
         const int previous = pair.estimated ? pair.disparity[band] : kNoDisparity;
         const int around = previous != kNoDisparity ? previous : 0;
-        // How many pixels line up at d (rows of the band, every step-th).
         auto same = [&](int d, int step) {
             int n = 0;
             for (int y = band * 8; y < band * 8 + 8; y += step)
@@ -973,15 +1045,15 @@ void ColorPackRenderer::EstimatePair(int p, const vbgo_tt_eye_view view[2], cons
                 {
                     const uint64_t *r = &rightBits[(y * 3 + s) * kGuardedRow];
                     const uint64_t *l = &leftBits[(y * 3 + s) * kGuardedRow];
-                    for (int w = 0; w < kRowWords; ++w)
+                    for (int w = from; w <= to; ++w)
                         n += CountSet(r[1 + w] & Shifted(l, w, d));
                 }
             return n;
         };
         // (ties: the one nearer the last estimate, else nearer 0)
-        auto search = [&](int from, int to, int stride, int step, int &bestD) {
+        auto search = [&](int lo, int hi, int stride, int step, int &bestD) {
             int best = -1;
-            for (int d = std::max(-kMaxDisparity, from); d <= std::min(kMaxDisparity, to); d += stride)
+            for (int d = std::max(-kMaxDisparity, lo); d <= std::min(kMaxDisparity, hi); d += stride)
             {
                 const int n = same(d, step);
                 if (n > best || (n == best && std::abs(d - around) < std::abs(bestD - around)))
@@ -991,10 +1063,9 @@ void ColorPackRenderer::EstimatePair(int p, const vbgo_tt_eye_view view[2], cons
         };
         int bestD = around, best;
         if (scrolled && previous != kNoDisparity)
-            best = search(previous - 4, previous + 4, 1, 1, bestD); // (scrolled: near the last one)
+            best = search(previous - 4, previous + 4, 1, 1, bestD);
         else
         {
-            // Coarse (every other shift, every other row), then fine around it.
             search(-kMaxDisparity, kMaxDisparity, 2, 2, bestD);
             const int coarse = bestD;
             best = search(coarse - 2, coarse + 2, 1, 1, bestD);
@@ -1020,65 +1091,82 @@ void ColorPackRenderer::EstimatePair(int p, const vbgo_tt_eye_view view[2], cons
                 }
         pair.disparity[band] = d;
     }
-    // Per 8x8 block of the right picture: the shift within reach of its
-    // band's that lines up the most of its pixels (a 16-pixel-wide window
-    // around it, its rows) - pictures have depth within a band (Wario
-    // Land's title: Wario's head before his plane's nose) - then each block
-    // the median of itself and its neighbours (no lone outliers).
+    // Per 8x8 block of the right picture: the shift within kBlockReach of
+    // its band's that lines up the most of its pixels in a 24-pixel-wide
+    // window around it (pictures have depth within a band - Wario Land's
+    // title: Wario's head before his plane's nose). All of a band's blocks
+    // at once: per shift, per 8 columns, how many line up (bytes of a word
+    // add up 8 columns at a time - at most 8 rows x 8 pixels, so no carry).
+    // Then each block the median of itself and its neighbours (no lone
+    // outliers), except blocks that are the left drawing shifted.
+    constexpr int kBlockReach = 8, kShifts = 2 * kBlockReach + 1;
     std::vector<int16_t> blocks(kBlocksX * kBands, static_cast<int16_t>(kNoDisparity));
     std::vector<uint8_t> exact(kBlocksX * kBands, 0);
     const bool keepBlocks = scrolled && pair.blockDisparity.size() == blocks.size();
     for (int by = 0; by < kBands; ++by)
     {
-        const int band = pair.disparity[by];
-        if (band == kNoDisparity)
+        const int band = pair.disparity[by], from = wordFrom[by], to = wordTo[by];
+        if (band == kNoDisparity || to < 0)
             continue;
+        uint8_t lit[kBlocksX] = {};
+        {
+            uint64_t sum[kRowWords] = {};
+            for (int y = by * 8; y < by * 8 + 8; ++y)
+                for (int s = 0; s < 3; ++s)
+                    for (int w = from; w <= to; ++w)
+                        sum[w] += ByteCounts(rightBits[(y * 3 + s) * kGuardedRow + 1 + w]);
+            for (int w = from; w <= to; ++w)
+                for (int j = 0; j < 8; ++j)
+                    lit[w * 8 + j] = static_cast<uint8_t>(sum[w] >> (8 * j));
+        }
+        uint8_t score[kShifts][kBlocksX] = {};
+        const int dFrom = std::max(-kMaxDisparity, band - kBlockReach), dTo = std::min(kMaxDisparity, band + kBlockReach);
+        for (int d = dFrom; d <= dTo; ++d)
+        {
+            uint64_t sum[kRowWords] = {};
+            for (int y = by * 8; y < by * 8 + 8; ++y)
+                for (int s = 0; s < 3; ++s)
+                {
+                    const uint64_t *r = &rightBits[(y * 3 + s) * kGuardedRow];
+                    const uint64_t *l = &leftBits[(y * 3 + s) * kGuardedRow];
+                    for (int w = from; w <= to; ++w)
+                        sum[w] += ByteCounts(r[1 + w] & Shifted(l, w, d));
+                }
+            for (int w = from; w <= to; ++w)
+                for (int j = 0; j < 8; ++j)
+                    score[d - band + kBlockReach][w * 8 + j] = static_cast<uint8_t>(sum[w] >> (8 * j));
+        }
         for (int bx = 0; bx < kBlocksX; ++bx)
         {
-            const int w = bx >> 3, shift = (bx & 7) * 8;
-            int lit = 0;
-            for (int y = by * 8; y < by * 8 + 8; ++y)
-                for (int s = 0; s < 3; ++s)
-                    lit += CountSet((rightBits[(y * 3 + s) * kGuardedRow + 1 + w] >> shift) & 0xFF);
-            if (lit < 6)
+            if (lit[bx] < 6)
                 continue;
-            const int previous = keepBlocks ? pair.blockDisparity[by * kBlocksX + bx] : kNoDisparity;
-            const int center = previous != kNoDisparity ? previous : band, reach = previous != kNoDisparity ? 3 : 10;
-            const int x0 = std::max(0, bx * 8 - 4), x1 = std::min(VBGO_TT_WIDTH, bx * 8 + 12);
-            auto maskOf = [&](int k) {
-                const int lo = std::max(x0 - 64 * k, 0), hi = std::min(x1 - 64 * k, 64);
-                return (hi >= 64 ? ~0ull : (1ull << hi) - 1) & ~((1ull << lo) - 1);
+            auto window = [&](const uint8_t *row) {
+                return row[bx] + (bx ? row[bx - 1] : 0) + (bx + 1 < kBlocksX ? row[bx + 1] : 0);
             };
-            int windowLit = 0;
-            for (int y = by * 8; y < by * 8 + 8; ++y)
-                for (int s = 0; s < 3; ++s)
-                    for (int k = x0 >> 6; k <= (x1 - 1) >> 6; ++k)
-                        windowLit += CountSet(rightBits[(y * 3 + s) * kGuardedRow + 1 + k] & maskOf(k));
-            int best = -1, bestD = center;
-            for (int d = std::max(-kMaxDisparity, center - reach); d <= std::min(kMaxDisparity, center + reach); ++d)
+            const int windowLit = window(lit);
+            const int previous = keepBlocks ? pair.blockDisparity[by * kBlocksX + bx] : kNoDisparity;
+            const int lo = std::max(dFrom, previous != kNoDisparity ? previous - 3 : dFrom);
+            const int hi = std::min(dTo, previous != kNoDisparity ? previous + 3 : dTo);
+            int best = -1, bestD = band;
+            for (int d = lo; d <= hi; ++d)
             {
-                int n = 0;
-                for (int y = by * 8; y < by * 8 + 8; ++y)
-                    for (int s = 0; s < 3; ++s)
-                    {
-                        const uint64_t *r = &rightBits[(y * 3 + s) * kGuardedRow];
-                        const uint64_t *l = &leftBits[(y * 3 + s) * kGuardedRow];
-                        for (int k = x0 >> 6; k <= (x1 - 1) >> 6; ++k)
-                            n += CountSet(r[1 + k] & maskOf(k) & Shifted(l, k, d));
-                    }
+                const int n = window(score[d - band + kBlockReach]);
                 if (n > best || (n == best && std::abs(d - band) < std::abs(bestD - band)))
                     best = n, bestD = d;
             }
             if (best > 0)
+            {
                 blocks[by * kBlocksX + bx] = static_cast<int16_t>(bestD);
-            // (nearly every pixel lines up: the same drawing, shifted - its pixels correspond exactly)
-            exact[by * kBlocksX + bx] = best * 10 >= windowLit * 9;
+                // (nearly every pixel lines up: the same drawing, shifted - its pixels correspond exactly)
+                exact[by * kBlocksX + bx] = best * 10 >= windowLit * 9;
+            }
         }
     }
     pair.blockDisparity.assign(blocks.size(), static_cast<int16_t>(kNoDisparity));
     for (int by = 0; by < kBands; ++by)
         for (int bx = 0; bx < kBlocksX; ++bx)
         {
+            const int i = by * kBlocksX + bx;
             int values[9], n = 0;
             for (int dy = -1; dy <= 1; ++dy)
                 for (int dx = -1; dx <= 1; ++dx)
@@ -1087,15 +1175,15 @@ void ColorPackRenderer::EstimatePair(int p, const vbgo_tt_eye_view view[2], cons
                     if (yy >= 0 && yy < kBands && xx >= 0 && xx < kBlocksX && blocks[yy * kBlocksX + xx] != kNoDisparity)
                         values[n++] = blocks[yy * kBlocksX + xx];
                 }
-            if (exact[by * kBlocksX + bx])
-                pair.blockDisparity[by * kBlocksX + bx] = blocks[by * kBlocksX + bx]; // (as found)
-            else if (blocks[by * kBlocksX + bx] != kNoDisparity && n)
+            if (exact[i])
+                pair.blockDisparity[i] = blocks[i]; // (as found)
+            else if (blocks[i] != kNoDisparity && n)
             {
                 std::nth_element(values, values + n / 2, values + n);
-                pair.blockDisparity[by * kBlocksX + bx] = static_cast<int16_t>(values[n / 2]);
+                pair.blockDisparity[i] = static_cast<int16_t>(values[n / 2]);
             }
             else
-                pair.blockDisparity[by * kBlocksX + bx] = pair.disparity[by]; // (few pixels: its band's)
+                pair.blockDisparity[i] = pair.disparity[by]; // (few pixels: its band's)
         }
     pair.estimated = true;
     pair.estimatedAt = m_frame;

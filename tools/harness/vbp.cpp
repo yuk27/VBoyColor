@@ -209,6 +209,14 @@ extern "C"
         }
     }
 
+    // A pair's per-block disparities (28 x 48 int16, 0x7FFF unknown).
+    void vbp_block_disparity(unsigned rightWorld, int sprites, int16_t *out)
+    {
+        for (unsigned by = 0; by < VBGO_TT_HEIGHT / 8; ++by)
+            for (unsigned bx = 0; bx < VBGO_TT_WIDTH / 8; ++bx)
+                out[by * (VBGO_TT_WIDTH / 8) + bx] = static_cast<int16_t>(g_renderer.PairBlockDisparity(rightWorld, bx, by, sprites != 0));
+    }
+
     // The last painted frame's right eye: 1 where a right picture showed a
     // tile of its own (what a right-eye capture marks). 0 if no pairs.
     int vbp_right_own(uint8_t *out)

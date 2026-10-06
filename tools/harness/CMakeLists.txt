@@ -45,4 +45,8 @@ add_library(vbp SHARED vbp.cpp
     ${REPO}/core/emu/ColorPackRenderer.cpp ${REPO}/core/emu/UncoloredCollector.cpp)
 target_include_directories(vbp PRIVATE ${REPO}/core ${REPO}/core/emu)
 target_compile_options(vbp PRIVATE -O2 -include cstdint)
+# (x86: POPCNT like every x86-64 desktop CPU since 2008 - the app gets it from MSVC's __popcnt64 / ARM64's cnt)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+    target_compile_options(vbp PRIVATE -mpopcnt)
+endif()
 target_link_libraries(vbp PRIVATE vb_core_pic m)

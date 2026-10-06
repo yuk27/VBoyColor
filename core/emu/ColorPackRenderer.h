@@ -86,6 +86,9 @@ public:
     // A pair's right world, per 8-row band: right-eye x -> left-eye x
     // (kNoDisparity if not known) - as last estimated.
     int PairDisparity(unsigned rightWorld, unsigned band) const;
+    // The same for one 8x8 block of the right picture (sprite pairs: pass
+    // the sprite world with sprites = true).
+    int PairBlockDisparity(unsigned rightWorld, unsigned bx, unsigned by, bool sprites = false) const;
     // The last frame's right eye (384x224): 1 where a right picture showed a
     // tile of its own - colored from the left picture, what a right-eye
     // capture lets the painter paint (see TileColorPack::
@@ -150,7 +153,7 @@ private:
         bool sprites = false; // a sprite world's left-only and right-only sprites (left = right = that world)
         std::array<uint16_t, 32> attributes{}; // both worlds' attribute blocks, as last estimated
         bool estimated = false;
-        uint32_t estimatedAt = 0, checkedAt = 0;
+        uint32_t estimatedAt = 0, wantedAt = 0; // (frames: last estimated, last needed)
         std::array<int16_t, kBands> disparity{}; // right x -> left x, per band
         std::vector<int16_t> blockDisparity;     // the same per 8x8 block of the right picture
         std::vector<Block> blocks; // per 8x8 block of the right eye: its region colors this frame (see RegionColor)
@@ -158,9 +161,10 @@ private:
     std::array<Pair, kMaxPairs> m_pairs{};
     int m_pairCount = 0;
     uint32_t m_frame = 0;
-    // A pair's disparities, if they're needed this frame and out of date.
-    void EstimatePair(int pair, const vbgo_tt_eye_view view[2], const uint8_t *raw, uint32_t fbWidth, const uint32_t eyeOffset[2]);
-    std::vector<uint64_t> m_estimateBits; // (EstimatePair: both pictures' shades as bit rows)
+    // Pairs' disparities, where out of date (once a frame, before the right eye).
+    void EstimatePairs(const vbgo_tt_eye_view view[2], const uint8_t *raw, uint32_t fbWidth, const uint32_t eyeOffset[2]);
+    void EstimatePair(Pair &pair, const uint64_t *leftBits, const uint64_t *rightBits, bool scrolled);
+    std::vector<uint64_t> m_estimateBits; // (EstimatePairs: the pictures' shades as bit rows)
     // Tiles the left pictures of pairs draw this frame (by hash): a right
     // picture's pixel of such a tile is colored by tile; the right
     // picture's own tiles by region (see the class comment).
