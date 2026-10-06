@@ -16,6 +16,9 @@ set(VBGO_VERSION "1.0.0")
 # actually cutting as a numbered release (Android: `./gradlew assembleRelease
 # -Pofficial=true`; PC: `-DVBGO_RELEASE_BUILD=ON` on the cmake configure line).
 option(VBGO_RELEASE_BUILD "This is an official numbered release, not a dev build" OFF)
+# A pre-release's label (beta.2 for the tag v1.0.0-beta.2): its builds are
+# "v<VERSION>-<label>" - set by CI for such a tag (see .github/workflows).
+set(VBGO_PRERELEASE "" CACHE STRING "Pre-release label, e.g. beta.2 (empty: none)")
 
 # MSVC's default source/execution charset isn't UTF-8 - without this, UTF-8
 # string literals in source (e.g. any future non-ASCII text in this project)
@@ -280,6 +283,7 @@ add_custom_target(vbgo_version ALL
             -DOUT_FILE=${VBGO_GENERATED_VERSION_DIR}/Version.h
             -DVBGO_VERSION=${VBGO_VERSION}
             -DVBGO_RELEASE_BUILD=${VBGO_RELEASE_BUILD}
+            -DVBGO_PRERELEASE=${VBGO_PRERELEASE}
             -P ${CMAKE_SOURCE_DIR}/cmake/GenerateVersion.cmake
     BYPRODUCTS ${VBGO_GENERATED_VERSION_DIR}/Version.h
     COMMENT "Generating version header"

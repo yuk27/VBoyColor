@@ -32,8 +32,10 @@ permissions:
 
 env:
   # A release tag (v1.0.0) builds the clean version string; a pre-release
-  # tag (v1.0.0-beta.1) keeps the dev one, so testers can tell builds apart.
+  # tag (v1.0.0-beta.2) builds its own name ("v1.0.0-beta.2" - PRERELEASE
+  # is what follows the first dash); anything else the dev one.
   OFFICIAL: ${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') && 'ON' || 'OFF' }}
+  PRERELEASE: ${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-') && github.ref_name || '' }}
 
 jobs:
   windows:
@@ -50,7 +52,7 @@ jobs:
       - name: Configure
         run: |
           set -o pipefail
-          cmake -B build-pc -A x64 -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DVBGO_RELEASE_BUILD=$OFFICIAL 2>&1 | tee build.log
+          cmake -B build-pc -A x64 -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DVBGO_RELEASE_BUILD=$OFFICIAL -DVBGO_PRERELEASE="${PRERELEASE#*-}" 2>&1 | tee build.log
 
       - name: Build
         run: |
@@ -100,7 +102,7 @@ jobs:
       - name: Configure
         run: |
           set -o pipefail
-          cmake -B build-pc -G Ninja -DCMAKE_BUILD_TYPE=Release -DGLFW_BUILD_WAYLAND=OFF -DVBGO_RELEASE_BUILD=$OFFICIAL 2>&1 | tee build.log
+          cmake -B build-pc -G Ninja -DCMAKE_BUILD_TYPE=Release -DGLFW_BUILD_WAYLAND=OFF -DVBGO_RELEASE_BUILD=$OFFICIAL -DVBGO_PRERELEASE="${PRERELEASE#*-}" 2>&1 | tee build.log
 
       - name: Build
         run: |
@@ -170,6 +172,7 @@ jobs:
           set -o pipefail
           official=""
           [ "$OFFICIAL" = "ON" ] && official="-Pofficial=true"
+          [ -n "$PRERELEASE" ] && official="$official -Pprerelease=${PRERELEASE#*-}"
           chmod +x gradlew
           ./gradlew assembleRelease $official --no-daemon --stacktrace 2>&1 | tee ../build.log
 
@@ -177,7 +180,9 @@ jobs:
         run: |
           set -e
           base=$(sed -n 's/^set(VBGO_VERSION "\([^"]*\)")/\1/p' CMakeLists.txt)
-          if [ "$OFFICIAL" = "ON" ]; then version="v$base"; else version="v$base-dev.$(git rev-list --count HEAD)"; fi
+          if [ -n "$PRERELEASE" ]; then version="v$base-${PRERELEASE#*-}"
+          elif [ "$OFFICIAL" = "ON" ]; then version="v$base"
+          else version="v$base-dev.$(git rev-list --count HEAD)"; fi
           cp android/app/build/outputs/apk/release/app-release.apk "VBoyColor-$version.apk"
           # Which key signed it - the same SHA-256 on every build = each one
           # installs over the last.

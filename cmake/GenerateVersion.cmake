@@ -2,8 +2,8 @@
 # CMakeLists.txt) so the commit count/dirty state is always current, even if
 # nothing else changed since the last CMake configure.
 #
-# Expects -D SRC_DIR, OUT_FILE, VBGO_VERSION, VBGO_RELEASE_BUILD on the
-# command line.
+# Expects -D SRC_DIR, OUT_FILE, VBGO_VERSION, VBGO_RELEASE_BUILD (and
+# optionally VBGO_PRERELEASE) on the command line.
 
 find_package(Git QUIET)
 
@@ -38,7 +38,10 @@ endif()
 # "v<VERSION>-dev.<commit count>", "-dirty" appended if the working tree has
 # uncommitted changes. Falls back to just "-dev" (no number) if git isn't
 # available or this isn't a git checkout (e.g. a source tarball).
-if(VBGO_RELEASE_BUILD)
+if(VBGO_PRERELEASE)
+    # A pre-release (CI, for a tag like v1.0.0-beta.2): its own name.
+    set(VERSION_STRING "v${VBGO_VERSION}-${VBGO_PRERELEASE}")
+elseif(VBGO_RELEASE_BUILD)
     set(VERSION_STRING "v${VBGO_VERSION}")
 else()
     set(VERSION_STRING "v${VBGO_VERSION}-dev")

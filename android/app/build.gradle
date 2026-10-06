@@ -43,7 +43,8 @@ android {
         minSdk 29
         targetSdk 34
         versionCode gitCommitCount()
-        versionName "1.0.0"
+        // (-Pprerelease=beta.2 for a pre-release: "1.0.0-beta.2" - see the CI)
+        versionName project.hasProperty("prerelease") ? "1.0.0-" + project.property("prerelease") : "1.0.0"
 
         ndk {
             abiFilters "arm64-v8a"
@@ -59,6 +60,9 @@ android {
                 // actually cutting a numbered release.
                 if (project.hasProperty("official")) {
                     arguments "-DVBGO_RELEASE_BUILD=ON"
+                }
+                if (project.hasProperty("prerelease")) {
+                    arguments "-DVBGO_PRERELEASE=" + project.property("prerelease")
                 }
                 cppFlags "-std=c++17"
             }
