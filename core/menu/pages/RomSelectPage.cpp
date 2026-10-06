@@ -11,6 +11,7 @@ void RomSelectPage::Init(UiRenderer &ui, const UiMenuResources &resources)
                                            kMenuItemSize, resources.icons);
     list->Color = kMenuTextColor;
     list->SelectionColor = kMenuSelectionColor;
+    list->HighlightColor = kMenuHighlightColor;
     list->TintIconOnSelect = false; // cartridge glyph, not a status indicator - stays put when a row is selected
 
     Platform *platform = resources.platform;

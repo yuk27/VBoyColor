@@ -21,6 +21,7 @@ void MainPage::Init(UiRenderer &ui, const UiMenuResources &resources)
                                            kListHeight, kMenuItemSize, resources.icons);
     list->Color = kMenuTextColor;
     list->SelectionColor = kMenuSelectionColor;
+    list->HighlightColor = kMenuHighlightColor;
 
     AppMenu *appMenu = resources.appMenu;
     m_emulator = resources.emulator;

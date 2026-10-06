@@ -47,7 +47,7 @@ namespace
     constexpr float kBatteryPadding = 1.0f;
     constexpr float kBatteryCornerRadiusPx = 1.5f;
     constexpr float kBatteryCornerInsideRadiusPx = 1.0f;
-    constexpr XrColor4f kBatteryBackgroundColor = {0.25f, 0.25f, 0.25f, 1.0f};
+    constexpr XrColor4f kBatteryBackgroundColor = {0.22f, 0.23f, 0.29f, 1.0f};
     // The gradient walks red -> orange -> yellow -> green as the level
     // rises; two flat plateaus (indices 3-4 and 5-6) are intentional,
     // matching the original.
@@ -165,6 +165,7 @@ void AppMenu::InitPages(UiRenderer &ui)
     wireNavigate(m_romSelectPage);
     wireNavigate(m_emulatorButtonMapPage);
     wireNavigate(m_moveScreenPage);
+    wireNavigate(m_aboutPage);
 
     // Cross-page links
     m_mainPage.romSelectPage = &m_romSelectPage;
@@ -173,6 +174,8 @@ void AppMenu::InitPages(UiRenderer &ui)
     m_settingsPage.mainPage = &m_mainPage;
     m_settingsPage.emulatorButtonMapPage = &m_emulatorButtonMapPage;
     m_settingsPage.moveScreenPage = &m_moveScreenPage;
+    m_settingsPage.aboutPage = &m_aboutPage;
+    m_aboutPage.settingsPage = &m_settingsPage;
 
     m_romSelectPage.mainPage = &m_mainPage;
     m_emulatorButtonMapPage.settingsPage = &m_settingsPage;
@@ -184,6 +187,7 @@ void AppMenu::InitPages(UiRenderer &ui)
     m_romSelectPage.Init(ui, m_resources);
     m_emulatorButtonMapPage.Init(ui, m_resources);
     m_moveScreenPage.Init(ui, m_resources);
+    m_aboutPage.Init(ui, m_resources);
 }
 
 // -----------------------------------------------------------------------
@@ -297,6 +301,17 @@ void AppMenu::RenderContent(UiRenderer &ui)
     ui.DrawQuad(0, 0, kMenuWidth, kHeaderHeight, kMenuOverlayColor);
     ui.DrawQuad(0, kHeaderHeight, kMenuWidth, kMenuHeight - kHeaderHeight - kBottomHeight, kMenuBodyColor);
     ui.DrawQuad(0, kMenuHeight - kBottomHeight, kMenuWidth, kBottomHeight, kMenuOverlayColor);
+    // A thin stripe in the title's colors under the header.
+    {
+        constexpr float kStripe = 1.5f;
+        const float segment = kMenuWidth / 5.0f;
+        for (int i = 0; i < 5; ++i)
+        {
+            XrColor4f c = TitleLetterColor(i);
+            c.a = 0.85f;
+            ui.DrawQuad(segment * i, kHeaderHeight - kStripe, segment + (i < 4 ? 0.5f : 0.0f), kStripe, c);
+        }
+    }
 
     // Bottom-bar button hints ("[A] Select" / "[B] Back") - helps players
     // navigate without having to guess which button does what. "Back" only

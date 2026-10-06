@@ -204,6 +204,8 @@ public:
     // its text already does). On by default; RomSelectPage turns this off -
     // its icon is just the fixed cartridge glyph, not a status indicator.
     bool TintIconOnSelect = true;
+    // Drawn behind the selected row (alpha 0 = none).
+    XrColor4f HighlightColor{0.0f, 0.0f, 0.0f, 0.0f};
 
     // Draws an arbitrary accessory (e.g. color swatches) into a row's rect -
     // rowX/rowY/rowW/rowH are the row's full content-space bounds, so the

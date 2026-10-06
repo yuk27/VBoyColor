@@ -85,6 +85,7 @@ void EmulatorButtonMapPage::Init(UiRenderer &ui, const UiMenuResources &resource
                                            kMenuItemSize, resources.icons);
     list->Color          = kMenuTextColor;
     list->SelectionColor = kMenuSelectionColor;
+    list->HighlightColor = kMenuHighlightColor;
     // The icon identifies the emulated button; it is not either of the two
     // selectable physical bindings and therefore never receives focus tint.
     list->TintIconOnSelect = false;

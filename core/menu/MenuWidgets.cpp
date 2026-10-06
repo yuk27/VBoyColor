@@ -597,6 +597,16 @@ void MenuList::Draw(UiRenderer &ui, float offsetX, float offsetY, float alpha)
         if (!entry.isSpacer && entry.Visible)
         {
             const bool sel = (idx == m_selectedIndex);
+            if (sel && HighlightColor.a > 0.0f)
+            {
+                const float rightPad = needsScrollbar() ? (kScrollbarWidth + kScrollbarGap) : 0.0f;
+                XrColor4f bar = HighlightColor;
+                bar.a *= alpha;
+                ui.DrawQuadRounded(m_posX + offsetX - 3.0f, rowY + 0.5f, m_width - rightPad + 4.0f, h - 1.0f, bar, 3.0f);
+                XrColor4f edge = SelectionColor;
+                edge.a *= alpha;
+                ui.DrawQuadRounded(m_posX + offsetX - 3.0f, rowY + 2.5f, 1.5f, h - 5.0f, edge, 0.75f);
+            }
             const float x = m_posX + offsetX + (sel ? 2.5f : 0.0f);
             const float y = rowY + m_textRowOffset;
             const bool hasIconSpace = entry.reserveIconSpace || (m_icons && entry.icon != UiIconId::None);

@@ -40,15 +40,18 @@ inline constexpr float kListHeight = kMenuHeight - kMenuContentY - kBottomHeight
 // Buffer-space slide distance for the page transition (see AppMenu::RenderContent).
 inline constexpr float kTransitionSlideDistance = 37.5f;
 
-inline constexpr XrColor4f kMenuTextColor = {0.8f, 0.8f, 0.8f, 1.0f};
-inline constexpr XrColor4f kMenuSelectionColor = {0.9f, 0.1f, 0.1f, 1.0f};
+// VBoy Color's theme: deep blue-gray panels, light text, the selected row
+// in amber on a faint highlight bar (MenuList::HighlightColor).
+inline constexpr XrColor4f kMenuTextColor = {0.84f, 0.86f, 0.92f, 1.0f};
+inline constexpr XrColor4f kMenuSelectionColor = {1.0f, 0.79f, 0.34f, 1.0f};
+inline constexpr XrColor4f kMenuHighlightColor = {0.75f, 0.8f, 1.0f, 0.09f};
 
 // Header/bottom bar color and the body color between them.
-inline constexpr XrColor4f kMenuOverlayColor = {0.35f, 0.35f, 0.35f, 0.98f};
-inline constexpr XrColor4f kMenuBodyColor = {0.2f, 0.2f, 0.2f, 0.975f};
+inline constexpr XrColor4f kMenuOverlayColor = {0.13f, 0.14f, 0.19f, 0.985f};
+inline constexpr XrColor4f kMenuBodyColor = {0.07f, 0.075f, 0.105f, 0.975f};
 
 // Shared secondary/small-print font (battery %, version string) - smaller
 // than kMenuFontSize since it's decorative/informational, not a menu row.
 inline constexpr int kSmallFontSize = 8;
-inline constexpr XrColor4f kMenuVersionColor = {0.6f, 0.6f, 0.6f, 1.0f};
+inline constexpr XrColor4f kMenuVersionColor = {0.55f, 0.58f, 0.66f, 1.0f};
 inline constexpr const char *kVersionString = kGeneratedVersionString;

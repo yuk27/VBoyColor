@@ -39,6 +39,7 @@ void MoveScreenPage::Init(UiRenderer &ui, const UiMenuResources &resources)
                                            kMenuItemSize, resources.icons);
     list->Color          = kMenuTextColor;
     list->SelectionColor = kMenuSelectionColor;
+    list->HighlightColor = kMenuHighlightColor;
 
     // Select resets just that row's value to its default (unlike the other
     // rows below, where Select acts like Right).

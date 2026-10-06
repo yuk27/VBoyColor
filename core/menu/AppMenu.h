@@ -7,6 +7,7 @@
 #include "menu/pages/RomSelectPage.h"
 #include "menu/pages/EmulatorButtonMapPage.h"
 #include "menu/pages/MoveScreenPage.h"
+#include "menu/pages/AboutPage.h"
 #include "gfx/UiRenderer.h"
 
 #include <cstdint>
@@ -98,6 +99,7 @@ private:
     RomSelectPage m_romSelectPage;
     EmulatorButtonMapPage m_emulatorButtonMapPage;
     MoveScreenPage m_moveScreenPage;
+    AboutPage m_aboutPage;
 
     MenuPage *m_currentPage = nullptr;
     MenuPage *m_nextPage = nullptr;

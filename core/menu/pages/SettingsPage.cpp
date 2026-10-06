@@ -112,6 +112,7 @@ void SettingsPage::Init(UiRenderer &ui, const UiMenuResources &resources)
                                            kMenuItemSize, resources.icons);
     list->Color = kMenuTextColor;
     list->SelectionColor = kMenuSelectionColor;
+    list->HighlightColor = kMenuHighlightColor;
 
     list->AddEntry("Button Mapping", [this](MenuItem *)
                    { if (emulatorButtonMapPage) Navigate(emulatorButtonMapPage, 1); }, nullptr, nullptr, UiIconId::Mapping);
@@ -152,6 +153,11 @@ void SettingsPage::Init(UiRenderer &ui, const UiMenuResources &resources)
         m_changeRomsFolderEntry = list->AddEntry("Change ROMs Folder...", [this](MenuItem *) { RequestChangeRomsFolder(); },
             nullptr, nullptr, UiIconId::RomList);
     }
+
+    list->AddSpacer(kMenuSpacerSize);
+    auto aboutEntry = list->AddEntry("About VBoy Color", [this](MenuItem *)
+                                     { if (aboutPage) Navigate(aboutPage, 1); });
+    aboutEntry->reserveIconSpace = true;
 
     m_menu.MenuItems.push_back(list);
 

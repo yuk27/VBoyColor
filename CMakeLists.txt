@@ -244,6 +244,7 @@ add_library(vbgo_app STATIC
     core/menu/pages/MainPage.cpp
     core/menu/pages/SettingsPage.cpp
     core/menu/pages/RomSelectPage.cpp
+    core/menu/pages/AboutPage.cpp
     core/menu/pages/EmulatorButtonMapPage.cpp
     core/menu/pages/MoveScreenPage.cpp
     core/emu/Emulator.cpp

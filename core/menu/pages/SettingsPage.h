@@ -20,6 +20,7 @@ public:
     MenuPage *mainPage = nullptr;
     MenuPage *emulatorButtonMapPage = nullptr;
     MenuPage *moveScreenPage = nullptr;
+    MenuPage *aboutPage = nullptr;
 
     void Init(UiRenderer &ui, const UiMenuResources &resources) override;
 
