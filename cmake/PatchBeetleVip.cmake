@@ -93,7 +93,7 @@ function(vbgo_generate_patched_vip VB_CORE_DIR OUT_DIR)
     # (it writes its tags straight into its own frame buffer copy).
     _vbgo_replace_once(VIP
         [=[               VIP_DrawBlock(DrawingBlock, DrawingBuffers[0] + 8, DrawingBuffers[1] + 8);]=]
-        [=[               vbgo_tiletrack_begin_block(DrawingBuffers[0], CHR_RAM, DrawingBlock, DrawingFB); /* VirtualBoyGo */
+        [=[               vbgo_tiletrack_begin_block(DrawingBuffers[0], CHR_RAM, DRAM, DrawingBlock, DrawingFB); /* VirtualBoyGo */
                VIP_DrawBlock(DrawingBlock, DrawingBuffers[0] + 8, DrawingBuffers[1] + 8);]=]
         "vip.c (VIP_DrawBlock call)")
     # Displayed column -> output tags (side-by-side is the only 3D mode the
@@ -244,8 +244,10 @@ function(vbgo_generate_patched_vip VB_CORE_DIR OUT_DIR)
   SourceY += dy;]=]
         "vip_draw.inc (DrawAffine general store)")
     # Sprites: pixel i of the char row is stored on loop iteration i (8 - meow),
-    # whichever direction the target walks for horizontal flip. No map cell,
-    # no fills (a sprite's transparent pixels aren't part of it).
+    # whichever direction the target walks for horizontal flip. No map cell -
+    # the OBJ number instead (both eyes draw the same OBJ, so it ties a
+    # sprite's pixels in one eye to the other's); no fills (a sprite's
+    # transparent pixels aren't part of it).
     _vbgo_replace_once(DRAW
         [=[      if(pixels & 3)
        *target = JPLT_Cache[palette_selector][pixels & 3];
@@ -253,7 +255,7 @@ function(vbgo_generate_patched_vip VB_CORE_DIR OUT_DIR)
         [=[      if(pixels & 3)
       {
        *target = JPLT_Cache[palette_selector][pixels & 3];
-       VBGO_TT_TAG(target, char_no, 8 - meow, char_sub_y, palette_selector, 1, pixels & 3, 0); /* VirtualBoyGo */
+       VBGO_TT_TAG(target, char_no, 8 - meow, char_sub_y, palette_selector, 1, pixels & 3, VBGO_TT_OBJ_BITS(oam)); /* VirtualBoyGo */
       }
       target--;]=]
         "vip_draw.inc (DrawOBJ flipped store)")
@@ -264,7 +266,7 @@ function(vbgo_generate_patched_vip VB_CORE_DIR OUT_DIR)
         [=[      if(pixels & 3)
       {
        *target = JPLT_Cache[palette_selector][pixels & 3];
-       VBGO_TT_TAG(target, char_no, 8 - meow, char_sub_y, palette_selector, 1, pixels & 3, 0); /* VirtualBoyGo */
+       VBGO_TT_TAG(target, char_no, 8 - meow, char_sub_y, palette_selector, 1, pixels & 3, VBGO_TT_OBJ_BITS(oam)); /* VirtualBoyGo */
       }
       target++;]=]
         "vip_draw.inc (DrawOBJ store)")

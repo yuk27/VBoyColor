@@ -26,7 +26,8 @@ for name, args, res in [
     ("vbp_state_size", [], C.c_size_t), ("vbp_save", [C.c_void_p, C.c_size_t], C.c_int), ("vbp_load", [C.c_void_p, C.c_size_t], C.c_int),
     ("vbp_pack_load", [C.c_void_p, C.c_size_t], C.c_int), ("vbp_palette", [C.c_void_p], None), ("vbp_auto", [C.c_int, C.c_int], None),
     ("vbp_render", [C.c_void_p, C.c_int, C.c_void_p], None), ("vbp_render_full", [C.c_void_p, C.c_int], C.c_int),
-    ("vbp_eyematch", [C.c_void_p, C.c_void_p], C.c_int), ("vbp_import_begin", [], None),
+    ("vbp_worldinfo", [C.c_void_p], None), ("vbp_time_paint", [C.c_int], C.c_double),
+    ("vbp_capture_eye", [C.c_uint, C.c_void_p, C.c_void_p], C.c_int), ("vbp_import_begin", [], None),
     ("vbp_import_add", [C.c_void_p, C.c_int, C.c_int, C.c_void_p, C.c_size_t], C.c_int), ("vbp_import_finish", [], C.c_int),
     ("vbp_paint_bytes", [C.c_void_p], C.c_size_t), ("vbp_import_stats", [C.c_void_p], None),
     ("vbp_capture", [C.c_void_p, C.c_void_p], C.c_int), ("vbp_lookup", [C.c_uint32, C.c_uint, C.c_uint, C.c_uint, C.c_void_p], C.c_int),
@@ -103,6 +104,18 @@ class VB:
         off = lib.vbp_render_full(img.ctypes.data, 1 if pack else 0)
         return img[:, :384].copy(), img[:, off:off + 384].copy()
 
+    def world_info(self):
+        """How the renderer classified the last painted frame's worlds: (per world: eyes (bit 0 L, bit 1 R),
+        type, partner or -1, the world whose colors it takes) 32x4, and per world, per 8-row band, a pair's right
+        world's disparity (right x -> left x; 0x7FFF unknown) 32x28. (render() a frame first.)"""
+        a = np.zeros(128 + 32 * 28, np.int16)
+        lib.vbp_worldinfo(a.ctypes.data)
+        return a[:128].reshape(32, 4), a[128:].reshape(32, 28)
+
+    def paint_ms(self, reps=5):
+        """Milliseconds to color the current frame as the app does (colorize + paint), best of reps."""
+        return lib.vbp_time_paint(reps)
+
     def worlds(self):
         """The 32 world attribute blocks (see worlds.py)."""
         w = np.zeros(512, np.uint16)
@@ -163,11 +176,11 @@ def shown_palette(level):
     return [tuple(int(round(e[0][c] + (e[i][c] - e[0][c]) * f)) for c in range(3)) if i else tuple(int(x) for x in e[0]) for i in range(4)]
 
 
-def capture():
-    """Like the app's F10: (left-eye records with fills, map cells, brightness level)."""
+def capture(eye=0):
+    """Like the app's F10: (records with fills, map cells, brightness level) - of the left eye, or the right."""
     t = np.zeros((224, 384), np.uint64)
     c = np.zeros((224, 384), np.uint32)
-    lvl = lib.vbp_capture(t.ctypes.data, c.ctypes.data)
+    lvl = lib.vbp_capture_eye(eye, t.ctypes.data, c.ctypes.data)
     return t, c, lvl
 
 
@@ -196,7 +209,8 @@ def tag_fields(t):
     return dict(char=(t & U(0x7FF)).astype(np.int32), index=((t >> U(11)) & U(63)).astype(np.int32),
                 palette=((t >> U(17)) & U(3)).astype(np.int8), obj=((t >> U(19)) & U(1)).astype(bool),
                 pixel=((t >> U(20)) & U(3)).astype(np.int8), world=((t >> U(22)) & U(31)).astype(np.int8),
-                has_cell=((t >> U(27)) & U(1)).astype(bool), cell=((t >> U(28)) & U(0xFFFF)).astype(np.int32), drawn=t != 0)
+                has_cell=((t >> U(27)) & U(1)).astype(bool), cell=((t >> U(28)) & U(0xFFFF)).astype(np.int32),
+                obj_no=((t >> U(28)) & U(0x3FF)).astype(np.int32), drawn=t != 0)
 
 
 def save_png(img, path, scale=1):

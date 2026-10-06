@@ -331,6 +331,9 @@ private:
     bool m_tileDebugView = false; // see SetTileDebugView
     TileColorPack m_colorPack;    // see ReloadColorPack
     ColorPackRenderer m_packRenderer;
+    // Coloring time (see UploadFrame): summed / worst over the frames since the last log line.
+    double m_coloringMs = 0.0, m_coloringMaxMs = 0.0;
+    int m_coloringFrames = 0;
     bool m_colorPackEnabled = true;
     bool m_authoring = false;     // see SetAuthoring
     std::vector<uint64_t> m_records; // one eye's tile records, for the debug view / F7 collector

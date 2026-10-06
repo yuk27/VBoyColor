@@ -55,6 +55,7 @@ extern "C" {
 #define VBGO_TAG_WORLD(t)    ((unsigned)((t) >> 22) & 31)     /* world (layer) that drew it */
 #define VBGO_TAG_HAS_CELL(t) ((unsigned)((t) >> 27) & 1)      /* drawn from a BG map cell (not a sprite) */
 #define VBGO_TAG_CELL(t)     ((unsigned)((t) >> 28) & 0xFFFF) /* that cell's halfword index in VIP DRAM */
+#define VBGO_TAG_OBJ_NO(t)   ((unsigned)((t) >> 28) & 0x3FF)  /* sprites: the OBJ (0-1023) - same bits, no cell */
 #define VBGO_TAG_STAMP(t)    ((unsigned)((t) >> 48))          /* drawing pass that wrote it */
 
 /* ---- Records (captures, .tiles files, debug tools) ----------------------- */
@@ -98,7 +99,26 @@ typedef struct
    const uint32_t *hashes;   /* 2048 */
    const uint8_t *blank;     /* 2048: 1 = all 64 pixels transparent */
    const uint16_t *chr;      /* 2048 * 8 rows (2 bits per pixel, pixel 0 in the low bits) */
+   /* As the drawing pass started (NULL if the core didn't say): the 32 world
+    * attribute blocks (16 halfwords each, VIP 0x3D800 - which eyes draw a
+    * world, its type, parallax...) and the OBJ attribute memory (1024 x 4
+    * halfwords, VIP 0x3E000 - a sprite's JX, JP/JLON/JRON, JY, char). */
+   const uint16_t *worlds;
+   const uint16_t *oam;
 } vbgo_tt_eye_view;
+
+/* World attribute fields (w = 16 halfwords of one world). */
+#define VBGO_WORLD_LON(w)   (((w)[0] >> 15) & 1)
+#define VBGO_WORLD_RON(w)   (((w)[0] >> 14) & 1)
+#define VBGO_WORLD_TYPE(w)  (((w)[0] >> 12) & 3) /* 0 normal, 1 H-bias, 2 affine, 3 OBJ */
+#define VBGO_WORLD_END(w)   (((w)[0] >> 6) & 1)
+#define VBGO_WORLD_MAP(w)   ((w)[0] & 15)
+/* A sprite's parallax (signed: left eye x = JX - JP, right eye x = JX + JP). */
+static inline int vbgo_obj_parallax(const uint16_t *oam, unsigned obj)
+{
+   const int jp = oam[obj * 4 + 1] & 0x3FFF;
+   return (jp & 0x200) ? (jp & 0x3FF) - 0x400 : (jp & 0x3FF);
+}
 
 /* False if that eye has shown nothing tracked yet. */
 bool vbgo_tiletrack_eye_view(unsigned eye, vbgo_tt_eye_view *view);
@@ -136,9 +156,11 @@ static inline uint64_t *vbgo_tt_slot(const void *target_ptr)
 }
 
 #define VBGO_TT_CELL_BITS(cell) (((uint64_t)1 << 27) | ((uint64_t)(cell) << 28))
+/* Sprites: no cell, but which OBJ drew the pixel (the same in both eyes). */
+#define VBGO_TT_OBJ_BITS(obj) ((uint64_t)((obj) & 0x3FF) << 28)
 
-/* A drawn (non-transparent) pixel. cell_bits: VBGO_TT_CELL_BITS(cell), or 0
- * for sprites. */
+/* A drawn (non-transparent) pixel. cell_bits: VBGO_TT_CELL_BITS(cell), or
+ * VBGO_TT_OBJ_BITS(obj) for sprites. */
 #define VBGO_TT_TAG(target_ptr, chr, sx, sy, pal, obj, pv, cell_bits)                                         \
    do                                                                                                       \
    {                                                                                                        \
@@ -173,7 +195,10 @@ static inline void vbgo_tt_fill_px(const void *target_ptr, unsigned chr, unsigne
            (uint64_t)(chr | (sx << 11) | (sy << 14) | (pal << 17) | (vbgo_tt_world << 22));
 }
 
-void vbgo_tiletrack_begin_block(const uint8_t *drawing_buffers, const uint16_t *chr_ram, unsigned block_no, unsigned fb);
+/* dram: the VIP's DRAM (VIP 0x20000-0x3FFFF as halfwords), for the world and
+ * OBJ attributes - may be NULL. */
+void vbgo_tiletrack_begin_block(const uint8_t *drawing_buffers, const uint16_t *chr_ram, const uint16_t *dram,
+                                unsigned block_no, unsigned fb);
 void vbgo_tiletrack_display_column(unsigned fb, unsigned lr, unsigned dest_lr, unsigned column, bool display_active);
 void vbgo_tiletrack_cpu_fb_write(unsigned fb, unsigned lr, unsigned offset, unsigned bytes);
 

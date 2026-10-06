@@ -21,15 +21,20 @@ games' content or Juan's work); they live on Juan's PC under `out\`.
 
 - `vbp.cpp` / `vbp.py` - the library and its Python wrapper (`VB`: run with
   buttons, `raw()` frame + shade/brightness tags, `records()` / `tags()` per
-  pixel, `render()` both eyes as the app shows them, `worlds()` the VIP's 32
-  world attribute blocks, save/load states; `import_folder()` like F11,
-  `capture()` / `write_capture()` like F10, `lookup()` a pack's color for a
-  tile pixel).
+  pixel (a sprite pixel's tag carries its OBJ number), `render()` both eyes as
+  the app shows them, `paint_ms()` how long coloring them takes, `worlds()` the
+  VIP's 32 world attribute blocks, `world_info()` how the renderer classified
+  them (per-eye pairs, their disparities), save/load states; `import_folder()`
+  like F11, `capture(eye)` / `write_capture()` like F10, `lookup()` a pack's
+  color for a tile pixel).
 - `worlds.py` - the worlds (layers) a frame is drawn with: which eyes draw
   each one, its type and parallax registers, and for every pair of
   left-only/right-only worlds whether the right one is the same picture
   shifted (exact pixel correspondence) or a different picture (a stereo pair).
-- `symmetry.py` - for every right-eye pixel the left eye shows too (the same
-  tile pixel on the same row), are the colors identical? And how much of the
-  right eye has no such counterpart (per-eye pictures).
-- `timing.py` - milliseconds per emulated frame for coloring both eyes.
+- `symmetry.py` - for every right-eye pixel of shared content (layers both
+  eyes draw, sprites), is the same point - layer, map cell and tile pixel, or
+  OBJ and tile pixel - the same color in the left eye? (0.00% expected.) Per-eye
+  pairs apart: their shared tiles, and how much is the right picture's own.
+- `timing.py` - milliseconds per emulated frame for coloring both eyes
+  (colorize + paint, as the app's UploadFrame; the app logs the same on the
+  headset every 250 frames - logcat tag VirtualBoyGo).

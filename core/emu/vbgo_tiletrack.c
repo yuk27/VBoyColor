@@ -25,6 +25,12 @@ static uint16_t s_next_stamp;
 static uint16_t s_chr[2][2048 * 8];
 static uint32_t s_hash[2][2048];
 static uint8_t s_blank[2][2048];
+/* The world attribute blocks and OBJ attributes as each buffer's pass started. */
+#define VBGO_WORLD_HALFWORDS (32 * 16)
+#define VBGO_OAM_HALFWORDS (1024 * 4)
+static uint16_t s_worlds[2][VBGO_WORLD_HALFWORDS];
+static uint16_t s_oam[2][VBGO_OAM_HALFWORDS];
+static int s_have_attrs[2];
 static int s_have[2];
 static int s_pass_open; /* a drawing pass has started (block 0 seen, or tracking switched on mid-pass) */
 static int s_last_fb = -1;
@@ -46,7 +52,7 @@ static uint32_t HashChar(const uint16_t *rows)
    return h;
 }
 
-static void StartPass(unsigned fb, const uint16_t *chr_ram)
+static void StartPass(unsigned fb, const uint16_t *chr_ram, const uint16_t *dram)
 {
    int c;
    /* A new stamp; on wrap-around forget every old tag, so a pixel left
@@ -60,6 +66,12 @@ static void StartPass(unsigned fb, const uint16_t *chr_ram)
    s_stamp[fb] = s_next_stamp;
    vbgo_tt_stamp_bits = (uint64_t)s_next_stamp << 48;
    memcpy(s_chr[fb], chr_ram, sizeof(s_chr[fb]));
+   s_have_attrs[fb] = dram != NULL;
+   if (dram)
+   {
+      memcpy(s_worlds[fb], &dram[0x1D800 >> 1], sizeof(s_worlds[fb]));
+      memcpy(s_oam[fb], &dram[0x1E000 >> 1], sizeof(s_oam[fb]));
+   }
    for (c = 0; c < 2048; c++)
    {
       const uint16_t *rows = &s_chr[fb][c * 8];
@@ -93,7 +105,8 @@ void vbgo_tiletrack_set_fill_cells(const uint8_t *bits)
       memset(vbgo_tt_fill_cells, 0, sizeof(vbgo_tt_fill_cells));
 }
 
-void vbgo_tiletrack_begin_block(const uint8_t *drawing_buffers, const uint16_t *chr_ram, unsigned block_no, unsigned fb)
+void vbgo_tiletrack_begin_block(const uint8_t *drawing_buffers, const uint16_t *chr_ram, const uint16_t *dram,
+                                unsigned block_no, unsigned fb)
 {
    if (!vbgo_tt_on)
       return;
@@ -101,7 +114,7 @@ void vbgo_tiletrack_begin_block(const uint8_t *drawing_buffers, const uint16_t *
    /* Once per pass (games update tile graphics between frames), or right
     * after tracking was switched on mid-pass. */
    if (block_no == 0 || !s_pass_open || (int)fb != s_last_fb)
-      StartPass(fb, chr_ram);
+      StartPass(fb, chr_ram, dram);
    s_last_fb = (int)fb;
    vbgo_tt_block_base = drawing_buffers;
    vbgo_tt_blank = s_blank[fb];
@@ -156,6 +169,8 @@ bool vbgo_tiletrack_eye_view(unsigned eye, vbgo_tt_eye_view *view)
    view->hashes = s_hash[fb];
    view->blank = s_blank[fb];
    view->chr = s_chr[fb];
+   view->worlds = s_have_attrs[fb] ? s_worlds[fb] : NULL;
+   view->oam = s_have_attrs[fb] ? s_oam[fb] : NULL;
    for (x = 0; x < VBGO_TT_WIDTH; x++)
    {
       const uint8_t d = s_disp[eye & 1][x];

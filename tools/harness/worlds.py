@@ -10,11 +10,14 @@ parameter table; sprites use JX -/+ JP). So:
     shifted: coloring by tile is the same in both eyes by construction;
   - an L-only world next to an R-only one is a per-eye pair: either a copy of
     the same tiles at another map position (Mario Clash: ~100% shared tiles)
-    or two different pictures, a stereo pair (Galactic Pinball: 0-30%).
+    or two different pictures, a stereo pair (Galactic Pinball: 0-30%);
+  - sprites can be per-eye too (JLON/JRON per OBJ): Galactic Pinball draws much
+    of a table as a left-eye and a right-eye set of sprites, depth drawn in.
 """
+import ctypes as C
 import sys
 import numpy as np
-from vbp import VB, tag_fields
+from vbp import VB, lib, tag_fields
 
 def s11(v):
     v = int(v) & 0x7FF
@@ -76,3 +79,12 @@ while i + 1 < len(listed):
         verdict = ("the same picture, shifted %+d px (exact pixel correspondence)" % best[1] if best[0] > 0.9 else
                    "two different pictures - a stereo pair (best single shift %+d px matches only %.0f%%)" % (best[1], 100 * best[0]))
         print("pair L w%d / R w%d: %.0f%% of the right picture's pixels use tiles the left one uses; %s" % (lw, rw, share, verdict))
+
+# Sprites drawn this frame: both eyes' OBJs, or one eye's only (JLON / JRON).
+lib.VIP_Read16.restype = C.c_uint16
+lib.VIP_Read16.argtypes = [C.c_int32, C.c_uint32]
+objs = set(f["obj_no"][0][f["obj"][0] & f["drawn"][0]].tolist()) | set(f["obj_no"][1][f["obj"][1] & f["drawn"][1]].tolist())
+eyes = [(lib.VIP_Read16(0, 0x3E000 + o * 8 + 2) >> 14) & 3 for o in objs]
+if objs:
+    print("sprites drawn: %d OBJs - both eyes %d, left eye only %d, right eye only %d" % (
+        len(objs), eyes.count(3), eyes.count(2), eyes.count(1)))

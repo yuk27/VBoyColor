@@ -192,16 +192,44 @@ extern "C"
         }
     }
 
-    // The renderer's last right-eye matches (kind, disparity per pixel, 384x224).
-    int vbp_eyematch(uint8_t *kinds, int16_t *disparities)
+    // How the renderer saw the last frame's worlds: per world (32 x 4 int16):
+    // eyes (bit 0 L, bit 1 R), type, partner (-1), the world whose colors it takes;
+    // then per world (32 x 28): a pair's right world's disparity per band (0x7FFF unknown).
+    void vbp_worldinfo(int16_t *out)
     {
-        const auto &k = g_renderer.EyeMatchKinds();
-        const auto &d = g_renderer.EyeDisparities();
-        if (k.size() < VBGO_TT_EYE_PIXELS || d.size() < VBGO_TT_EYE_PIXELS)
-            return 0;
-        std::memcpy(kinds, k.data(), VBGO_TT_EYE_PIXELS);
-        std::memcpy(disparities, d.data(), VBGO_TT_EYE_PIXELS * 2);
-        return 1;
+        const auto &w = g_renderer.Worlds();
+        for (int i = 0; i < 32; ++i)
+        {
+            out[i * 4] = w[i].eyes;
+            out[i * 4 + 1] = w[i].type;
+            out[i * 4 + 2] = w[i].partner;
+            out[i * 4 + 3] = w[i].colors;
+            for (int b = 0; b < VBGO_TT_HEIGHT / 8; ++b)
+                out[128 + i * 28 + b] = static_cast<int16_t>(g_renderer.PairDisparity(i, b));
+        }
+    }
+
+    // Milliseconds for coloring the current frame like the app's UploadFrame:
+    // Colorize the whole frame + the renderer's Paint, best of reps runs
+    // (each on a fresh copy, after a warm-up - so caches are what they'd be).
+    double vbp_time_paint(int reps)
+    {
+        const size_t n = static_cast<size_t>(g_w) * g_h;
+        static std::vector<uint8_t> raw, bgra;
+        raw.resize(n * 4);
+        bgra.resize(n * 4);
+        vbp_raw(raw.data());
+        const uint32_t eyeOffset[2] = {0, g_w - VBGO_TT_WIDTH};
+        double best = 1e9;
+        for (int k = 0; k < reps; ++k)
+        {
+            auto t0 = std::chrono::steady_clock::now();
+            g_colorizer.Colorize(raw.data(), bgra.data(), n);
+            if (g_renderer.Active())
+                g_renderer.Paint(bgra.data(), raw.data(), g_w, eyeOffset, g_bg);
+            best = std::min(best, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+        }
+        return best;
     }
 
     // Rows of the tile with that hash, from the current character memory.
@@ -344,16 +372,17 @@ extern "C"
     // Like the app's F10 (CaptureTileReference): left-eye records with fills
     // and map cells, invisible pixels dropped. Returns the game's brightness
     // level (most common), or -1. (Fill mode must be ALL while drawing.)
-    int vbp_capture(uint64_t *records, uint32_t *cells)
+    int vbp_capture_eye(unsigned eye, uint64_t *records, uint32_t *cells)
     {
-        if (!vbgo_tiletrack_records(0, records, cells, true))
+        if (!vbgo_tiletrack_records(eye, records, cells, true))
             return -1;
+        const unsigned off = eye ? g_w - VBGO_TT_WIDTH : 0;
         uint32_t levels[64] = {};
         for (int y = 0; y < VBGO_TT_HEIGHT; ++y)
             for (int x = 0; x < VBGO_TT_WIDTH; ++x)
             {
                 const size_t i = static_cast<size_t>(y) * VBGO_TT_WIDTH + x;
-                const uint8_t *raw = g_frame + y * g_pitch + x * 4;
+                const uint8_t *raw = g_frame + y * g_pitch + (off + x) * 4;
                 if (VBGO_TT_PIXEL(records[i]) && (raw[0] | raw[1] | raw[2]) == 0)
                     records[i] = 0, cells[i] = 0;
                 ++levels[raw[3] >> 2];
@@ -364,6 +393,8 @@ extern "C"
                 best = i;
         return best;
     }
+
+    int vbp_capture(uint64_t *records, uint32_t *cells) { return vbp_capture_eye(0, records, cells); }
 
     // The pack's color for one tile pixel, looked up like ColorPackRenderer
     // (without map cells): palette variant, else layer variant, else the

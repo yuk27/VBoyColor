@@ -11,11 +11,15 @@
 #include <stb_image_write.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <unordered_map>
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
 
 namespace
 {
@@ -56,6 +60,20 @@ namespace
     // otherwise care about. Without this, that log line dereferences a null
     // function pointer the moment the core changes 3D mode during
     // retro_load_game, crashing (found via a real access violation there).
+    // A log line: logcat on Android (tag VirtualBoyGo), stderr elsewhere.
+    void LogLine(const char *fmt, ...)
+    {
+        va_list args;
+        va_start(args, fmt);
+#ifdef __ANDROID__
+        __android_log_vprint(ANDROID_LOG_INFO, "VirtualBoyGo", fmt, args);
+#else
+        std::vfprintf(stderr, fmt, args);
+        std::fputc('\n', stderr);
+#endif
+        va_end(args);
+    }
+
     void RetroLogPrintf(retro_log_level, const char *fmt, ...)
     {
         va_list args;
@@ -347,6 +365,7 @@ void Emulator::UploadFrame()
 {
     // Only the part of the core's (bigger, fixed-size) buffer this frame
     // uses - both eyes side by side - is converted and uploaded.
+    const auto coloringStart = std::chrono::steady_clock::now();
     const uint32_t width = std::min<uint32_t>(m_lastFrameWidth, kFbWidth);
     const uint32_t height = std::min<uint32_t>(m_lastFrameHeight, kFbHeight);
     const size_t stride = static_cast<size_t>(kFbWidth) * 4;
@@ -376,6 +395,18 @@ void Emulator::UploadFrame()
         const uint32_t eyeOffset[2] = {0, m_lastFrameWidth - VBGO_TT_WIDTH};
         m_packRenderer.SetPackShown(packShown);
         m_packRenderer.Paint(m_frameBufferRgba.data(), m_rawFrame.data(), kFbWidth, eyeOffset, m_shadeBackground);
+        // How long coloring both eyes takes (colorize + paint), logged every
+        // few seconds - to check it on the headset (logcat: VirtualBoyGo).
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - coloringStart).count();
+        m_coloringMs += ms;
+        m_coloringMaxMs = std::max(m_coloringMaxMs, ms);
+        if (++m_coloringFrames == 250)
+        {
+            LogLine("[Emulator] Coloring both eyes: %.2f ms a frame on average, %.2f ms at most (last %d frames)",
+                    m_coloringMs / m_coloringFrames, m_coloringMaxMs, m_coloringFrames);
+            m_coloringMs = m_coloringMaxMs = 0.0;
+            m_coloringFrames = 0;
+        }
     }
     if (m_tileDebugView)
         PaintTileDebugView();

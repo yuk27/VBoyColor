@@ -5,6 +5,69 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#if defined(_MSC_VER) && defined(_M_X64)
+#include <intrin.h>
+#endif
+
+namespace
+{
+int Sign9(uint16_t v)
+{
+    v &= 0x1FF;
+    return (v & 0x100) ? static_cast<int>(v) - 0x200 : static_cast<int>(v);
+}
+
+inline int CountSet(uint64_t x)
+{
+#if defined(__GNUC__) || defined(__clang__)
+    return __builtin_popcountll(x);
+#elif defined(_MSC_VER) && defined(_M_X64)
+    return static_cast<int>(__popcnt64(x));
+#else
+    x = x - ((x >> 1) & 0x5555555555555555ull);
+    x = (x & 0x3333333333333333ull) + ((x >> 2) & 0x3333333333333333ull);
+    x = (x + (x >> 4)) & 0x0F0F0F0F0F0F0F0Full;
+    return static_cast<int>((x * 0x0101010101010101ull) >> 56);
+#endif
+}
+
+// A row of one shade's pixels as bits (pixel x at bit x), with a guard word
+// before and two after, so a shift by up to 64 pixels either way stays inside.
+constexpr int kRowWords = VBGO_TT_WIDTH / 64, kGuardedRow = kRowWords + 3;
+
+// Word k of the row shifted so that bit x holds the row's bit x + d.
+inline uint64_t Shifted(const uint64_t *row, int k, int d)
+{
+    const int bit = 64 * (k + 1) + d, w = bit >> 6, s = bit & 63;
+    return s ? (row[w] >> s) | (row[w + 1] << (64 - s)) : row[w];
+}
+
+constexpr int kMaxDisparity = 64;
+
+// The left-picture map (see m_leftPicture) has kPad guard pixels all
+// round, so a look kPad pixels away needs no bounds check.
+constexpr int kPad = 3, kMapW = VBGO_TT_WIDTH + 2 * kPad, kMapH = VBGO_TT_HEIGHT + 2 * kPad;
+// (dx, dy) within kPad pixels, nearest first (rows before columns on ties:
+// pictures are drawn in rows), with their offset in the map - see RegionColor.
+struct NearSpot
+{
+    int8_t dx, dy;
+    int32_t offset;
+};
+const std::vector<NearSpot> kNearest = [] {
+    std::vector<NearSpot> v;
+    for (int dy = -kPad; dy <= kPad; ++dy)
+        for (int dx = -kPad; dx <= kPad; ++dx)
+            if (dx * dx + dy * dy <= kPad * kPad)
+                v.push_back({static_cast<int8_t>(dx), static_cast<int8_t>(dy), dy * kMapW + dx});
+    std::stable_sort(v.begin(), v.end(), [](const NearSpot &a, const NearSpot &b) {
+        const int da = a.dx * a.dx + a.dy * a.dy, db = b.dx * b.dx + b.dy * b.dy;
+        return da != db ? da < db : std::abs(a.dy) < std::abs(b.dy);
+    });
+    return v;
+}();
+inline int MapAt(int x, int y) { return (y + kPad) * kMapW + x + kPad; }
+} // namespace
 
 void ColorPackRenderer::SetPack(const TileColorPack *pack)
 {
@@ -16,19 +79,15 @@ void ColorPackRenderer::SetPack(const TileColorPack *pack)
     m_contextRange.clear();
     for (Slot &slot : m_slots)
         slot = Slot{};
-    m_resolvedFor = nullptr;
-    // (eye matching starts over: last frame's matches belong to another game)
-    m_eyeDisparityAt.clear();
-    m_eyeCostAt.clear();
-    m_eyeDisparity = MakeUnknownDisparities();
-    std::fill(m_eyeRowDisparity.begin(), m_eyeRowDisparity.end(), static_cast<int16_t>(kUnknownDisparity));
-    for (auto &eye : m_markerGrid)
-        for (auto &grid : eye)
-            grid.clear();
-    for (auto &eye : m_markerLayer)
-        for (auto &grid : eye)
-            grid.clear();
+    for (auto &grid : m_markerGrid)
+        grid.clear();
+    for (auto &grid : m_markerLayer)
+        grid.clear();
     m_layerBound = 0;
+    // (pairs start over: their estimates belong to another game)
+    for (Pair &pair : m_pairs)
+        pair = Pair{};
+    m_pairCount = 0;
     // (automatic colors start over too: the layers seen, the brightness)
     m_autoWorlds = 0;
     m_autoWorldsUsed = ~0u;
@@ -54,19 +113,21 @@ void ColorPackRenderer::SetPack(const TileColorPack *pack)
     }
     if (!contexts.empty())
     {
-        for (auto &eye : m_markerGrid)
-            for (auto &grid : eye)
-                grid.assign(kGridW * kGridH, 0);
+        for (auto &grid : m_markerGrid)
+            grid.assign(kGridW * kGridH, 0);
         m_layerBound = m_pack->LayerBoundGroups();
         if (m_layerBound)
-            for (auto &eye : m_markerLayer)
-                for (auto &grid : eye)
-                    grid.assign(kGridW * kGridH, 0xFF);
+            for (auto &grid : m_markerLayer)
+                grid.assign(kGridW * kGridH, 0xFF);
     }
     const std::vector<TileColorPack::CellTile> &cells = m_pack->CellTiles(); // sorted by cell
     m_cellStart.assign(65537, 0);
+    m_cellHashes.clear();
     for (const TileColorPack::CellTile &cell : cells)
+    {
         ++m_cellStart[cell.cell + 1u];
+        m_cellHashes.insert(cell.hash);
+    }
     for (size_t i = 1; i < m_cellStart.size(); ++i)
         m_cellStart[i] += m_cellStart[i - 1];
     // Fills: a cell has some if any of its tile entries colors a pixel the
@@ -105,7 +166,8 @@ void ColorPackRenderer::UpdateAutoColors()
 {
     // Each background layer's ramp by its depth in the game's drawing order
     // (higher worlds are drawn first, farther back), over the layers drawn
-    // since the game started - so a layer keeps its colors.
+    // since the game started - so a layer keeps its colors. (A pair's right
+    // world takes its left partner's - see ClassifyWorlds.)
     // (Figures - see m_figureWorlds - are colored like sprites instead.)
     if (m_autoWorlds == m_autoWorldsUsed && m_figureWorlds == m_figuresUsed)
         return;
@@ -143,6 +205,7 @@ void ColorPackRenderer::ResolveSlots(const uint32_t *hashes)
         }
         slot.layered = !m_layered.empty() && m_layered.count(slot.hash) != 0;
         slot.ambiguous = m_pack->IsAmbiguous(slot.hash);
+        slot.cellColored = !m_cellHashes.empty() && m_cellHashes.count(slot.hash) != 0;
         slot.markerBits = 0;
         slot.contextCount = 0;
         if (!m_markerBits.empty())
@@ -155,29 +218,308 @@ void ColorPackRenderer::ResolveSlots(const uint32_t *hashes)
                 slot.contextFirst = range->second.first, slot.contextCount = range->second.second;
         }
     }
-    m_resolvedFor = hashes;
 }
 
-uint64_t ColorPackRenderer::Near(unsigned eye, int x, int y, unsigned world) const
+void ColorPackRenderer::ClassifyWorlds(const uint16_t *worlds)
 {
-    // Markers drawn within reach - last frame, or already this frame (of a
-    // layer-bound group, only ones drawn on this pixel's layer).
+    // Which eyes draw each world (LON/RON), its type, and the per-eye pairs:
+    // a left-only world next to a right-only one of the same type, in the
+    // order the VIP draws them (Mario Clash's stage, Galactic Pinball's
+    // tables). A pair's right world takes its left partner's colors.
+    std::array<World, 32> next{};
+    for (unsigned w = 0; w < 32; ++w)
+        next[w].colors = static_cast<uint8_t>(w);
+    m_rightShift.fill(0);
+    m_pairOfLeft.fill(-1);
+    m_pairOfRight.fill(-1);
+    m_spritePairOf.fill(-1);
+    std::array<Pair, kMaxPairs> pairs{};
+    int pairCount = 0;
+    if (worlds)
+    {
+        int listed[32], n = 0;
+        for (int w = 31; w >= 0; --w)
+        {
+            const uint16_t *a = &worlds[w * 16];
+            if (VBGO_WORLD_END(a))
+                break;
+            World &world = next[w];
+            world.eyes = static_cast<uint8_t>(VBGO_WORLD_LON(a) | (VBGO_WORLD_RON(a) << 1));
+            world.type = static_cast<uint8_t>(VBGO_WORLD_TYPE(a));
+            if (!world.eyes)
+                continue;
+            listed[n++] = w;
+            // Both eyes: the right eye shows a map pixel 2 x (GP - MP) to the
+            // right of the left eye's (affine layers: GP only).
+            if (world.eyes == 3 && world.type != 3)
+                m_rightShift[w] = static_cast<int16_t>(2 * (Sign9(a[2]) - (world.type == 2 ? 0 : Sign9(a[5]))));
+        }
+        for (int k = 0; k + 1 < n;)
+        {
+            const int a = listed[k], b = listed[k + 1];
+            if (next[a].type == next[b].type && next[a].type != 3 && (next[a].eyes | next[b].eyes) == 3 &&
+                next[a].eyes != 3 && next[b].eyes != 3 && pairCount < kMaxPairs)
+            {
+                const int left = next[a].eyes == 1 ? a : b, right = left == a ? b : a;
+                next[left].partner = static_cast<int8_t>(right);
+                next[right].partner = static_cast<int8_t>(left);
+                next[right].colors = static_cast<uint8_t>(left);
+                // (the same pair as last frame keeps its estimates)
+                Pair &pair = pairs[pairCount];
+                for (int old = 0; old < m_pairCount; ++old)
+                    if (!m_pairs[old].sprites && m_pairs[old].left == left && m_pairs[old].right == right)
+                    {
+                        pair = std::move(m_pairs[old]);
+                        m_pairs[old].left = m_pairs[old].right = 0xFF;
+                        break;
+                    }
+                pair.left = static_cast<uint8_t>(left);
+                pair.right = static_cast<uint8_t>(right);
+                m_pairOfLeft[left] = static_cast<int8_t>(pairCount);
+                m_pairOfRight[right] = static_cast<int8_t>(pairCount);
+                ++pairCount;
+                k += 2;
+            }
+            else
+                ++k;
+        }
+        // Sprites only one eye shows (JLON / JRON): Galactic Pinball draws
+        // much of a table as a left-eye and a right-eye set of sprites, with
+        // the depth drawn into their positions (and often their tiles) - a
+        // pair too, per sprite world.
+        for (int k = 0; k < n && pairCount < kMaxPairs; ++k)
+        {
+            const int w = listed[k];
+            if (next[w].type != 3)
+                continue;
+            Pair &pair = pairs[pairCount];
+            for (int old = 0; old < m_pairCount; ++old)
+                if (m_pairs[old].sprites && m_pairs[old].left == w)
+                {
+                    pair = std::move(m_pairs[old]);
+                    m_pairs[old].left = m_pairs[old].right = 0xFF;
+                    break;
+                }
+            pair.left = pair.right = static_cast<uint8_t>(w);
+            pair.sprites = true;
+            m_spritePairOf[w] = static_cast<int8_t>(pairCount);
+            ++pairCount;
+        }
+    }
+    else
+        for (unsigned w = 0; w < 32; ++w)
+            next[w].eyes = 3; // (a core without the world snapshot: every world counts as both eyes')
+    m_worlds = next;
+    m_pairs = std::move(pairs);
+    m_pairCount = pairCount;
+}
+
+int ColorPackRenderer::EyeOnly(uint64_t tag) const
+{
+    if (!m_oam || !VBGO_TAG_IS_OBJ(tag))
+        return 0;
+    const unsigned flags = m_oam[VBGO_TAG_OBJ_NO(tag) * 4 + 1] & 0xC000;
+    return flags == 0x8000 ? 1 : flags == 0x4000 ? 2 : 0;
+}
+
+bool ColorPackRenderer::InPicture(const Pair &pair, uint64_t tag, unsigned eye) const
+{
+    if (!pair.sprites)
+        return !VBGO_TAG_IS_OBJ(tag) && VBGO_TAG_WORLD(tag) == (eye ? pair.right : pair.left);
+    return VBGO_TAG_IS_OBJ(tag) && VBGO_TAG_WORLD(tag) == pair.left && EyeOnly(tag) == (eye ? 2 : 1);
+}
+
+int ColorPackRenderer::PairDisparity(unsigned rightWorld, unsigned band) const
+{
+    if (rightWorld >= 32 || band >= static_cast<unsigned>(kBands) || m_pairOfRight[rightWorld] < 0)
+        return kNoDisparity;
+    const Pair &pair = m_pairs[m_pairOfRight[rightWorld]];
+    return pair.estimated ? pair.disparity[band] : kNoDisparity;
+}
+
+int ColorPackRenderer::LeftX(const uint64_t tag, int x, unsigned eye, unsigned y) const
+{
+    if (!eye)
+        return x;
+    if (VBGO_TAG_IS_OBJ(tag))
+    {
+        // A right-eye-only sprite: where its sprite pair's disparity puts it.
+        const int p = m_spritePairOf[VBGO_TAG_WORLD(tag)];
+        if (p >= 0 && EyeOnly(tag) == 2 && m_pairs[p].estimated && m_pairs[p].disparity[y >> 3] != kNoDisparity)
+            return x + m_pairs[p].disparity[y >> 3];
+        // right x = JX + JP, left x = JX - JP
+        return m_oam ? x - 2 * vbgo_obj_parallax(m_oam, VBGO_TAG_OBJ_NO(tag)) : x;
+    }
+    const unsigned world = VBGO_TAG_WORLD(tag);
+    if (m_pairOfRight[world] >= 0)
+    {
+        const Pair &pair = m_pairs[m_pairOfRight[world]];
+        const int d = pair.estimated ? pair.disparity[y >> 3] : kNoDisparity;
+        return d == kNoDisparity ? x : x + d;
+    }
+    return x - m_rightShift[world];
+}
+
+uint64_t ColorPackRenderer::Near(int x, int y, unsigned world) const
+{
+    // Markers drawn within reach over the last two frames (of a layer-bound
+    // group, only ones drawn on this pixel's layer) - in left-eye terms.
+    // (Sprites' groups: m_nearSprites.)
     const int cx = x >> 3, cy = y >> 3;
     uint64_t bits = 0;
-    for (int gy = std::max(0, cy - kContextReach); gy <= std::min(kGridH - 1, cy + kContextReach); ++gy)
-        for (int gx = std::max(0, cx - kContextReach); gx <= std::min(kGridW - 1, cx + kContextReach); ++gx)
-        {
-            const int i = gy * kGridW + gx;
-            for (unsigned g = 0; g < 2; ++g)
+    for (unsigned k = 1; k <= 2; ++k)
+    {
+        const unsigned g = (m_gridCurrent + k) % 3;
+        const uint64_t *grid = m_markerGrid[g].data();
+        const uint8_t *layers = m_layerBound ? m_markerLayer[g].data() : nullptr;
+        for (int gy = std::max(0, cy - kContextReach); gy <= std::min(kGridH - 1, cy + kContextReach); ++gy)
+            for (int gx = std::max(0, cx - kContextReach); gx <= std::min(kGridW - 1, cx + kContextReach); ++gx)
             {
-                const uint64_t here = m_markerGrid[eye][g][i];
-                if (!m_layerBound)
+                const int i = gy * kGridW + gx;
+                const uint64_t here = grid[i];
+                if (!layers)
                     bits |= here;
                 else
-                    bits |= (here & ~m_layerBound) | (m_markerLayer[eye][g][i] == world ? here & m_layerBound : 0);
+                    bits |= (here & ~m_layerBound) | (layers[i] == world ? here & m_layerBound : 0);
             }
-        }
+    }
     return bits;
+}
+
+bool ColorPackRenderer::SharedWithLeftPicture(unsigned chr, uint32_t hash)
+{
+    const uint32_t yes = (m_frame << 1) | 1, no = m_frame << 1;
+    uint32_t &known = m_slotSharedAt[chr];
+    if (known == yes || known == no)
+        return known == yes;
+    bool found = false;
+    if (hash == 0)
+        found = m_leftPairHashZero;
+    else if (!m_leftPairHashes.empty())
+    {
+        const uint32_t mask = static_cast<uint32_t>(m_leftPairHashes.size() - 1);
+        for (uint32_t i = (hash * 2654435761u) & mask; m_leftPairHashes[i]; i = (i + 1) & mask)
+            if (m_leftPairHashes[i] == hash)
+            {
+                found = true;
+                break;
+            }
+    }
+    known = found ? yes : no;
+    return found;
+}
+
+const TileColorPack::CellTile *ColorPackRenderer::FindCell(unsigned cell, unsigned palette, uint32_t hash) const
+{
+    const TileColorPack::CellTile *cells = m_pack->CellTiles().data();
+    for (uint32_t k = m_cellStart[cell], end = m_cellStart[cell + 1]; k < end; ++k)
+        if (cells[k].palette == palette && cells[k].hash == hash)
+            return &cells[k];
+    return nullptr;
+}
+
+const TileColorPack::CellTile *ColorPackRenderer::MappedCell(int pair, uint64_t tag, int x, int y, uint32_t hash)
+{
+    // A tile both pictures of a pair use, that the pack colors per map cell
+    // (the left picture's cells - painted from the left eye): the left
+    // picture's cell showing the same tile pixel on this row, nearest to
+    // where the band's disparity puts it - once per right-picture cell and
+    // frame, so a cell's pixels all go by the same one.
+    const unsigned palette = VBGO_TAG_PALETTE(tag), index = VBGO_TAG_INDEX(tag);
+    const uint32_t key = (VBGO_TAG_CELL(tag) << 13) | (palette << 11) | VBGO_TAG_CHAR(tag);
+    const uint32_t mask = static_cast<uint32_t>(m_mapCache.size() - 1);
+    uint32_t i = (key * 2654435761u) >> 20 & mask;
+    while (m_mapCache[i].frame == m_frame && m_mapCache[i].key != key)
+        i = (i + 1) & mask;
+    MapEntry &entry = m_mapCache[i];
+    if (entry.frame == m_frame)
+        return entry.cell;
+    const Pair &p = m_pairs[pair];
+    const int d = p.estimated ? p.disparity[y >> 3] : kNoDisparity;
+    const int target = x + (d == kNoDisparity ? 0 : d);
+    const LeftPixel *best = nullptr;
+    int bestDistance = kMaxDisparity + 1;
+    for (const LeftPixel &l : m_pairRows[y])
+        if (l.hash == hash && l.index == index && l.palette == palette && l.world == p.left && std::abs(l.x - target) < bestDistance)
+            best = &l, bestDistance = std::abs(l.x - target);
+    entry = {key, m_frame, best ? FindCell(best->cell, palette, hash) : nullptr};
+    return entry.cell;
+}
+
+bool ColorPackRenderer::RegionColor(int p, int x, int y, unsigned shade, const uint8_t *frame, uint32_t fbWidth,
+                                    uint32_t leftOffset, uint8_t *out)
+{
+    // Where the pixel's 8x8 block lines up with the left picture (the
+    // block's disparity - see EstimatePair, worked out when the picture
+    // changes, not every frame): the color of the nearest left-picture pixel
+    // of the same shade - the very pixel it shows there if the block is the
+    // left drawing shifted; on a picture drawn separately for each eye, the
+    // same spot of the same object, whatever the two dithers do. Failing
+    // that, by region: the most common color the left picture's pixels of
+    // that shade show in that 8x8 window, or a wider one around it.
+    Pair &pair = m_pairs[p];
+    if (!pair.estimated)
+        return false;
+    const int bx = x >> 3, by = y >> 3;
+    const int d = pair.blockDisparity[by * kBlocksX + bx];
+    if (d == kNoDisparity)
+        return false;
+    // The nearest left-picture pixel of the same shade to where the block's
+    // disparity puts it (the very pixel, if the block is the left drawing
+    // shifted), within kNearReach.
+    const int lx = x + d;
+    const uint8_t want = static_cast<uint8_t>((p + 1) | (shade << 5));
+    if (lx >= -kPad && lx < VBGO_TT_WIDTH + kPad)
+    {
+        const uint8_t *at = &m_leftPicture[MapAt(lx, y)];
+        for (const NearSpot &o : kNearest)
+            if (at[o.offset] == want)
+            {
+                std::memcpy(out, &frame[(static_cast<size_t>(y + o.dy) * fbWidth + leftOffset + lx + o.dx) * 4], 3);
+                return true;
+            }
+    }
+    Block &block = pair.blocks[by * kBlocksX + bx];
+    if (block.frame != m_frame)
+    {
+        block.frame = m_frame;
+        block.bgr[0] = block.bgr[1] = block.bgr[2] = 0;
+        static constexpr int kWindows[3][4] = {{0, 8, 0, 8}, {-4, 12, 0, 8}, {-8, 16, -4, 12}}; // columns, rows (from the block)
+        for (const auto &win : kWindows)
+        {
+            uint32_t candidate[3] = {}, count[3] = {};
+            for (int cx = std::max(0, bx * 8 + d + win[0]); cx < std::min(VBGO_TT_WIDTH, bx * 8 + d + win[1]); ++cx)
+                for (int cy = std::max(0, by * 8 + win[2]); cy < std::min(VBGO_TT_HEIGHT, by * 8 + win[3]); ++cy)
+                {
+                    const uint8_t at = m_leftPicture[MapAt(cx, cy)];
+                    if ((at & 31) != p + 1)
+                        continue;
+                    const unsigned s = at >> 5;
+                    const size_t i = (static_cast<size_t>(cy) * fbWidth + leftOffset + cx) * 4;
+                    const uint32_t c = 1u << 24 | frame[i] | (frame[i + 1] << 8) | (frame[i + 2] << 16);
+                    if (!count[s - 1])
+                        candidate[s - 1] = c, count[s - 1] = 1;
+                    else
+                        count[s - 1] += candidate[s - 1] == c ? 1 : -1;
+                }
+            bool all = true;
+            for (int k = 0; k < 3; ++k)
+            {
+                if (!block.bgr[k])
+                    block.bgr[k] = candidate[k];
+                all = all && block.bgr[k];
+            }
+            if (all)
+                break;
+        }
+    }
+    const uint32_t c = block.bgr[shade - 1];
+    if (!c)
+        return false;
+    out[0] = static_cast<uint8_t>(c);
+    out[1] = static_cast<uint8_t>(c >> 8);
+    out[2] = static_cast<uint8_t>(c >> 16);
+    return true;
 }
 
 void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWidth, const uint32_t eyeOffset[2],
@@ -186,192 +528,346 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
     const TileColorPack *pack = m_packShown ? m_pack : nullptr;
     if (!pack && !m_auto)
         return;
+    vbgo_tt_eye_view view[2];
+    const bool have[2] = {vbgo_tiletrack_eye_view(0, &view[0]), vbgo_tiletrack_eye_view(1, &view[1])};
+    if (!have[0] && !have[1])
+        return;
+    ++m_frame;
+    const vbgo_tt_eye_view &any = have[0] ? view[0] : view[1];
+    ClassifyWorlds(any.worlds);
+    m_oam = any.oam;
     if (m_auto)
         UpdateAutoColors();
     const int bg[3] = {static_cast<int>(background.b * 255.0f + 0.5f), static_cast<int>(background.g * 255.0f + 0.5f),
                        static_cast<int>(background.r * 255.0f + 0.5f)};
-    const TileColorPack::CellTile *cellTiles = pack ? pack->CellTiles().data() : nullptr;
     const bool haveCells = pack && !m_cellStart.empty();
     const TileColorPack::ContextTile *contexts = pack ? pack->ContextTiles().data() : nullptr;
-    const bool haveContexts = pack && !m_markerGrid[0][0].empty();
-    uint32_t worldsDrawn = 0; // background layers drawn this frame
+    const bool haveContexts = pack && !m_markerGrid[0].empty();
+    uint64_t *markers = nullptr; // this frame's marker grid (Near reads the two before it)
+    uint8_t *markerLayers = nullptr;
+    if (haveContexts)
+    {
+        m_gridCurrent = (m_gridCurrent + 1) % 3;
+        markers = m_markerGrid[m_gridCurrent].data();
+        std::fill(markers, markers + kGridW * kGridH, 0);
+        if (m_layerBound)
+        {
+            markerLayers = m_markerLayer[m_gridCurrent].data();
+            std::fill(markerLayers, markerLayers + kGridW * kGridH, 0xFF);
+        }
+        // Sprites' groups: the last two frames' markers within reach of each
+        // cell, once (rows, then columns), so a lookup is one read.
+        std::vector<uint64_t> rows(kGridW * kGridH, 0);
+        const uint64_t *a = m_markerGrid[(m_gridCurrent + 1) % 3].data(), *b = m_markerGrid[(m_gridCurrent + 2) % 3].data();
+        for (int gy = 0; gy < kGridH; ++gy)
+            for (int gx = 0; gx < kGridW; ++gx)
+            {
+                uint64_t bits = 0;
+                for (int x = std::max(0, gx - kContextReach); x <= std::min(kGridW - 1, gx + kContextReach); ++x)
+                    bits |= a[gy * kGridW + x] | b[gy * kGridW + x];
+                rows[gy * kGridW + gx] = bits & ~m_layerBound;
+            }
+        m_nearSprites.assign(kGridW * kGridH, 0);
+        for (int gy = 0; gy < kGridH; ++gy)
+            for (int gx = 0; gx < kGridW; ++gx)
+                for (int y = std::max(0, gy - kContextReach); y <= std::min(kGridH - 1, gy + kContextReach); ++y)
+                    m_nearSprites[gy * kGridW + gx] |= rows[y * kGridW + gx];
+    }
+    // Pairs: the left pictures' colors per block and shade, the tiles they
+    // use, their pixels of tiles colored per map cell.
+    const bool pairs = pack && m_pairCount > 0;
+    if (pairs)
+    {
+        for (int p = 0; p < m_pairCount; ++p)
+        {
+            if (m_pairs[p].blocks.empty())
+                m_pairs[p].blocks.resize(kBlocksX * kBands);
+        }
+        m_leftPairHashes.assign(4096, 0);
+        m_leftPairHashZero = false;
+        m_leftPicture.assign(kMapW * kMapH, 0);
+        for (auto &row : m_pairRows)
+            row.clear();
+        if (m_mapCache.empty())
+            m_mapCache.resize(4096);
+    }
+    std::array<uint8_t, 2048> leftPairSlot{}; // slots the left pictures drew this frame
+    uint32_t worldsDrawn = 0; // background layers drawn this frame (by the world whose colors they take)
     unsigned brightest = 0;
     std::array<int16_t, 32> left, right, top, bottom; // (each layer's extent this frame, both eyes)
     left.fill(VBGO_TT_WIDTH), right.fill(-1), top.fill(VBGO_TT_HEIGHT), bottom.fill(-1);
-    m_packColored.assign(VBGO_TT_EYE_PIXELS, 0);
+
+    auto write = [&](uint8_t *dst, const uint8_t *rgb, unsigned level) {
+        const int fade = m_fade[level]; // 0-256
+        if (fade == 256)
+        {
+            dst[0] = rgb[2];
+            dst[1] = rgb[1];
+            dst[2] = rgb[0];
+        }
+        else
+        {
+            dst[0] = static_cast<uint8_t>(bg[0] + (((rgb[2] - bg[0]) * fade + 128) >> 8));
+            dst[1] = static_cast<uint8_t>(bg[1] + (((rgb[1] - bg[1]) * fade + 128) >> 8));
+            dst[2] = static_cast<uint8_t>(bg[2] + (((rgb[0] - bg[2]) * fade + 128) >> 8));
+        }
+    };
+    // The tile's colors with context (the slow path - see Run::slow).
+    auto tileColors = [&](uint64_t t, unsigned eye, int x, int y, int &nearCell, uint64_t &nearBits) -> const uint8_t * {
+        const unsigned chr = VBGO_TAG_CHAR(t), index = VBGO_TAG_INDEX(t), palette = VBGO_TAG_PALETTE(t);
+        const unsigned world = m_worlds[VBGO_TAG_WORLD(t)].colors;
+        const Slot &slot = m_slots[chr];
+        const TileColorPack::Tile *tile = nullptr;
+        // Context: a shared tile in an object whose marker is nearby (a
+        // sprite's colors only on sprites, a background figure's only on
+        // its layer) - nearby where the left eye shows this pixel.
+        if (slot.contextCount && haveContexts)
+        {
+            const unsigned sprite = VBGO_TAG_IS_OBJ(t);
+            const int lx = std::min(VBGO_TT_WIDTH - 1, std::max(0, LeftX(t, x, eye, static_cast<unsigned>(y))));
+            const int cell = static_cast<int>(((y >> 3) * kGridW + (lx >> 3)) | (world << 16) | (sprite << 21));
+            if (cell != nearCell)
+            {
+                nearCell = cell;
+                nearBits = sprite ? m_nearSprites[(y >> 3) * kGridW + (lx >> 3)] : m_layerBound ? Near(lx, y, world) & m_layerBound : 0;
+            }
+            for (uint32_t k = 0; nearBits && k < slot.contextCount; ++k)
+            {
+                const TileColorPack::ContextTile &c = contexts[slot.contextFirst + k];
+                if (nearBits >> c.group & 1)
+                {
+                    tile = &c.tile;
+                    break;
+                }
+            }
+        }
+        if (!tile)
+        {
+            tile = slot.palette[palette];
+            if (slot.layered && tile == slot.base)
+                if (const TileColorPack::Tile *layer = m_pack->FindLayer(slot.hash, world))
+                    tile = layer;
+        }
+        return tile && (tile->mask >> index & 1) ? tile->rgb[index] : nullptr;
+    };
+    // What a run of pixels (down a column, from one tile in one map cell, or
+    // one sprite's tile) shares - looked up once for the run.
+    struct Run
+    {
+        const TileColorPack::CellTile *cell = nullptr; // its map cell's colors (or the left partner's)
+        const TileColorPack::Tile *tile = nullptr;     // the tile's colors (palette, layer or its own)
+        const AutoColors::Ramp *ramp = nullptr;        // automatic colors, if on
+        int ownPair = -1;                              // a pair's right picture's own tile: region colors
+        uint8_t leftPicture = 0;                       // a pair's left picture: that pair + 1
+        bool record = false;                           // (a left picture's tile colored per map cell: remember where)
+        bool slow = false;                             // context, ambiguous or a marker: pixel by pixel
+    };
+    constexpr uint64_t kRunMask = 0x7FFull | (3ull << 17) | (1ull << 19) | (31ull << 22) | (1ull << 27) | (0xFFFFull << 28);
 
     for (unsigned eye = 0; eye < 2; ++eye)
     {
-        vbgo_tt_eye_view view;
-        if (!vbgo_tiletrack_eye_view(eye, &view))
+        if (!have[eye])
             continue;
+        const vbgo_tt_eye_view &v = view[eye];
         if (pack)
-            ResolveSlots(view.hashes);
-        uint64_t *markers = nullptr; // this frame's marker grid (the other one keeps the last frame's)
-        uint8_t *markerLayers = nullptr;
-        if (haveContexts)
+            ResolveSlots(v.hashes);
+        if (eye == 1 && pairs)
         {
-            m_gridCurrent[eye] ^= 1;
-            markers = m_markerGrid[eye][m_gridCurrent[eye]].data();
-            std::fill(markers, markers + kGridW * kGridH, 0);
-            if (m_layerBound)
-            {
-                markerLayers = m_markerLayer[eye][m_gridCurrent[eye]].data();
-                std::fill(markerLayers, markerLayers + kGridW * kGridH, 0xFF);
-            }
-        }
-        const uint64_t stamp = view.stamp;
-        for (uint32_t x = 0; x < VBGO_TT_WIDTH; ++x)
-        {
-            const uint64_t *column = view.columns[x];
-            if (!column)
-                continue;
-            const size_t base = (static_cast<size_t>(eyeOffset[eye]) + x) * 4;
-            // Pixels next to each other mostly come from the same map cell -
-            // remember the last one's lookup.
-            uint32_t lastCellKey = ~0u;
-            const TileColorPack::CellTile *lastCell = nullptr;
-            int nearCell = -1; // the same for markers nearby (cell and layer)
-            uint64_t nearBits = 0;
-            for (uint32_t y = 0; y < VBGO_TT_HEIGHT; ++y)
-            {
-                const uint64_t t = column[y];
-                if ((t >> 48) != stamp)
-                    continue; // nothing tracked here this frame (background)
-                const size_t i = base + static_cast<size_t>(y) * fbWidth * 4;
-                const uint8_t *r = &raw[i];
-                const unsigned pixel = VBGO_TAG_PIXEL(t);
-                if (pixel && (r[0] | r[1] | r[2]) == 0)
-                    continue; // drawn in a shade the game switched off - stays background
-                const unsigned chr = VBGO_TAG_CHAR(t), index = VBGO_TAG_INDEX(t), palette = VBGO_TAG_PALETTE(t);
-                if (!VBGO_TAG_IS_OBJ(t))
+            // The tiles the left pictures drew (by contents: games keep a
+            // tile in a slot per eye - Mario Clash's digits).
+            const uint32_t mask = static_cast<uint32_t>(m_leftPairHashes.size() - 1);
+            for (unsigned c = 0; c < 2048; ++c)
+                if (leftPairSlot[c])
                 {
-                    const unsigned world = VBGO_TAG_WORLD(t);
-                    worldsDrawn |= 1u << world;
-                    left[world] = std::min<int16_t>(left[world], static_cast<int16_t>(x));
-                    right[world] = std::max<int16_t>(right[world], static_cast<int16_t>(x));
-                    top[world] = std::min<int16_t>(top[world], static_cast<int16_t>(y));
-                    bottom[world] = std::max<int16_t>(bottom[world], static_cast<int16_t>(y));
-                }
-                brightest = std::max<unsigned>(brightest, r[3] >> 2);
-                const uint8_t *rgb = nullptr;
-                if (!pack)
-                    goto automatic;
-                if (pixel && m_slots[chr].ambiguous)
-                    m_ambiguousPixels.emplace_back(static_cast<uint16_t>(x), static_cast<uint16_t>(y));
-                if (markers && pixel && m_slots[chr].markerBits)
-                {
-                    // Sprites' groups count sprite markers, background figures'
-                    // groups background ones (and remember the layer).
-                    const bool sprite = VBGO_TAG_IS_OBJ(t) != 0;
-                    const uint64_t bits = m_slots[chr].markerBits & (sprite ? ~m_layerBound : m_layerBound);
-                    if (bits)
+                    const uint32_t hash = view[0].hashes[c];
+                    if (!hash)
                     {
-                        const unsigned cell = (y >> 3) * kGridW + (x >> 3);
-                        markers[cell] |= bits;
-                        if (!sprite && markerLayers)
-                            markerLayers[cell] = static_cast<uint8_t>(VBGO_TAG_WORLD(t));
-                    }
-                }
-
-                // 1. The map cell's own colors for this tile (and fills).
-                if (haveCells && VBGO_TAG_HAS_CELL(t))
-                {
-                    const unsigned cell = VBGO_TAG_CELL(t);
-                    const uint32_t cellKey = (cell << 13) | (palette << 11) | chr;
-                    if (cellKey != lastCellKey)
-                    {
-                        lastCellKey = cellKey;
-                        lastCell = nullptr;
-                        for (uint32_t k = m_cellStart[cell], end = m_cellStart[cell + 1]; k < end; ++k)
-                            if (cellTiles[k].palette == palette && cellTiles[k].hash == view.hashes[chr])
-                            {
-                                lastCell = &cellTiles[k];
-                                break;
-                            }
-                    }
-                    if (lastCell)
-                    {
-                        if (lastCell->keep >> index & 1)
-                            goto automatic; // left uncolored here on purpose: the mode's own colors
-                        if (lastCell->mask >> index & 1)
-                            rgb = lastCell->rgb[index];
-                    }
-                }
-                if (!rgb)
-                {
-                    if (!pixel)
-                        continue; // a fill nobody painted
-                    const Slot &slot = m_slots[chr];
-                    const TileColorPack::Tile *tile = nullptr;
-                    // Context: a shared tile in an object whose marker is nearby
-                    // (a sprite's colors only on sprites, a background
-                    // figure's only on its layer).
-                    if (slot.contextCount)
-                    {
-                        const unsigned world = VBGO_TAG_WORLD(t), sprite = VBGO_TAG_IS_OBJ(t);
-                        const int cell = static_cast<int>(((y >> 3) * kGridW + (x >> 3)) | (world << 16) | (sprite << 21));
-                        if (cell != nearCell)
-                        {
-                            nearCell = cell;
-                            nearBits = Near(eye, static_cast<int>(x), static_cast<int>(y), world) & (sprite ? ~m_layerBound : m_layerBound);
-                        }
-                        for (uint32_t k = 0; nearBits && k < slot.contextCount; ++k)
-                        {
-                            const TileColorPack::ContextTile &c = contexts[slot.contextFirst + k];
-                            if (nearBits >> c.group & 1)
-                            {
-                                tile = &c.tile;
-                                break;
-                            }
-                        }
-                    }
-                    // 2-4. The palette's, the layer's, or the tile's own colors.
-                    if (!tile)
-                    {
-                        tile = slot.palette[palette];
-                        if (slot.layered && tile == slot.base)
-                            if (const TileColorPack::Tile *layer = pack->FindLayer(slot.hash, VBGO_TAG_WORLD(t)))
-                                tile = layer;
-                    }
-                    if (tile && (tile->mask >> index & 1))
-                        rgb = tile->rgb[index];
-                }
-                if (eye && rgb)
-                    m_packColored[y * VBGO_TT_WIDTH + x] = 1;
-            automatic:
-                if (!rgb)
-                {
-                    // Unpainted: keeps the Multicolor palette's color - or,
-                    // in Auto mode, its layer's or sprite palette's (see
-                    // AutoColors.h); the black shade stays background.
-                    const unsigned shade = r[3] & 3;
-                    if (!m_auto || !pixel || !shade)
+                        m_leftPairHashZero = true;
                         continue;
-                    rgb = (VBGO_TAG_IS_OBJ(t) || (m_figureWorlds >> VBGO_TAG_WORLD(t) & 1) ? AutoColors::kSpriteRamps[palette]
-                                                                                       : m_autoLayer[VBGO_TAG_WORLD(t)])[shade - 1]
-                              .data();
+                    }
+                    uint32_t i = (hash * 2654435761u) & mask;
+                    while (m_leftPairHashes[i] && m_leftPairHashes[i] != hash)
+                        i = (i + 1) & mask;
+                    m_leftPairHashes[i] = hash;
                 }
-                uint8_t *dst = &frame[i];
-                const int fade = m_fade[r[3] >> 2]; // 0-256
-                if (fade == 256)
-                {
-                    dst[0] = rgb[2];
-                    dst[1] = rgb[1];
-                    dst[2] = rgb[0];
-                }
-                else
-                {
-                    dst[0] = static_cast<uint8_t>(bg[0] + (((rgb[2] - bg[0]) * fade + 128) >> 8));
-                    dst[1] = static_cast<uint8_t>(bg[1] + (((rgb[1] - bg[1]) * fade + 128) >> 8));
-                    dst[2] = static_cast<uint8_t>(bg[2] + (((rgb[0] - bg[2]) * fade + 128) >> 8));
-                }
+        }
+        const uint64_t stamp = v.stamp;
+        // In strips of kStrip columns, row by row: the frame is stored by
+        // rows, so a row of a strip is one cache line of it (the tags are by
+        // columns - each column of the strip reads on down its own).
+        constexpr uint32_t kStrip = 16;
+        for (uint32_t x0 = 0; x0 < VBGO_TT_WIDTH; x0 += kStrip)
+        {
+            uint64_t runKeys[kStrip];
+            Run runs[kStrip];
+            int nearCells[kStrip]; // (context: the last pixel's markers nearby, by cell and layer)
+            uint64_t nearBitsOf[kStrip];
+            const uint64_t *columns[kStrip];
+            uint32_t drawn = 0; // (columns with anything in them)
+            for (uint32_t k = 0; k < kStrip; ++k)
+            {
+                runKeys[k] = ~0ull, nearCells[k] = -1, nearBitsOf[k] = 0;
+                columns[k] = v.columns[x0 + k];
+                drawn += columns[k] != nullptr;
             }
+            if (!drawn)
+                continue;
+            const size_t stripBase = (static_cast<size_t>(eyeOffset[eye]) + x0) * 4, rowBytes = static_cast<size_t>(fbWidth) * 4;
+            for (uint32_t y = 0; y < VBGO_TT_HEIGHT; ++y)
+                for (uint32_t k = 0; k < kStrip; ++k)
+                {
+                    if (!columns[k])
+                        continue;
+                    const uint64_t t = columns[k][y];
+                    if ((t >> 48) != stamp)
+                        continue; // nothing tracked here this frame (background)
+                    const uint32_t x = x0 + k;
+                    uint64_t &runKey = runKeys[k];
+                    Run &run = runs[k];
+                    int &nearCell = nearCells[k];
+                    uint64_t &nearBits = nearBitsOf[k];
+                    const size_t i = stripBase + k * 4 + y * rowBytes;
+                    const uint8_t *r = &raw[i];
+                    const unsigned pixel = VBGO_TAG_PIXEL(t);
+                    if (pixel && (r[0] | r[1] | r[2]) == 0)
+                        continue; // drawn in a shade the game switched off - stays background
+                    if ((t & kRunMask) != runKey)
+                    {
+                        // A new run: everything but the pixel inside the tile.
+                        runKey = t & kRunMask;
+                        run = Run{};
+                        const unsigned chr = VBGO_TAG_CHAR(t), palette = VBGO_TAG_PALETTE(t), world = VBGO_TAG_WORLD(t);
+                        const bool sprite = VBGO_TAG_IS_OBJ(t) != 0;
+                        const unsigned colors = m_worlds[world].colors;
+                        if (!sprite)
+                        {
+                            worldsDrawn |= 1u << colors;
+                            left[colors] = std::min<int16_t>(left[colors], static_cast<int16_t>(x));
+                            right[colors] = std::max<int16_t>(right[colors], static_cast<int16_t>(x));
+                            top[colors] = std::min<int16_t>(top[colors], static_cast<int16_t>(y));
+                            bottom[colors] = std::max<int16_t>(bottom[colors], static_cast<int16_t>(y));
+                        }
+                        brightest = std::max<unsigned>(brightest, r[3] >> 2);
+                        if (m_auto)
+                            run.ramp = sprite || (m_figureWorlds >> colors & 1) ? &AutoColors::kSpriteRamps[palette] : &m_autoLayer[colors];
+                        if (pack)
+                        {
+                            const Slot &slot = m_slots[chr];
+                            run.slow = slot.ambiguous || (markers && slot.markerBits) || (slot.contextCount && haveContexts);
+                            if (haveCells && VBGO_TAG_HAS_CELL(t))
+                                run.cell = FindCell(VBGO_TAG_CELL(t), palette, slot.hash);
+                            if (!run.slow)
+                            {
+                                run.tile = slot.palette[palette];
+                                if (slot.layered && run.tile == slot.base)
+                                    if (const TileColorPack::Tile *layer = m_pack->FindLayer(slot.hash, colors))
+                                        run.tile = layer;
+                            }
+                            if (pairs && sprite && m_spritePairOf[world] >= 0)
+                            {
+                                const int only = EyeOnly(t);
+                                if (!eye && only == 1)
+                                    leftPairSlot[chr] = 1, run.leftPicture = static_cast<uint8_t>(m_spritePairOf[world] + 1);
+                                else if (eye && only == 2 && !SharedWithLeftPicture(chr, slot.hash))
+                                {
+                                    run.ownPair = m_spritePairOf[world];
+                                    EstimatePair(run.ownPair, view, raw, fbWidth, eyeOffset);
+                                }
+                            }
+                            if (pairs && !sprite)
+                            {
+                                if (!eye && m_pairOfLeft[world] >= 0)
+                                {
+                                    leftPairSlot[chr] = 1;
+                                    run.leftPicture = static_cast<uint8_t>(m_pairOfLeft[world] + 1);
+                                    run.record = slot.cellColored && VBGO_TAG_HAS_CELL(t);
+                                }
+                                else if (eye && m_pairOfRight[world] >= 0)
+                                {
+                                    const int p = m_pairOfRight[world];
+                                    if (!SharedWithLeftPicture(chr, slot.hash))
+                                    {
+                                        run.ownPair = p;
+                                        EstimatePair(p, view, raw, fbWidth, eyeOffset);
+                                    }
+                                    else if (!run.cell && slot.cellColored && VBGO_TAG_HAS_CELL(t))
+                                    {
+                                        EstimatePair(p, view, raw, fbWidth, eyeOffset);
+                                        run.cell = MappedCell(p, t, static_cast<int>(x), static_cast<int>(y), slot.hash);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    const unsigned shade = r[3] & 3, index = VBGO_TAG_INDEX(t);
+                    const uint8_t *rgb = nullptr;
+                    if (run.leftPicture && pixel && shade)
+                        m_leftPicture[MapAt(x, y)] = static_cast<uint8_t>(run.leftPicture | (shade << 5));
+                    if (run.slow && pixel)
+                    {
+                        const unsigned chr = VBGO_TAG_CHAR(t);
+                        if (m_slots[chr].ambiguous)
+                            m_ambiguousPixels.emplace_back(static_cast<uint16_t>(x), static_cast<uint16_t>(y));
+                        if (markers && m_slots[chr].markerBits)
+                        {
+                            // Sprites' groups count sprite markers, background
+                            // figures' groups background ones (and remember the
+                            // layer) - at the marker's left-eye spot.
+                            const bool sprite = VBGO_TAG_IS_OBJ(t) != 0;
+                            const uint64_t bits = m_slots[chr].markerBits & (sprite ? ~m_layerBound : m_layerBound);
+                            const int lx = LeftX(t, static_cast<int>(x), eye, y);
+                            if (bits && lx >= 0 && lx < VBGO_TT_WIDTH)
+                            {
+                                const unsigned cell = (y >> 3) * kGridW + (lx >> 3);
+                                markers[cell] |= bits;
+                                if (!sprite && markerLayers)
+                                    markerLayers[cell] = static_cast<uint8_t>(m_worlds[VBGO_TAG_WORLD(t)].colors);
+                            }
+                        }
+                    }
+                    // 1. The map cell's own colors for this tile (and fills).
+                    if (run.cell)
+                    {
+                        if (run.cell->keep >> index & 1)
+                            goto automatic; // left uncolored here on purpose: the mode's own colors
+                        if (run.cell->mask >> index & 1)
+                            rgb = run.cell->rgb[index];
+                    }
+                    if (!rgb)
+                    {
+                        if (!pixel)
+                            continue; // a fill nobody painted
+                        // A pair's right picture, a tile of its own: the left
+                        // picture's color for its shade there, as shown.
+                        if (run.ownPair >= 0 && shade &&
+                            RegionColor(run.ownPair, static_cast<int>(x), static_cast<int>(y), shade, frame, fbWidth, eyeOffset[0], &frame[i]))
+                            continue;
+                        // 2-4. Context, the palette's, the layer's, or the tile's own colors.
+                        if (run.slow)
+                            rgb = tileColors(t, eye, static_cast<int>(x), static_cast<int>(y), nearCell, nearBits);
+                        else if (run.tile && (run.tile->mask >> index & 1))
+                            rgb = run.tile->rgb[index];
+                    }
+                automatic:
+                    if (!rgb)
+                    {
+                        // Unpainted: keeps the Multicolor palette's color - or,
+                        // in Auto mode, its layer's or sprite palette's (see
+                        // AutoColors.h); the black shade stays background.
+                        if (!run.ramp || !pixel || !shade)
+                            continue;
+                        rgb = (*run.ramp)[shade - 1].data();
+                    }
+                    if (run.record && pixel)
+                        m_pairRows[y].push_back({static_cast<int16_t>(x), static_cast<uint8_t>(index), static_cast<uint8_t>(VBGO_TAG_PALETTE(t)),
+                                                 static_cast<uint8_t>(VBGO_TAG_WORLD(t)), static_cast<uint16_t>(VBGO_TAG_CELL(t)),
+                                                 m_slots[VBGO_TAG_CHAR(t)].hash});
+                    write(&frame[i], rgb, r[3] >> 2);
+                }
         }
         if (!m_ambiguousPixels.empty())
-            PaintAmbiguous(frame, fbWidth, eyeOffset[eye], view);
+            PaintAmbiguous(frame, fbWidth, eyeOffset[eye], v);
     }
-    MatchEyes(frame, raw, fbWidth, eyeOffset);
     // Automatic colors: the layers this game draws, its brightness (without
     // a pack, they fade relative to the brightest it has shown).
     m_autoWorlds |= worldsDrawn;
@@ -381,7 +877,7 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
     for (unsigned w = 0; w < 32; ++w)
         if (right[w] >= 0)
         {
-            const int size = std::max(right[w] - left[w], bottom[w] - top[w]) + 1;
+            const int size = std::max(right[w] - left[w], bottom[w] - top[w] + 7) + 1; // (runs: their first rows)
             m_worldExtent[w] = static_cast<int16_t>(std::max(size, m_worldExtent[w] - 1));
             if (m_worldExtent[w] <= kFigureSize)
                 m_figureWorlds |= 1u << w;
@@ -395,6 +891,207 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
     }
 }
 
+void ColorPackRenderer::EstimatePair(int p, const vbgo_tt_eye_view view[2], const uint8_t *raw, uint32_t fbWidth,
+                                     const uint32_t eyeOffset[2])
+{
+    // Per 8-row band: the shift that lines up the most right-picture pixels
+    // with left-picture pixels of the same shade (within kMaxDisparity).
+    // Kept while the pair's registers stay put; while both worlds scroll
+    // together, refined around the last estimate every few frames; anything
+    // else searches again.
+    Pair &pair = m_pairs[p];
+    if (pair.checkedAt == m_frame)
+        return;
+    pair.checkedAt = m_frame;
+    const uint16_t *worlds = view[0].worlds ? view[0].worlds : view[1].worlds;
+    if (!worlds)
+        return;
+    std::array<uint16_t, 32> attributes;
+    std::copy(&worlds[pair.left * 16], &worlds[pair.left * 16] + 16, attributes.begin());
+    std::copy(&worlds[pair.right * 16], &worlds[pair.right * 16] + 16, attributes.begin() + 16);
+    const uint32_t age = m_frame - pair.estimatedAt;
+    if (pair.estimated && attributes == pair.attributes && age < 64)
+        return;
+    bool scrolled = pair.estimated;
+    for (int f = 0; f < 16 && scrolled; ++f)
+        scrolled = f >= 1 && f <= 6 ? static_cast<uint16_t>(attributes[16 + f] - attributes[f]) ==
+                                          static_cast<uint16_t>(pair.attributes[16 + f] - pair.attributes[f])
+                                    : attributes[f] == pair.attributes[f] && attributes[16 + f] == pair.attributes[16 + f];
+    if (scrolled && age < 4)
+        return;
+    pair.attributes = attributes;
+    // Both pictures' pixels, by row: per eye, per row, per shade 1-3, a guarded bit row.
+    const size_t eyeRows = static_cast<size_t>(VBGO_TT_HEIGHT) * 3 * kGuardedRow;
+    m_estimateBits.assign(2 * eyeRows, 0);
+    uint64_t *bits = m_estimateBits.data();
+    for (unsigned eye = 0; eye < 2; ++eye)
+    {
+        for (int x = 0; x < VBGO_TT_WIDTH; ++x)
+        {
+            const uint64_t *column = view[eye].columns[x];
+            if (!column)
+                continue;
+            for (int y = 0; y < VBGO_TT_HEIGHT; ++y)
+            {
+                const uint64_t t = column[y];
+                if ((t >> 48) != view[eye].stamp || !VBGO_TAG_PIXEL(t) || !InPicture(pair, t, eye))
+                    continue;
+                const unsigned shade = raw[(static_cast<size_t>(y) * fbWidth + eyeOffset[eye] + x) * 4 + 3] & 3;
+                if (shade)
+                    bits[eye * eyeRows + (static_cast<size_t>(y) * 3 + shade - 1) * kGuardedRow + 1 + (x >> 6)] |= 1ull << (x & 63);
+            }
+        }
+    }
+    const uint64_t *leftBits = bits, *rightBits = bits + eyeRows;
+    std::array<int16_t, kBands> found;
+    found.fill(kNoDisparity);
+    for (int band = 0; band < kBands; ++band)
+    {
+        int lit = 0;
+        for (int y = band * 8; y < band * 8 + 8; ++y)
+            for (int s = 0; s < 3; ++s)
+                for (int w = 0; w < kRowWords; ++w)
+                    lit += CountSet(rightBits[(y * 3 + s) * kGuardedRow + 1 + w]);
+        if (lit < 16)
+            continue;
+        const int previous = pair.estimated ? pair.disparity[band] : kNoDisparity;
+        const int around = previous != kNoDisparity ? previous : 0;
+        // How many pixels line up at d (rows of the band, every step-th).
+        auto same = [&](int d, int step) {
+            int n = 0;
+            for (int y = band * 8; y < band * 8 + 8; y += step)
+                for (int s = 0; s < 3; ++s)
+                {
+                    const uint64_t *r = &rightBits[(y * 3 + s) * kGuardedRow];
+                    const uint64_t *l = &leftBits[(y * 3 + s) * kGuardedRow];
+                    for (int w = 0; w < kRowWords; ++w)
+                        n += CountSet(r[1 + w] & Shifted(l, w, d));
+                }
+            return n;
+        };
+        // (ties: the one nearer the last estimate, else nearer 0)
+        auto search = [&](int from, int to, int stride, int step, int &bestD) {
+            int best = -1;
+            for (int d = std::max(-kMaxDisparity, from); d <= std::min(kMaxDisparity, to); d += stride)
+            {
+                const int n = same(d, step);
+                if (n > best || (n == best && std::abs(d - around) < std::abs(bestD - around)))
+                    best = n, bestD = d;
+            }
+            return best;
+        };
+        int bestD = around, best;
+        if (scrolled && previous != kNoDisparity)
+            best = search(previous - 4, previous + 4, 1, 1, bestD); // (scrolled: near the last one)
+        else
+        {
+            // Coarse (every other shift, every other row), then fine around it.
+            search(-kMaxDisparity, kMaxDisparity, 2, 2, bestD);
+            const int coarse = bestD;
+            best = search(coarse - 2, coarse + 2, 1, 1, bestD);
+        }
+        if (best > 0)
+            found[band] = static_cast<int16_t>(bestD);
+    }
+    // Bands without enough to go on: the nearest band's.
+    for (int band = 0; band < kBands; ++band)
+    {
+        if (found[band] != kNoDisparity)
+        {
+            pair.disparity[band] = found[band];
+            continue;
+        }
+        int16_t d = kNoDisparity;
+        for (int reach = 1; reach < kBands && d == kNoDisparity; ++reach)
+            for (const int b : {band - reach, band + reach})
+                if (b >= 0 && b < kBands && found[b] != kNoDisparity)
+                {
+                    d = found[b];
+                    break;
+                }
+        pair.disparity[band] = d;
+    }
+    // Per 8x8 block of the right picture: the shift within reach of its
+    // band's that lines up the most of its pixels (a 16-pixel-wide window
+    // around it, its rows) - pictures have depth within a band (Wario
+    // Land's title: Wario's head before his plane's nose) - then each block
+    // the median of itself and its neighbours (no lone outliers).
+    std::vector<int16_t> blocks(kBlocksX * kBands, static_cast<int16_t>(kNoDisparity));
+    std::vector<uint8_t> exact(kBlocksX * kBands, 0);
+    const bool keepBlocks = scrolled && pair.blockDisparity.size() == blocks.size();
+    for (int by = 0; by < kBands; ++by)
+    {
+        const int band = pair.disparity[by];
+        if (band == kNoDisparity)
+            continue;
+        for (int bx = 0; bx < kBlocksX; ++bx)
+        {
+            const int w = bx >> 3, shift = (bx & 7) * 8;
+            int lit = 0;
+            for (int y = by * 8; y < by * 8 + 8; ++y)
+                for (int s = 0; s < 3; ++s)
+                    lit += CountSet((rightBits[(y * 3 + s) * kGuardedRow + 1 + w] >> shift) & 0xFF);
+            if (lit < 6)
+                continue;
+            const int previous = keepBlocks ? pair.blockDisparity[by * kBlocksX + bx] : kNoDisparity;
+            const int center = previous != kNoDisparity ? previous : band, reach = previous != kNoDisparity ? 3 : 10;
+            const int x0 = std::max(0, bx * 8 - 4), x1 = std::min(VBGO_TT_WIDTH, bx * 8 + 12);
+            auto maskOf = [&](int k) {
+                const int lo = std::max(x0 - 64 * k, 0), hi = std::min(x1 - 64 * k, 64);
+                return (hi >= 64 ? ~0ull : (1ull << hi) - 1) & ~((1ull << lo) - 1);
+            };
+            int windowLit = 0;
+            for (int y = by * 8; y < by * 8 + 8; ++y)
+                for (int s = 0; s < 3; ++s)
+                    for (int k = x0 >> 6; k <= (x1 - 1) >> 6; ++k)
+                        windowLit += CountSet(rightBits[(y * 3 + s) * kGuardedRow + 1 + k] & maskOf(k));
+            int best = -1, bestD = center;
+            for (int d = std::max(-kMaxDisparity, center - reach); d <= std::min(kMaxDisparity, center + reach); ++d)
+            {
+                int n = 0;
+                for (int y = by * 8; y < by * 8 + 8; ++y)
+                    for (int s = 0; s < 3; ++s)
+                    {
+                        const uint64_t *r = &rightBits[(y * 3 + s) * kGuardedRow];
+                        const uint64_t *l = &leftBits[(y * 3 + s) * kGuardedRow];
+                        for (int k = x0 >> 6; k <= (x1 - 1) >> 6; ++k)
+                            n += CountSet(r[1 + k] & maskOf(k) & Shifted(l, k, d));
+                    }
+                if (n > best || (n == best && std::abs(d - band) < std::abs(bestD - band)))
+                    best = n, bestD = d;
+            }
+            if (best > 0)
+                blocks[by * kBlocksX + bx] = static_cast<int16_t>(bestD);
+            // (nearly every pixel lines up: the same drawing, shifted - its pixels correspond exactly)
+            exact[by * kBlocksX + bx] = best * 10 >= windowLit * 9;
+        }
+    }
+    pair.blockDisparity.assign(blocks.size(), static_cast<int16_t>(kNoDisparity));
+    for (int by = 0; by < kBands; ++by)
+        for (int bx = 0; bx < kBlocksX; ++bx)
+        {
+            int values[9], n = 0;
+            for (int dy = -1; dy <= 1; ++dy)
+                for (int dx = -1; dx <= 1; ++dx)
+                {
+                    const int yy = by + dy, xx = bx + dx;
+                    if (yy >= 0 && yy < kBands && xx >= 0 && xx < kBlocksX && blocks[yy * kBlocksX + xx] != kNoDisparity)
+                        values[n++] = blocks[yy * kBlocksX + xx];
+                }
+            if (exact[by * kBlocksX + bx])
+                pair.blockDisparity[by * kBlocksX + bx] = blocks[by * kBlocksX + bx]; // (as found)
+            else if (blocks[by * kBlocksX + bx] != kNoDisparity && n)
+            {
+                std::nth_element(values, values + n / 2, values + n);
+                pair.blockDisparity[by * kBlocksX + bx] = static_cast<int16_t>(values[n / 2]);
+            }
+            else
+                pair.blockDisparity[by * kBlocksX + bx] = pair.disparity[by]; // (few pixels: its band's)
+        }
+    pair.estimated = true;
+    pair.estimatedAt = m_frame;
+}
+
 void ColorPackRenderer::PaintAmbiguous(uint8_t *frame, uint32_t fbWidth, uint32_t eyeOffset, const vbgo_tt_eye_view &view)
 {
     // A tile a character paints two ways in one frame (a plain filled tile:
@@ -402,12 +1099,16 @@ void ColorPackRenderer::PaintAmbiguous(uint8_t *frame, uint32_t fbWidth, uint32_
     // of the nearest pixel of the same shade on its layer that isn't such a
     // tile - the shirt's or the cap's around it (within 8 pixels, straight
     // up, down, left or right). Without one it keeps what the pack gave it.
+    // Only what both eyes show the same way around it counts: on a layer,
+    // its own layer; among sprites, sprites at the same depth (parallax) -
+    // their pixels sit the same way around it in both eyes.
     auto tagAt = [&](int x, int y, uint64_t &t) {
         if (x < 0 || x >= VBGO_TT_WIDTH || y < 0 || y >= VBGO_TT_HEIGHT || !view.columns[x])
             return false;
         t = view.columns[x][y];
         return (t >> 48) == view.stamp;
     };
+    auto depth = [&](uint64_t t) { return m_oam && VBGO_TAG_IS_OBJ(t) ? vbgo_obj_parallax(m_oam, VBGO_TAG_OBJ_NO(t)) : 0; };
     static constexpr int kDirections[4][2] = {{0, -1}, {0, 1}, {-1, 0}, {1, 0}};
     for (const auto &p : m_ambiguousPixels)
     {
@@ -415,13 +1116,14 @@ void ColorPackRenderer::PaintAmbiguous(uint8_t *frame, uint32_t fbWidth, uint32_
         uint64_t t = 0, n = 0;
         if (!tagAt(x, y, t))
             continue;
+        const int jp = depth(t);
         int from = -1;
         for (int d = 1; d <= 8 && from < 0; ++d)
             for (const auto &dir : kDirections)
             {
                 const int nx = x + dir[0] * d, ny = y + dir[1] * d;
                 if (tagAt(nx, ny, n) && VBGO_TAG_PIXEL(n) == VBGO_TAG_PIXEL(t) && VBGO_TAG_WORLD(n) == VBGO_TAG_WORLD(t) &&
-                    VBGO_TAG_IS_OBJ(n) == VBGO_TAG_IS_OBJ(t) && !m_slots[VBGO_TAG_CHAR(n)].ambiguous)
+                    VBGO_TAG_IS_OBJ(n) == VBGO_TAG_IS_OBJ(t) && !m_slots[VBGO_TAG_CHAR(n)].ambiguous && depth(n) == jp)
                 {
                     from = ny * static_cast<int>(fbWidth) + static_cast<int>(eyeOffset) + nx;
                     break;
@@ -431,713 +1133,4 @@ void ColorPackRenderer::PaintAmbiguous(uint8_t *frame, uint32_t fbWidth, uint32_
             std::memcpy(&frame[(static_cast<size_t>(y) * fbWidth + eyeOffset + x) * 4], &frame[static_cast<size_t>(from) * 4], 3);
     }
     m_ambiguousPixels.clear();
-}
-
-namespace
-{
-// Shades packed 2 bits per pixel (pixel p of a row at bit 2 * (p + guard)),
-// with guard pixels each side so a window at any disparity stays in the row.
-constexpr int kGuardPixels = 96;
-constexpr int kShadeRowWords = (VBGO_TT_WIDTH + 2 * kGuardPixels) * 2 / 64;
-
-inline uint64_t ShadeBits(const uint64_t *row, int x, int n)
-{
-    const int bit = (x + kGuardPixels) * 2, w = bit >> 6, s = bit & 63;
-    uint64_t v = row[w] >> s;
-    if (s)
-        v |= row[w + 1] << (64 - s);
-    return v & ((1ull << (2 * n)) - 1);
-}
-
-inline int CountSet(uint64_t x)
-{
-#if defined(__GNUC__) || defined(__clang__)
-    return __builtin_popcountll(x);
-#else
-    x = x - ((x >> 1) & 0x5555555555555555ull);
-    x = (x & 0x3333333333333333ull) + ((x >> 2) & 0x3333333333333333ull);
-    x = (x + (x >> 4)) & 0x0F0F0F0F0F0F0F0Full;
-    return static_cast<int>((x * 0x0101010101010101ull) >> 56);
-#endif
-}
-
-// Pixels whose shades differ, of two runs of 2-bit shades.
-inline int ShadesOff(uint64_t a, uint64_t b)
-{
-    const uint64_t x = a ^ b;
-    return CountSet((x | (x >> 1)) & 0x5555555555555555ull);
-}
-} // namespace
-
-void ColorPackRenderer::MatchEyes(uint8_t *frame, const uint8_t *raw, uint32_t fbWidth, const uint32_t eyeOffset[2])
-{
-    // Both eyes see one scene, so they must show it in the same colors - but
-    // the pack is painted from left-eye captures, and games often draw a
-    // layer twice, once per eye on a world of its own (Mario Clash), with
-    // map cells and even tiles of its own (pre-shifted copies), shift a
-    // layer by another amount on every row (Wario Land's mountains), or draw
-    // each eye's picture separately, depth and all (Galactic Pinball's title
-    // and tables): looked up on its own, the right eye would get other
-    // places' colors, or none. So every right-eye pixel takes the color of
-    // the left-eye pixel showing the same thing:
-    //  1. the same tile pixel (by contents, sprite or background alike) at
-    //     the disparity its layer had on this row last frame, or overall;
-    //     else the instance on the row nearest to that (within
-    //     kMaxDisparity) if what's around it looks the same too;
-    //  2. otherwise the left pixel whose surroundings look the same: the
-    //     kWindowWidth x kWindowHeight pixels around it, in the shades the
-    //     eyes actually show - the best of the disparities this pixel had
-    //     last frame, its neighbour's, the pixel above's and its layer's;
-    //     if none is close, the best within kMaxDisparity (at most
-    //     kSearchBudget searches a frame - the rest catch up in the next
-    //     frames - and none again while last frame's match is as good);
-    //  3. a tile pixel the left eye shows somewhere else, without a close
-    //     match, keeps its own colors - the pack's colors for it are the
-    //     left eye's too.
-    // Anything without a counterpart (cut off at the screen's edge, seen by
-    // one eye only) keeps its own colors. Then: specks matched again
-    // (RemoveSpeckles), small objects at one depth (AlignSmallObjects), and
-    // what nothing looked like takes its neighbours' colors (FillPoorMatches).
-    vbgo_tt_eye_view view[2];
-    if (!vbgo_tiletrack_eye_view(0, &view[0]) || !vbgo_tiletrack_eye_view(1, &view[1]))
-        return;
-    // Both eyes' tags, row by row, packed to what matching needs: bit 31
-    // drawn this frame, bits 0-17 what it shows (tile, pixel, sprite),
-    // 18-19 the pixel's value, 20-24 the layer.
-    // A tile is named by its contents, not by the character slot it sits
-    // in: games keep copies of a tile in several slots and draw each eye
-    // from its own (Mario Clash's score digits). The name is the first left-
-    // eye slot holding that tile, or - flagged kRightOnly - the first right-
-    // eye one if the left eye has no such tile.
-    constexpr uint32_t kDrawn = 1u << 31, kRightOnly = 1u << 30, kWhat = (1u << 18) - 1;
-    std::array<uint16_t, 2048> nameOf[2];
-    {
-        if (m_tileNames.empty())
-            m_tileNames.resize(kTileNameSlots);
-        if (++m_tileNameGeneration == 0) // (wrapped: start over)
-        {
-            std::fill(m_tileNames.begin(), m_tileNames.end(), TileName{});
-            m_tileNameGeneration = 1;
-        }
-        for (unsigned eye = 0; eye < 2; ++eye)
-            for (unsigned c = 0; c < 2048; ++c)
-            {
-                const uint32_t hash = view[eye].hashes[c];
-                uint32_t i = (hash * 2654435761u) >> (32 - kTileNameBits);
-                while (m_tileNames[i].generation == m_tileNameGeneration && m_tileNames[i].hash != hash)
-                    i = (i + 1) & (kTileNameSlots - 1);
-                TileName &n = m_tileNames[i];
-                if (n.generation != m_tileNameGeneration)
-                    n = {hash, static_cast<uint16_t>(eye ? 0x8000 | c : c), m_tileNameGeneration};
-                nameOf[eye][c] = n.name;
-            }
-    }
-    m_eyeTags.resize(2 * VBGO_TT_EYE_PIXELS);
-    if (m_eyeDisparityAt.empty())
-        m_eyeDisparityAt.assign(VBGO_TT_EYE_PIXELS, kUnknownDisparity);
-    for (unsigned eye = 0; eye < 2; ++eye)
-    {
-        uint32_t *out = &m_eyeTags[eye * VBGO_TT_EYE_PIXELS];
-        const uint64_t stamp = view[eye].stamp;
-        for (int x0 = 0; x0 < VBGO_TT_WIDTH; x0 += 8) // in 8x8 blocks, for the cache
-            for (int y0 = 0; y0 < VBGO_TT_HEIGHT; y0 += 8)
-                for (int x = x0; x < x0 + 8; ++x)
-                {
-                    const uint64_t *column = view[eye].columns[x];
-                    for (int y = y0; y < y0 + 8; ++y)
-                    {
-                        const uint64_t t = column ? column[y] : 0;
-                        const unsigned slot = nameOf[eye][VBGO_TAG_CHAR(t)];
-                        out[y * VBGO_TT_WIDTH + x] =
-                            column && (t >> 48) == stamp
-                                ? kDrawn | (slot & 0x7FF) | ((slot & 0x8000) ? kRightOnly : 0) | (VBGO_TAG_INDEX(t) << 11) |
-                                      (VBGO_TAG_IS_OBJ(t) << 17) | (VBGO_TAG_PIXEL(t) << 18) | (VBGO_TAG_WORLD(t) << 20)
-                                : 0;
-                    }
-                }
-    }
-    // The shades both eyes show (the core's tag byte, low 2 bits), packed.
-    m_eyeShades.assign(2 * VBGO_TT_HEIGHT * kShadeRowWords, 0);
-    for (unsigned eye = 0; eye < 2; ++eye)
-        for (int y = 0; y < VBGO_TT_HEIGHT; ++y)
-        {
-            uint64_t *out = &m_eyeShades[(eye * VBGO_TT_HEIGHT + y) * kShadeRowWords];
-            const uint8_t *in = &raw[(static_cast<size_t>(y) * fbWidth + eyeOffset[eye]) * 4 + 3];
-            for (int x = 0; x < VBGO_TT_WIDTH; ++x)
-            {
-                const int bit = (x + kGuardPixels) * 2;
-                out[bit >> 6] |= static_cast<uint64_t>(in[x * 4] & 3) << (bit & 63);
-            }
-        }
-    // Every tile pixel the left eye shows anywhere (bit per slot, pixel, sprite).
-    std::fill(m_leftShows.begin(), m_leftShows.end(), 0);
-    for (size_t i = 0; i < VBGO_TT_EYE_PIXELS; ++i)
-        if (const uint32_t l = m_eyeTags[i])
-            m_leftShows[(l & kWhat) >> 6] |= 1ull << (l & 63);
-    std::array<std::array<uint32_t, 2 * kMaxDisparity + 1>, 32> votes{}, lookalikeVotes{};
-    m_eyeMatchKind.resize(VBGO_TT_EYE_PIXELS);
-    int searchBudget = kSearchBudget;
-    ++m_eyeFrame;
-    if (m_eyeCostAt.empty())
-        m_eyeCostAt.assign(VBGO_TT_EYE_PIXELS, kNotSearched);
-    for (int y = 0; y < VBGO_TT_HEIGHT; ++y)
-    {
-        const uint32_t *left = &m_eyeTags[y * VBGO_TT_WIDTH];
-        const uint32_t *right = &m_eyeTags[VBGO_TT_EYE_PIXELS + y * VBGO_TT_WIDTH];
-        int16_t *disparityAt = &m_eyeDisparityAt[y * VBGO_TT_WIDTH];
-        uint8_t *row = &frame[static_cast<size_t>(y) * fbWidth * 4];
-        auto same = [&](int xl, uint32_t r) {
-            return xl >= 0 && xl < VBGO_TT_WIDTH && ((left[xl] ^ r) & (kDrawn | kRightOnly | kWhat)) == 0;
-        };
-        std::array<int16_t, 32> rowCandidate;
-        std::array<int32_t, 32> rowCount{};
-        uint8_t *kindAt = &m_eyeMatchKind[y * VBGO_TT_WIDTH];
-        std::fill(kindAt, kindAt + VBGO_TT_WIDTH, kNoMatchKind);
-        auto take = [&](int x, int from, bool identical) {
-            const unsigned world = (right[x] >> 20) & 31;
-            const int d = from - x;
-            ++(identical ? votes : lookalikeVotes)[world][d + kMaxDisparity];
-            disparityAt[x] = static_cast<int16_t>(d);
-            // (on a layer mostly matched by looks - each eye drawn separately -
-            // the same tile is often a coincidence: checked like a look-alike)
-            kindAt[x] = !identical ? kLookalike : (m_lookalikeWorlds >> world & 1) ? kSameTileFound : kSameTile;
-            if (!rowCount[world])
-                rowCandidate[world] = static_cast<int16_t>(d), rowCount[world] = 1;
-            else
-                rowCount[world] += rowCandidate[world] == d ? 1 : -1;
-            std::memcpy(&row[(eyeOffset[1] + x) * 4], &row[(eyeOffset[0] + from) * 4], 3);
-        };
-        // Each layer's disparity on this row last frame (a layer can shift
-        // every row by its own amount - Wario Land's mountains), for the rows
-        // to come this frame's (whatever most of its pixels here had).
-        int16_t *rowDisparity = &m_eyeRowDisparity[y * 32];
-        struct CommitRow // (at the end of the row, however it ends)
-        {
-            std::array<int16_t, 32> &candidate;
-            std::array<int32_t, 32> &count;
-            int16_t *out;
-            ~CommitRow()
-            {
-                for (unsigned w = 0; w < 32; ++w)
-                    out[w] = count[w] > 0 ? candidate[w] : static_cast<int16_t>(kUnknownDisparity);
-            }
-        } commitRow{rowCandidate, rowCount, rowDisparity};
-        const std::array<int16_t, 32> lastRow = [&] {
-            std::array<int16_t, 32> a;
-            std::copy(rowDisparity, rowDisparity + 32, a.begin());
-            return a;
-        }();
-        // Mostly the same tile pixel at its layer's disparity; the rest after.
-        int missed[VBGO_TT_WIDTH], misses = 0;
-        for (int x = 0; x < VBGO_TT_WIDTH; ++x)
-        {
-            const uint32_t r = right[x];
-            if (!r)
-                continue;
-            const unsigned world = (r >> 20) & 31;
-            const int onRow = lastRow[world], predicted = m_eyeDisparity[world];
-            if (onRow != kUnknownDisparity && same(x + onRow, r))
-                take(x, x + onRow, true);
-            else if (predicted != kUnknownDisparity && predicted != onRow && same(x + predicted, r))
-                take(x, x + predicted, true);
-            else
-                missed[misses++] = x;
-        }
-        if (!misses)
-            continue;
-        // The windows (kWindowWidth x kWindowHeight pixels around x in the
-        // right eye, around x + d in the left): how many pixels' shades
-        // differ, counting up to limit.
-        const int top = std::max(0, y - kWindowHeight / 2), bottom = std::min(VBGO_TT_HEIGHT - 1, y + kWindowHeight / 2);
-        const uint64_t *leftShades = &m_eyeShades[0], *rightShades = &m_eyeShades[VBGO_TT_HEIGHT * kShadeRowWords];
-        auto windowOff = [&](int x, int d, int limit) {
-            int off = 0;
-            for (int yy = top; yy <= bottom && off < limit; ++yy)
-                off += ShadesOff(ShadeBits(&rightShades[yy * kShadeRowWords], x - kWindowWidth / 2, kWindowWidth),
-                                 ShadeBits(&leftShades[yy * kShadeRowWords], x + d - kWindowWidth / 2, kWindowWidth));
-            return off;
-        };
-        const uint64_t *rightRow = &rightShades[y * kShadeRowWords], *leftRow = &leftShades[y * kShadeRowWords];
-        // Which tile pixels the left eye has on this row (a 4096-bit filter).
-        std::array<uint64_t, 64> onThisRow{};
-        auto filterBit = [](uint32_t what) { return (what * 2654435761u) >> 20; };
-        for (int x = 0; x < VBGO_TT_WIDTH; ++x)
-            if (left[x])
-            {
-                const uint32_t b = filterBit(left[x] & kWhat);
-                onThisRow[b >> 6] |= 1ull << (b & 63);
-            }
-        // Disparities nearest to around first, within kMaxDisparity and the
-        // screen; f returns true to stop.
-        auto nearestFirst = [](int x, int around, auto &&f) {
-            const int lowest = std::max(-kMaxDisparity, -x), highest = std::min(kMaxDisparity, VBGO_TT_WIDTH - 1 - x);
-            around = std::min(std::max(around, lowest), highest);
-            if (f(around))
-                return;
-            for (int dist = 1;; ++dist)
-            {
-                const int lo = around - dist, hi = around + dist;
-                if (lo < lowest && hi > highest)
-                    return;
-                if (lo >= lowest && f(lo))
-                    return;
-                if (hi <= highest && f(hi))
-                    return;
-            }
-        };
-        int runDisparity = kUnknownDisparity, runEnd = -2;
-        unsigned runWorld = 32;
-        for (int m = 0; m < misses; ++m)
-        {
-            const int x = missed[m];
-            const uint32_t r = right[x];
-            const unsigned world = (r >> 20) & 31;
-            const uint64_t shade = ShadeBits(rightRow, x, 1);
-            const int candidates[5] = {disparityAt[x], runWorld == world && runEnd + 2 >= x ? runDisparity : kUnknownDisparity,
-                                       y ? m_eyeDisparityAt[(y - 1) * VBGO_TT_WIDTH + x] : kUnknownDisparity,
-                                       lastRow[world], m_eyeDisparity[world]};
-            int around = 0;
-            for (const int c : candidates)
-                if (c != kUnknownDisparity)
-                {
-                    around = c;
-                    break;
-                }
-            // 1. The same tile pixel elsewhere on the row: the instance
-            // nearest to where its layer would put it - if what's around it
-            // looks the same too (a tile used all over, in other places;
-            // not asked of sprites, whose surroundings are at other depths).
-            if (!(r & kRightOnly) && (onThisRow[filterBit(r & kWhat) >> 6] >> (filterBit(r & kWhat) & 63) & 1))
-            {
-                int found = 0;
-                nearestFirst(x, around, [&](int c) {
-                    if (!same(x + c, r))
-                        return false;
-                    if (!shade || (r & 1u << 17) || windowOff(x, c, kFairMatch + 1) <= kFairMatch)
-                    {
-                        take(x, x + c, true);
-                        kindAt[x] = kSameTileFound; // (found away from its layer's disparity: checked like a look-alike)
-                        runDisparity = c, runWorld = world, runEnd = x;
-                        found = -1;
-                        return true;
-                    }
-                    return ++found == 2;
-                });
-                if (found < 0)
-                    continue;
-            }
-            const bool shownElsewhere = !(r & kRightOnly) && (m_leftShows[(r & kWhat) >> 6] >> (r & 63) & 1);
-            if (!shade)
-            {
-                disparityAt[x] = kUnknownDisparity;
-                continue; // the black shade: black either way
-            }
-            if ((r & 1u << 17) && (shownElsewhere || m_packColored[y * VBGO_TT_WIDTH + x]))
-            {
-                // A sprite's tile pixel the left eye shows too, or the pack
-                // colors: its own colors are the left eye's (sprites are
-                // colored tile by tile) - safer than looks, which for a small
-                // sprite on black (a sparkle) match any other sprite like it.
-                // (Not a tile only this eye's picture uses - Galactic
-                // Pinball's pre-shifted copies: nobody painted those.)
-                disparityAt[x] = kUnknownDisparity;
-                continue;
-            }
-            // 2. By what both eyes show around it: the disparity it had last
-            // frame, its neighbour's or the pixel above's, its layer's on
-            // the row or overall - the best of them; if none is close, the
-            // best within kMaxDisparity (at most kSearchBudget pixels a frame
-            // search - the rest take the best of those, and get searched in
-            // the frames after).
-            int d = kUnknownDisparity, best = kWindowWidth * kWindowHeight + 1;
-            uint8_t &lastCost = m_eyeCostAt[y * VBGO_TT_WIDTH + x];
-            bool settled = false; // as good as last frame's match: no need to look further
-            for (int i = 0; i < 5 && best > kCloseMatch && !settled; ++i)
-            {
-                const int c = candidates[i];
-                if (c == kUnknownDisparity || std::abs(c) > kMaxDisparity || x + c < 0 || x + c >= VBGO_TT_WIDTH ||
-                    ShadeBits(leftRow, x + c, 1) != shade)
-                    continue;
-                bool tried = false;
-                for (int j = 0; j < i; ++j)
-                    tried |= candidates[j] == c;
-                if (tried)
-                    continue;
-                const int off = windowOff(x, c, best);
-                if (off < best)
-                    best = off, d = c;
-                settled = i == 0 && lastCost <= kWindowWidth * kWindowHeight && best <= lastCost;
-            }
-            // (a poor match is searched past again now and then even when it's
-            // as good as last frame's - the left eye's counterpart may have
-            // moved: Mario's Tennis twinkles its stars on a world per eye)
-            const bool search = best > kFairMatch && searchBudget > 0 &&
-                                (lastCost == kNotSearched || ((x + y + static_cast<int>(m_eyeFrame)) & (kResearchEvery - 1)) == 0);
-            if (search)
-            {
-                --searchBudget;
-                int limit = best;
-                nearestFirst(x, d != kUnknownDisparity ? d : around, [&](int c) {
-                    if (ShadeBits(leftRow, x + c, 1) != shade)
-                        return false;
-                    const int off = windowOff(x, c, limit);
-                    if (off < limit)
-                        limit = off, d = c;
-                    return limit == 0;
-                });
-                best = limit;
-            }
-            // A tile pixel the left eye shows elsewhere keeps its own colors
-            // unless something looks much the same.
-            if (shownElsewhere && best > kFairMatch)
-                d = kUnknownDisparity;
-            // Remember how good it was - unless it's a poor match nobody
-            // searched past yet (searched as soon as the budget allows).
-            const bool trusted = search || settled || best <= kFairMatch || lastCost == kNoMatch;
-            lastCost = !trusted ? kNotSearched : d == kUnknownDisparity ? kNoMatch : static_cast<uint8_t>(best);
-            if (d == kUnknownDisparity)
-            {
-                // 3. Nothing like it: its own colors (unless its object says
-                // otherwise - see RemoveSpeckles).
-                disparityAt[x] = kUnknownDisparity;
-                kindAt[x] = kUnmatched;
-                continue;
-            }
-            runDisparity = d, runWorld = world, runEnd = x;
-            take(x, x + d, false);
-            // (the best there was, not much like it, nor where its layer is -
-            // see FillPoorMatches)
-            if (best > kPoorMatchCost && std::abs(d - lastRow[world]) > 2 && std::abs(d - m_eyeDisparity[world]) > 2)
-                kindAt[x] = kPoorMatch;
-        }
-    }
-    // Layers matched mostly by looks this frame (see take).
-    m_lookalikeWorlds = 0;
-    for (unsigned w = 0; w < 32; ++w)
-    {
-        uint32_t same = 0, lookalike = 0;
-        for (int d = 0; d <= 2 * kMaxDisparity; ++d)
-            same += votes[w][d], lookalike += lookalikeVotes[w][d];
-        if (lookalike > same)
-            m_lookalikeWorlds |= 1u << w;
-    }
-    RemoveSpeckles(frame, fbWidth, eyeOffset);
-    AlignSmallObjects(frame, fbWidth, eyeOffset);
-    FillPoorMatches(frame, fbWidth, eyeOffset);
-    // Each layer's disparity for the next frame: where most of its pixels
-    // showed the same tile pixel, else where most matched by what's around
-    // them (kept if it showed nothing matching this time).
-    for (unsigned w = 0; w < 32; ++w)
-        for (const auto *v : {&votes[w], &lookalikeVotes[w]})
-        {
-            uint32_t best = 0;
-            for (int d = 0; d <= 2 * kMaxDisparity; ++d)
-                if ((*v)[d] > best)
-                    best = (*v)[d], m_eyeDisparity[w] = static_cast<int16_t>(d - kMaxDisparity);
-            if (best)
-                break;
-        }
-}
-
-void ColorPackRenderer::RemoveSpeckles(uint8_t *frame, uint32_t fbWidth, const uint32_t eyeOffset[2])
-{
-    // Matching by looks can pick another object that happens to look alike
-    // nearby - a patch of a planet taking the next planet's colors (Galactic
-    // Pinball's title, where each eye's picture is drawn separately) - and
-    // so can finding the same tile elsewhere on the row (planets sharing
-    // texture tiles); and a pixel nothing looked like keeps its tile's own
-    // colors - another planet's, if the left eye uses that tile there. As
-    // stereo matchers do: touching pixels of a layer with about the same
-    // disparity form a patch; a small patch (or an unmatched pixel) that
-    // touches a big one is a speck in it, and is matched again within that
-    // patch's disparity (the best match there, if the left pixel shows the
-    // same shade). A small object on its own (a star) stays as it is. Only
-    // on layers mostly matched by looks: elsewhere the same tile is matched,
-    // and a tile pixel without a match is better off with its own colors.
-    const uint64_t *leftShades = &m_eyeShades[0], *rightShades = &m_eyeShades[VBGO_TT_HEIGHT * kShadeRowWords];
-    const uint32_t *rightTags = &m_eyeTags[VBGO_TT_EYE_PIXELS];
-    const int n = VBGO_TT_EYE_PIXELS;
-    auto worldOf = [&](int i) { return rightTags[i] >> 20 & 31; };
-    auto checked = [&](int i) { // (only on layers each eye draws separately - mostly matched by looks)
-        const uint8_t k = m_eyeMatchKind[i];
-        return k == kLookalike || k == kPoorMatch || k == kSameTileFound || k == kUnmatched;
-    };
-    if (!m_lookalikeWorlds)
-        return;
-    m_blobOf.resize(n);
-    auto find = [&](int i) {
-        while (m_blobOf[i] != i)
-            i = m_blobOf[i] = m_blobOf[m_blobOf[i]];
-        return i;
-    };
-    int count = 0;
-    for (int i = 0; i < n; ++i)
-    {
-        const uint8_t k = m_eyeMatchKind[i];
-        if (k == kNoMatchKind || !(m_lookalikeWorlds >> worldOf(i) & 1)) // (patches only of those layers)
-        {
-            m_blobOf[i] = -1;
-            continue;
-        }
-        count += checked(i);
-        m_blobOf[i] = i;
-        if (k == kUnmatched)
-            continue; // (a patch of its own)
-        const int x = i % VBGO_TT_WIDTH;
-        for (const int j : {x ? i - 1 : -1, i >= VBGO_TT_WIDTH ? i - VBGO_TT_WIDTH : -1})
-            if (j >= 0 && m_blobOf[j] >= 0 && m_eyeMatchKind[j] != kUnmatched && worldOf(j) == worldOf(i) &&
-                std::abs(m_eyeDisparityAt[j] - m_eyeDisparityAt[i]) <= 1)
-            {
-                const int a = find(i), b = find(j);
-                if (a != b)
-                    m_blobOf[std::max(a, b)] = std::min(a, b);
-            }
-    }
-    if (!count)
-        return;
-    m_blobSize.assign(n, 0);
-    for (int i = 0; i < n; ++i)
-        if (m_blobOf[i] >= 0)
-            ++m_blobSize[find(i)];
-    // Specks: pixels to check of a small patch, next to a big patch of the
-    // same layer - which disparity the big patches around each speck have.
-    m_speckDisparity.assign(n, kUnknownDisparity); // per small patch (by root)
-    for (int i = 0; i < n; ++i)
-    {
-        if (m_blobOf[i] < 0 || !checked(i))
-            continue;
-        const int root = find(i);
-        if (m_blobSize[root] >= kSpeckle || m_speckDisparity[root] != kUnknownDisparity)
-            continue;
-        const int x = i % VBGO_TT_WIDTH;
-        for (const int j : {x ? i - 1 : -1, x + 1 < VBGO_TT_WIDTH ? i + 1 : -1, i - VBGO_TT_WIDTH, i + VBGO_TT_WIDTH})
-            if (j >= 0 && j < n && m_blobOf[j] >= 0 && m_eyeMatchKind[j] != kUnmatched && worldOf(j) == worldOf(i) &&
-                m_blobSize[find(j)] >= kSpeckle)
-            {
-                m_speckDisparity[root] = m_eyeDisparityAt[j];
-                break;
-            }
-    }
-    for (int i = 0; i < n; ++i)
-    {
-        if (m_blobOf[i] < 0 || !checked(i))
-            continue;
-        const int around = m_speckDisparity[find(i)];
-        if (around == kUnknownDisparity)
-            continue;
-        const int x = i % VBGO_TT_WIDTH, y = i / VBGO_TT_WIDTH;
-        const uint64_t *leftRow = &leftShades[y * kShadeRowWords], *rightRow = &rightShades[y * kShadeRowWords];
-        const uint64_t shade = ShadeBits(rightRow, x, 1);
-        const int top = std::max(0, y - kWindowHeight / 2), bottom = std::min(VBGO_TT_HEIGHT - 1, y + kWindowHeight / 2);
-        // Within 2 of the patch's disparity - or, if the left eye shows
-        // this shade nowhere there (each eye's picture drawn on its own),
-        // a little further, up to kSpeckReach.
-        int best = kWindowWidth * kWindowHeight + 1, bestD = kUnknownDisparity;
-        for (int reach = 2; reach <= kSpeckReach && bestD == kUnknownDisparity; reach *= 2)
-            for (int c = std::max(around - reach, -x); c <= std::min(around + reach, VBGO_TT_WIDTH - 1 - x); ++c)
-            {
-                if (std::abs(c) > kMaxDisparity || ShadeBits(leftRow, x + c, 1) != shade)
-                    continue;
-                int off = 0;
-                for (int yy = top; yy <= bottom && off < best; ++yy)
-                    off += ShadesOff(ShadeBits(&rightShades[yy * kShadeRowWords], x - kWindowWidth / 2, kWindowWidth),
-                                     ShadeBits(&leftShades[yy * kShadeRowWords], x + c - kWindowWidth / 2, kWindowWidth));
-                if (off < best)
-                    best = off, bestD = c;
-            }
-        uint8_t *row = &frame[static_cast<size_t>(y) * fbWidth * 4];
-        if (bestD == kUnknownDisparity)
-        {
-            // Not on this row at all (a highlight only this eye's picture
-            // has): the nearest pixel of that shade a row or two away.
-            for (int dy = 1; dy <= 2 && bestD == kUnknownDisparity; ++dy)
-                for (const int yy : {y - dy, y + dy})
-                {
-                    if (yy < 0 || yy >= VBGO_TT_HEIGHT || bestD != kUnknownDisparity)
-                        continue;
-                    for (int k = 0; k <= 2 * kSpeckReach; ++k)
-                    {
-                        const int c = around + ((k & 1) ? -(k + 1) / 2 : k / 2);
-                        if (x + c >= 0 && x + c < VBGO_TT_WIDTH && ShadeBits(&leftShades[yy * kShadeRowWords], x + c, 1) == shade)
-                        {
-                            bestD = c;
-                            std::memcpy(&row[(eyeOffset[1] + x) * 4], &frame[(static_cast<size_t>(yy) * fbWidth + eyeOffset[0] + x + c) * 4], 3);
-                            break;
-                        }
-                    }
-                }
-            if (bestD != kUnknownDisparity)
-            {
-                m_eyeDisparityAt[i] = static_cast<int16_t>(around);
-                if (m_eyeMatchKind[i] == kPoorMatch)
-                    m_eyeMatchKind[i] = kLookalike;
-            }
-            continue;
-        }
-        m_eyeDisparityAt[i] = static_cast<int16_t>(bestD);
-        std::memcpy(&row[(eyeOffset[1] + x) * 4], &row[(eyeOffset[0] + x + bestD) * 4], 3);
-        if (m_eyeMatchKind[i] == kPoorMatch)
-            m_eyeMatchKind[i] = kLookalike;
-    }
-}
-
-void ColorPackRenderer::AlignSmallObjects(uint8_t *frame, uint32_t fbWidth, const uint32_t eyeOffset[2])
-{
-    // A small object on its own (a star on black, drawn in another twinkle
-    // phase in each eye) has too few pixels for its looks to say where it
-    // is in the left eye - some of them match one star, some another. It's
-    // one thing at one depth: its pixels matched by looks (or not at all)
-    // take the disparity most of its pixels have. (Only on layers mostly
-    // matched by looks - elsewhere the same tile is matched.)
-    if (!m_lookalikeWorlds)
-        return;
-    const uint64_t *leftShades = &m_eyeShades[0], *rightShades = &m_eyeShades[VBGO_TT_HEIGHT * kShadeRowWords];
-    const uint32_t *rightTags = &m_eyeTags[VBGO_TT_EYE_PIXELS];
-    const int n = VBGO_TT_EYE_PIXELS;
-    auto lit = [&](int i) {
-        return rightTags[i] && ShadeBits(&rightShades[(i / VBGO_TT_WIDTH) * kShadeRowWords], i % VBGO_TT_WIDTH, 1) != 0;
-    };
-    auto loose = [&](int i) {
-        const uint8_t k = m_eyeMatchKind[i];
-        return k == kLookalike || k == kPoorMatch || k == kSameTileFound || k == kUnmatched;
-    };
-    m_objectMark.assign(n, 0); // 0 not seen, 1 a small object's (done), 2 a big object's
-    std::array<int, kSmallObject + 1> object;
-    for (int seed = 0; seed < n; ++seed)
-    {
-        if (m_objectMark[seed] || !loose(seed) || !lit(seed))
-            continue;
-        const uint32_t world = rightTags[seed] >> 20 & 31;
-        if (!(m_lookalikeWorlds >> world & 1))
-            continue;
-        // The object around it (touching lit pixels of its layer), unless
-        // it's bigger than kSmallObject.
-        int size = 0, head = 0;
-        bool big = false;
-        object[size++] = seed;
-        m_objectMark[seed] = 1;
-        while (head < size && !big)
-        {
-            const int i = object[head++], x = i % VBGO_TT_WIDTH, y = i / VBGO_TT_WIDTH;
-            for (int dy = -1; dy <= 1 && !big; ++dy)
-                for (int dx = -1; dx <= 1 && !big; ++dx)
-                {
-                    const int nx = x + dx, ny = y + dy, j = ny * VBGO_TT_WIDTH + nx;
-                    if ((!dx && !dy) || nx < 0 || nx >= VBGO_TT_WIDTH || ny < 0 || ny >= VBGO_TT_HEIGHT || !lit(j) ||
-                        (rightTags[j] >> 20 & 31) != world)
-                        continue;
-                    if (m_objectMark[j] == 2)
-                        big = true;
-                    else if (!m_objectMark[j])
-                    {
-                        if (size > kSmallObject)
-                            big = true;
-                        else
-                        {
-                            m_objectMark[j] = 1;
-                            object[size++] = j;
-                        }
-                    }
-                }
-        }
-        if (big || size > kSmallObject)
-        {
-            for (int k = 0; k < size; ++k)
-                m_objectMark[object[k]] = 2;
-            continue;
-        }
-        // The disparity most of its matched pixels have (give or take 1).
-        int best = kUnknownDisparity, bestCount = 0, matched = 0;
-        for (int k = 0; k < size; ++k)
-        {
-            const int i = object[k];
-            if (m_eyeMatchKind[i] == kNoMatchKind || m_eyeMatchKind[i] == kUnmatched)
-                continue;
-            ++matched;
-            int c = 0;
-            for (int l = 0; l < size; ++l)
-            {
-                const int j = object[l];
-                c += m_eyeMatchKind[j] != kNoMatchKind && m_eyeMatchKind[j] != kUnmatched &&
-                     std::abs(m_eyeDisparityAt[j] - m_eyeDisparityAt[i]) <= 1;
-            }
-            if (c > bestCount)
-                bestCount = c, best = m_eyeDisparityAt[i];
-        }
-        if (best == kUnknownDisparity || bestCount * 2 < matched || bestCount == size)
-            continue;
-        for (int k = 0; k < size; ++k)
-        {
-            const int i = object[k];
-            if (!loose(i) || (m_eyeMatchKind[i] != kUnmatched && std::abs(m_eyeDisparityAt[i] - best) <= 1))
-                continue;
-            const int x = i % VBGO_TT_WIDTH, y = i / VBGO_TT_WIDTH;
-            const uint64_t shade = ShadeBits(&rightShades[y * kShadeRowWords], x, 1);
-            int at = kUnknownDisparity;
-            for (int k2 = 0; k2 <= 4 && at == kUnknownDisparity; ++k2)
-            {
-                const int c = best + ((k2 & 1) ? -(k2 + 1) / 2 : k2 / 2);
-                if (x + c >= 0 && x + c < VBGO_TT_WIDTH && ShadeBits(&leftShades[y * kShadeRowWords], x + c, 1) == shade)
-                    at = c;
-            }
-            if (at == kUnknownDisparity)
-                continue;
-            m_eyeDisparityAt[i] = static_cast<int16_t>(at);
-            if (m_eyeMatchKind[i] == kPoorMatch)
-                m_eyeMatchKind[i] = kLookalike;
-            uint8_t *row = &frame[static_cast<size_t>(y) * fbWidth * 4];
-            std::memcpy(&row[(eyeOffset[1] + x) * 4], &row[(eyeOffset[0] + x + at) * 4], 3);
-        }
-    }
-}
-
-void ColorPackRenderer::FillPoorMatches(uint8_t *frame, uint32_t fbWidth, const uint32_t eyeOffset[2])
-{
-    // A pixel nothing in the left eye looked much like (it shows something
-    // only this eye sees - Mario's Tennis's scenery through the scoreboard's
-    // net: each eye sees other bits of it) that the pack has no colors for
-    // either: rather than the best of poor matches (any other thing of that
-    // shade), the color of the nearest pixel of its layer, in that shade,
-    // that did match (or that the pack colors) - most likely the same thing.
-    const uint64_t *rightShades = &m_eyeShades[VBGO_TT_HEIGHT * kShadeRowWords];
-    const uint32_t *rightTags = &m_eyeTags[VBGO_TT_EYE_PIXELS];
-    constexpr uint32_t kLayer = (31u << 20) | (1u << 17); // world, sprite
-    auto shadeAt = [&](int x, int y) { return ShadeBits(&rightShades[y * kShadeRowWords], x, 1); };
-    auto good = [&](int i) {
-        const uint8_t k = m_eyeMatchKind[i];
-        return k == kSameTile || k == kSameTileFound || k == kLookalike || (k == kUnmatched && m_packColored[i]);
-    };
-    for (int y = 0; y < VBGO_TT_HEIGHT; ++y)
-        for (int x = 0; x < VBGO_TT_WIDTH; ++x)
-        {
-            const int i = y * VBGO_TT_WIDTH + x;
-            const bool unpainted = m_eyeMatchKind[i] == kUnmatched && !m_packColored[i] && m_packShown && m_pack;
-            if (m_eyeMatchKind[i] != kPoorMatch && !unpainted)
-                continue;
-            const uint32_t layer = rightTags[i] & kLayer;
-            const uint64_t shade = shadeAt(x, y);
-            int from = -1;
-            for (int reach = 1; reach <= kFillReach && from < 0; ++reach)
-                for (int dy = -reach; dy <= reach && from < 0; ++dy)
-                {
-                    const int yy = y + dy;
-                    if (yy < 0 || yy >= VBGO_TT_HEIGHT)
-                        continue;
-                    const int step = (dy == -reach || dy == reach) ? 1 : 2 * reach; // (the ring around it)
-                    for (int dx = -reach; dx <= reach; dx += step)
-                    {
-                        const int xx = x + dx, j = yy * VBGO_TT_WIDTH + xx;
-                        if (xx >= 0 && xx < VBGO_TT_WIDTH && rightTags[j] && (rightTags[j] & kLayer) == layer && good(j) &&
-                            shadeAt(xx, yy) == shade)
-                        {
-                            from = j;
-                            break;
-                        }
-                    }
-                }
-            if (from < 0)
-                continue;
-            std::memcpy(&frame[(static_cast<size_t>(y) * fbWidth + eyeOffset[1] + x) * 4],
-                        &frame[(static_cast<size_t>(from / VBGO_TT_WIDTH) * fbWidth + eyeOffset[1] + from % VBGO_TT_WIDTH) * 4], 3);
-        }
 }
