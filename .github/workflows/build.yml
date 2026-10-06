@@ -1,5 +1,6 @@
 # Builds VBoy Color for Windows, Linux and Quest on every push and pull
-# request; a tag v* also publishes a GitHub release with the three downloads.
+# request; a tag v* also publishes a GitHub release with the three downloads
+# (a pre-release for a tag with a dash, like v1.0.0-beta.1).
 #
 # A failed step reports the end of its log as an error annotation, so the
 # reason shows on the run's summary page.
@@ -204,3 +205,5 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+          # v1.0.0-beta.1 and the like: a pre-release
+          prerelease: ${{ contains(github.ref_name, '-') }}
