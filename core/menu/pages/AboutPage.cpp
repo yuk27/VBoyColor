@@ -66,7 +66,7 @@ void AboutPage::Init(UiRenderer &ui, const UiMenuResources &resources)
         {"github.com/yuk27/VBoyColor", small, kMenuDimTextColor},
         {"", body, kMenuTextColor},
         {"Thanks", bold, kMenuSelectionColor},
-        {"VirtualBoyGo by CidVonHighwind - where it all started", body, kMenuTextColor},
+        {"VirtualBoyGo by CidVonHighwind - where the inspiration started", body, kMenuTextColor},
         {"Red Viper - whose colors inspired our gradients", body, kMenuTextColor},
     };
     for (const auto &line : cards->lines)
