@@ -191,7 +191,8 @@ void OpenXrApp::Initialize(const InitInfo &info)
 
     m_settings.Load(*m_platform); // no-op (defaults stand) on first run/missing file
     ApplyDefaultGameplayBindings(m_settings);
-    m_appMenu.Initialize(m_uiRenderer, static_cast<VkFormat>(m_colorFormat), m_emulator, m_settings, *m_platform);
+    m_appMenu.Initialize(m_uiRenderer, static_cast<VkFormat>(m_colorFormat), m_emulator, m_settings, *m_platform,
+                         ButtonMappingProfile::Vr, m_passthroughExtAvailable);
 
     m_input.Initialize(m_instance, m_session);
 }
@@ -207,9 +208,10 @@ void OpenXrApp::CreateInstance(const InitInfo &info)
 #endif
 
     // Optional extensions, enabled only if the runtime actually offers them:
-    // XR_FB_display_refresh_rate (Quest; see RequestMaxDisplayRefreshRate)
-    // and XR_KHR_composition_layer_cylinder (curved screen; see
-    // RenderScreenLayer). SteamVR doesn't offer either as of writing.
+    // XR_FB_display_refresh_rate (Quest; see RequestMaxDisplayRefreshRate),
+    // XR_KHR_composition_layer_cylinder (curved screen; see
+    // RenderScreenLayer) and XR_FB_passthrough (see UpdatePassthrough).
+    // SteamVR doesn't offer them as of writing.
     uint32_t availableCount = 0;
     CheckXr(xrEnumerateInstanceExtensionProperties(nullptr, 0, &availableCount, nullptr),
             "xrEnumerateInstanceExtensionProperties (count)");
@@ -227,6 +229,11 @@ void OpenXrApp::CreateInstance(const InitInfo &info)
         {
             extensions.push_back(XR_KHR_COMPOSITION_LAYER_CYLINDER_EXTENSION_NAME);
             m_cylinderExtAvailable = true;
+        }
+        else if (std::strcmp(ext.extensionName, XR_FB_PASSTHROUGH_EXTENSION_NAME) == 0)
+        {
+            extensions.push_back(XR_FB_PASSTHROUGH_EXTENSION_NAME);
+            m_passthroughExtAvailable = true;
         }
     }
 
@@ -821,6 +828,17 @@ void OpenXrApp::RenderFrame()
     }
 
     std::vector<XrCompositionLayerBaseHeader *> layers;
+    // Passthrough: the room, behind everything (instead of the black eye
+    // buffers below).
+    const bool passthrough = UpdatePassthrough();
+    XrCompositionLayerPassthroughFB passthroughLayer{XR_TYPE_COMPOSITION_LAYER_PASSTHROUGH_FB};
+    if (passthrough && frameState.shouldRender)
+    {
+        passthroughLayer.layerHandle = m_passthroughLayer;
+        passthroughLayer.flags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+        passthroughLayer.space = XR_NULL_HANDLE;
+        layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader *>(&passthroughLayer));
+    }
     XrCompositionLayerProjection projectionLayer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
     std::vector<XrCompositionLayerProjectionView> projectionViews;
     if (frameState.shouldRender)
@@ -856,7 +874,7 @@ void OpenXrApp::RenderFrame()
             UpdateMenuRenderScale();
         }
 
-        if (posesValid)
+        if (posesValid && !passthrough)
         {
             projectionViews.resize(viewCountOutput);
 
@@ -931,11 +949,95 @@ void OpenXrApp::RenderFrame()
     CheckXr(xrEndFrame(m_session, &frameEndInfo), "xrEndFrame");
 }
 
+bool OpenXrApp::UpdatePassthrough()
+{
+    const bool wanted = m_settings.passthrough && m_passthroughExtAvailable && !m_passthroughFailed &&
+                        m_session != XR_NULL_HANDLE;
+    if (wanted == m_passthroughRunning)
+        return m_passthroughRunning;
+
+    auto proc = [this](const char *name, auto &fn)
+    { xrGetInstanceProcAddr(m_instance, name, reinterpret_cast<PFN_xrVoidFunction *>(&fn)); };
+    if (wanted)
+    {
+        if (m_passthrough == XR_NULL_HANDLE)
+        {
+            PFN_xrCreatePassthroughFB createPassthrough = nullptr;
+            PFN_xrCreatePassthroughLayerFB createLayer = nullptr;
+            proc("xrCreatePassthroughFB", createPassthrough);
+            proc("xrCreatePassthroughLayerFB", createLayer);
+            XrPassthroughCreateInfoFB createInfo{XR_TYPE_PASSTHROUGH_CREATE_INFO_FB};
+            createInfo.flags = XR_PASSTHROUGH_IS_RUNNING_AT_CREATION_BIT_FB;
+            XrResult result = createPassthrough ? createPassthrough(m_session, &createInfo, &m_passthrough)
+                                                : XR_ERROR_FUNCTION_UNSUPPORTED;
+            if (XR_SUCCEEDED(result))
+            {
+                XrPassthroughLayerCreateInfoFB layerInfo{XR_TYPE_PASSTHROUGH_LAYER_CREATE_INFO_FB};
+                layerInfo.passthrough = m_passthrough;
+                layerInfo.purpose = XR_PASSTHROUGH_LAYER_PURPOSE_RECONSTRUCTION_FB;
+                layerInfo.flags = XR_PASSTHROUGH_IS_RUNNING_AT_CREATION_BIT_FB;
+                result = createLayer ? createLayer(m_session, &layerInfo, &m_passthroughLayer) : XR_ERROR_FUNCTION_UNSUPPORTED;
+            }
+            if (XR_FAILED(result))
+            {
+                std::fprintf(stderr, "[OpenXR] Passthrough unavailable (%d) - background stays black\n", static_cast<int>(result));
+                DestroyPassthrough();
+                m_passthroughFailed = true;
+                return false;
+            }
+        }
+        else
+        {
+            PFN_xrPassthroughStartFB start = nullptr;
+            PFN_xrPassthroughLayerResumeFB resume = nullptr;
+            proc("xrPassthroughStartFB", start);
+            proc("xrPassthroughLayerResumeFB", resume);
+            if (start)
+                start(m_passthrough);
+            if (resume)
+                resume(m_passthroughLayer);
+        }
+        m_passthroughRunning = true;
+    }
+    else
+    {
+        PFN_xrPassthroughPauseFB pause = nullptr;
+        PFN_xrPassthroughLayerPauseFB pauseLayer = nullptr;
+        proc("xrPassthroughPauseFB", pause);
+        proc("xrPassthroughLayerPauseFB", pauseLayer);
+        if (pauseLayer && m_passthroughLayer != XR_NULL_HANDLE)
+            pauseLayer(m_passthroughLayer);
+        if (pause && m_passthrough != XR_NULL_HANDLE)
+            pause(m_passthrough);
+        m_passthroughRunning = false;
+    }
+    return m_passthroughRunning;
+}
+
+void OpenXrApp::DestroyPassthrough()
+{
+    PFN_xrDestroyPassthroughLayerFB destroyLayer = nullptr;
+    PFN_xrDestroyPassthroughFB destroyPassthrough = nullptr;
+    if (m_instance != XR_NULL_HANDLE)
+    {
+        xrGetInstanceProcAddr(m_instance, "xrDestroyPassthroughLayerFB", reinterpret_cast<PFN_xrVoidFunction *>(&destroyLayer));
+        xrGetInstanceProcAddr(m_instance, "xrDestroyPassthroughFB", reinterpret_cast<PFN_xrVoidFunction *>(&destroyPassthrough));
+    }
+    if (m_passthroughLayer != XR_NULL_HANDLE && destroyLayer)
+        destroyLayer(m_passthroughLayer);
+    if (m_passthrough != XR_NULL_HANDLE && destroyPassthrough)
+        destroyPassthrough(m_passthrough);
+    m_passthroughLayer = XR_NULL_HANDLE;
+    m_passthrough = XR_NULL_HANDLE;
+    m_passthroughRunning = false;
+}
+
 void OpenXrApp::Shutdown()
 {
     // The game's battery save, and the emulation thread stopped before the
     // renderer it uploads to goes away.
     m_emulator.Shutdown();
+    DestroyPassthrough();
     // Swapchains own Vulkan images backed by our VkDevice, so they (and the
     // session) must be torn down before the renderer destroys that device -
     // otherwise xrDestroySwapchain's driver-side vkDestroyImage call

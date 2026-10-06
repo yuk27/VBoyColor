@@ -67,6 +67,14 @@ void MoveScreenPage::Init(UiRenderer &ui, const UiMenuResources &resources)
         [this](MenuItem *) { ToggleThreeDeeMode(); }, [this](MenuItem *) { ToggleThreeDeeMode(); }, UiIconId::ThreeD);
     m_curvedScreenEntry = list->AddEntry("Screen: Flat", [this](MenuItem *) { ToggleCurvedScreen(); }, // Select acts like Right - same toggle
         [this](MenuItem *) { ToggleCurvedScreen(); }, [this](MenuItem *) { ToggleCurvedScreen(); }, UiIconId::FlatScreen);
+    // The room around the screen (passthrough) or black - only where the
+    // headset can show it.
+    if (resources.passthroughSupported)
+    {
+        m_passthroughEntry = list->AddEntry("Background: Black", [this](MenuItem *) { TogglePassthrough(); },
+            [this](MenuItem *) { TogglePassthrough(); }, [this](MenuItem *) { TogglePassthrough(); });
+        m_passthroughEntry->reserveIconSpace = true;
+    }
     // IPD is the one exception to "Select acts like Right" - press already
     // has a distinct, meaningful action (reset to 0), so it stays that way
     // rather than doubling up with Right's step.
@@ -170,6 +178,13 @@ void MoveScreenPage::ToggleCurvedScreen()
     RefreshLabels();
 }
 
+void MoveScreenPage::TogglePassthrough()
+{
+    if (!m_settings) return;
+    m_settings->passthrough = !m_settings->passthrough;
+    RefreshLabels();
+}
+
 void MoveScreenPage::ChangeIpd(int delta)
 {
     if (!m_settings) return;
@@ -206,6 +221,8 @@ void MoveScreenPage::RefreshLabels()
     m_ipdEntry->SetText(FormatFloat("IPD offset: ", m_settings->ipdOffset));
     m_curvedScreenEntry->SetText(m_settings->curvedScreen ? "Screen: Curved" : "Screen: Flat");
     m_curvedScreenEntry->icon = m_settings->curvedScreen ? UiIconId::CurvedScreen : UiIconId::FlatScreen;
+    if (m_passthroughEntry)
+        m_passthroughEntry->SetText(m_settings->passthrough ? "Background: Your room" : "Background: Black");
 
     m_settings->Save(*m_platform); // always-on autosave - no explicit save action anywhere in the menu anymore
 }

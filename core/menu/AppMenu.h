@@ -33,7 +33,8 @@ public:
     static constexpr float kOpenCloseSpeed = 0.15f;
 
     void Initialize(UiRenderer &ui, VkFormat targetFormat, Emulator &emulator, AppSettings &settings,
-                    Platform &platform, ButtonMappingProfile mappingProfile = ButtonMappingProfile::Vr);
+                    Platform &platform, ButtonMappingProfile mappingProfile = ButtonMappingProfile::Vr,
+                    bool passthroughSupported = false);
     void Update(uint32_t buttonStates[3], uint32_t lastButtonStates[3], float deltaSeconds);
     void SubmitRawMappingInput(const ButtonMapper::MappedButton &button);
     void RenderToBuffer(UiRenderer &ui);

@@ -9,7 +9,8 @@ class Platform;
 
 // Adjust Screen: screen placement and view mode - position (Yaw/Pitch/Roll/
 // Distance/Scale + Reset Values), Follow Head, 3D Screen, Screen: Flat/Curved,
-// and IPD offset. Back is the bottom-bar B hint, not an in-list entry (see
+// Background: Black/Your room (passthrough, where supported) and IPD offset.
+// Back is the bottom-bar B hint, not an in-list entry (see
 // MenuPage::HasBackAction).
 // These only matter on the OpenXR path (they feed OpenXrApp's screen quad
 // pose); pc2d's flat debug window has no 3D screen to move.
@@ -52,6 +53,7 @@ private:
     void CycleFollowHeadMode(int direction);
     void ToggleThreeDeeMode();
     void ToggleCurvedScreen();
+    void TogglePassthrough();
     void ChangeIpd(int delta);
     void RefreshLabels();
 
@@ -63,6 +65,7 @@ private:
     std::shared_ptr<MenuList::Entry> m_followHeadEntry;
     std::shared_ptr<MenuList::Entry> m_threeDeeEntry;
     std::shared_ptr<MenuList::Entry> m_curvedScreenEntry;
+    std::shared_ptr<MenuList::Entry> m_passthroughEntry; // only where passthrough is supported
     std::shared_ptr<MenuList::Entry> m_ipdEntry;
     AppSettings *m_settings = nullptr;
     Platform *m_platform = nullptr;

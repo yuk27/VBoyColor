@@ -127,6 +127,17 @@ private:
     // XR_KHR_composition_layer_cylinder was found and enabled at instance
     // creation - see RenderScreenLayer.
     bool m_cylinderExtAvailable{false};
+    // XR_FB_passthrough (Quest; Quest Link and Virtual Desktop on PC): the
+    // room around the screen instead of black (AppSettings::passthrough).
+    // Created the first time it's switched on, paused while off.
+    bool m_passthroughExtAvailable = false;
+    bool m_passthroughFailed = false; // creating it failed - stays black
+    bool m_passthroughRunning = false;
+    XrPassthroughFB m_passthrough = XR_NULL_HANDLE;
+    XrPassthroughLayerFB m_passthroughLayer = XR_NULL_HANDLE;
+    // Starts/pauses passthrough to match the setting; true while it runs.
+    bool UpdatePassthrough();
+    void DestroyPassthrough();
 
     XrViewConfigurationType m_viewConfigType{XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO};
     std::vector<XrViewConfigurationView> m_configViews;

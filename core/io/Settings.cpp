@@ -10,12 +10,23 @@ namespace
 {
     constexpr const char *kSettingsFileName = "settings.dat";
 
-    // Version 12 only appended selectedShadePalette, so a version-11 file's
-    // AppSettings bytes are exactly this prefix of today's layout - copying
-    // just that much keeps everything the user had set up (button mapping,
-    // screen placement, palette) and leaves the new field at its default.
-    constexpr int kPrefixCompatibleVersion = 11;
-    constexpr size_t kPrefixCompatibleSize = offsetof(AppSettings, selectedShadePalette);
+    // Versions 12 and 13 only appended fields (selectedShadePalette, then
+    // passthrough), so an older file's AppSettings bytes are exactly a
+    // prefix of today's layout - copying just that much keeps everything the
+    // user had set up (button mapping, screen placement, palette) and leaves
+    // the newer fields at their defaults.
+    size_t PrefixCompatibleSize(int version)
+    {
+        switch (version)
+        {
+        case 11:
+            return offsetof(AppSettings, selectedShadePalette);
+        case 12:
+            return offsetof(AppSettings, passthrough);
+        default:
+            return 0;
+        }
+    }
 
     // Shared by both platform Load paths.
     bool ApplyLoadedSettings(AppSettings &self, int version, const AppSettings &loaded)
@@ -46,10 +57,10 @@ bool AppSettings::Load(Platform &platform)
     int version = 0;
     std::memcpy(&version, bytes.data(), sizeof(version));
 
-    if (version == kPrefixCompatibleVersion && bytes.size() >= sizeof(int) + kPrefixCompatibleSize)
+    if (const size_t prefix = PrefixCompatibleSize(version); prefix && bytes.size() >= sizeof(int) + prefix)
     {
         AppSettings migrated; // fields past the prefix keep their defaults
-        std::memcpy(&migrated, bytes.data() + sizeof(version), kPrefixCompatibleSize);
+        std::memcpy(&migrated, bytes.data() + sizeof(version), prefix);
         *this = migrated;
         return true;
     }

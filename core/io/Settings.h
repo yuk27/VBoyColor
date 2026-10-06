@@ -36,7 +36,7 @@ struct AppSettings
     // defaults in place) on a mismatch rather than attempting migration,
     // except from version 11, whose layout is an exact prefix of this one
     // (12 only appended selectedShadePalette) - see Settings.cpp.
-    static constexpr int kVersion = 12;
+    static constexpr int kVersion = 13;
 
     // Move Screen / Follow Head. Only OpenXrApp's quad-layer pose consumes
     // these - meaningless on the flat pc2d debug build.
@@ -77,6 +77,10 @@ struct AppSettings
     // the R/G/B rows. Kept as the LAST field so a version-11 settings file is
     // an exact prefix of this layout (see Settings.cpp's migration).
     int selectedShadePalette = kAutoColors;
+
+    // Version 13: the room around the screen (passthrough, on headsets that
+    // have it) instead of black. Appended - older files load as a prefix.
+    bool passthrough = false;
 
     // What the screen should be drawn with (Emulator::DrawScreen's tint/
     // patternIndex) - neutral while a shade palette is active, since its

@@ -34,4 +34,6 @@ struct UiMenuResources
     AppSettings *settings = nullptr;
     ButtonMappingProfile buttonMappingProfile = ButtonMappingProfile::Vr;
     Platform *platform = nullptr;
+    // The headset can show the room around the screen (AppSettings::passthrough).
+    bool passthroughSupported = false;
 };

@@ -39,6 +39,9 @@ in a window, no headset needed.
 - **Button mapping** - Quest controllers, gamepads and keyboard, all
   remappable.
 - **Screen placement** - size and distance of the screen in VR.
+- **Your room as the background** (Quest) - Settings → Adjust Screen →
+  Background: Your room shows the game floating in your room (passthrough)
+  instead of in the dark.
 - **Video recording** (PC) - F12 records the original red and the colored
   version side by side, frame for frame, for comparison videos.
 

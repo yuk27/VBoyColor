@@ -94,7 +94,7 @@ namespace
 // Initialise
 
 void AppMenu::Initialize(UiRenderer &ui, VkFormat targetFormat, Emulator &emulator, AppSettings &settings,
-                         Platform &platform, ButtonMappingProfile mappingProfile)
+                         Platform &platform, ButtonMappingProfile mappingProfile, bool passthroughSupported)
 {
     const std::vector<uint8_t> headerFontBytes = platform.LoadAssetBytes("fonts/Audiowide-Regular.ttf");
     const std::vector<uint8_t> menuFontBytes = platform.LoadAssetBytes("fonts/Roboto-Regular.ttf");
@@ -113,6 +113,7 @@ void AppMenu::Initialize(UiRenderer &ui, VkFormat targetFormat, Emulator &emulat
     m_resources.settings = &settings;
     m_resources.buttonMappingProfile = mappingProfile;
     m_resources.platform = &platform;
+    m_resources.passthroughSupported = passthroughSupported;
     // Physical pixel size - kMenuWidth/kMenuHeight are logical units (see
     // AppMenuLayout.h); RenderToBuffer maps them onto this full-resolution
     // texture via BeginOffscreenFrame's logicalWidth/logicalHeight, so the

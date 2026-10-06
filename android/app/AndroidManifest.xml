@@ -4,6 +4,8 @@
 
     <uses-feature android:glEsVersion="0x00030002" android:required="true" />
     <uses-feature android:name="android.hardware.vr.headtracking" android:required="false" android:version="1" />
+    <!-- Background: Your room (Adjust Screen) - XR_FB_passthrough -->
+    <uses-feature android:name="com.oculus.feature.PASSTHROUGH" android:required="false" />
 
     <uses-permission android:name="org.khronos.openxr.permission.OPENXR" />
     <uses-permission android:name="org.khronos.openxr.permission.OPENXR_SYSTEM" />
