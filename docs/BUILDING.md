@@ -122,10 +122,12 @@ the secrets `ANDROID_KEYSTORE_BASE64`, `ANDROID_STORE_PASSWORD` and
 `ANDROID_KEY_PASSWORD`. Without a key, release builds are signed with the
 debug key, so they still install.
 
-**Bundled color packs:** set `colorpacks.dir` in `android/local.properties`
-to a folder of `.vbcp` files (the desktop app's `roms` folder, say, with
-forward slashes) and every Android build includes them. Only `.vbcp` files
-are copied - never ROMs. See [COLOR_PACKS.md](COLOR_PACKS.md).
+**Color packs:** every build includes the repository's `colorpacks/`.
+Your own Quest builds can add a folder of `.vbcp` files with `colorpacks.dir`
+in `android/local.properties` (the desktop app's `roms` folder, say, with
+forward slashes); those replace the repository's packs of the same name.
+Only `.vbcp` files are copied - never ROMs. See
+[COLOR_PACKS.md](COLOR_PACKS.md).
 
 **Wi-Fi ADB:** once, on the headset: Settings → Developer → Wireless
 debugging → Pair device with pairing code, then `adb pair <ip>:<port>`. Each

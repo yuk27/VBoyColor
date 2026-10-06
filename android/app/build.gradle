@@ -8,13 +8,14 @@ if (localPropsFile.exists()) {
     localPropsFile.withInputStream { localProps.load(it) }
 }
 
-// Color packs built into the app: set colorpacks.dir to a folder holding
-// "<rom name>.vbcp" files - typically the desktop build's roms folder, where
-// it rebuilds a game's pack whenever that game (with a colorpacks/ folder) is
-// loaded - and every build bundles its *.vbcp files (nothing else - never
-// ROMs) as assets colorpacks/<rom name>.vbcp. Emulator::ReloadColorPack uses
-// those when the headset's ROMs folder has no .vbcp of its own for the game.
-// Unset = none bundled. Packs never go into the repo.
+// Color packs built into the app: the repo's colorpacks/ folder, plus - if
+// colorpacks.dir is set - a folder of your own "<rom name>.vbcp" files
+// (typically the desktop app's roms folder, where it rebuilds a game's pack
+// from your paintings), whose packs win over the repo's of the same name.
+// Bundled as assets colorpacks/<rom name>.vbcp (only .vbcp files - never
+// ROMs). Emulator::ReloadColorPack uses those when the headset's ROMs folder
+// has no .vbcp of its own for the game.
+def repoColorPacksDir = rootProject.file("../colorpacks")
 def colorPacksDir = localProps.getProperty("colorpacks.dir")
 def colorPackAssets = new File(layout.buildDirectory.get().asFile, "generated/colorpack-assets")
 
@@ -127,8 +128,9 @@ android {
 // Copies the packs to bundle (see colorpacks.dir above) before every build -
 // fresh each time, so a pack removed from that folder leaves the app too.
 def bundleColorPacks = tasks.register("bundleColorPacks") {
+    def repoPacks = fileTree(repoColorPacksDir) { include "*.vbcp" }
     def packs = colorPacksDir != null ? fileTree(colorPacksDir) { include "*.vbcp" } : files()
-    inputs.files(packs)
+    inputs.files(repoPacks, packs)
     outputs.dir(colorPackAssets)
     doLast {
         if (colorPacksDir != null && !new File(colorPacksDir).isDirectory()) {
@@ -138,6 +140,10 @@ def bundleColorPacks = tasks.register("bundleColorPacks") {
         def destDir = new File(colorPackAssets, "colorpacks")
         destDir.mkdirs()
         project.copy {
+            from(repoPacks)
+            into(destDir)
+        }
+        project.copy { // (yours last: they replace the repo's)
             from(packs)
             into(destDir)
         }

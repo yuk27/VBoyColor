@@ -345,6 +345,8 @@ else()
     # to exist next to the exe.
     add_custom_command(
         TARGET VBoyColorVR POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -D "SRC=${CMAKE_SOURCE_DIR}/colorpacks" -D "DST=$<TARGET_FILE_DIR:VBoyColorVR>/colorpacks"
+                -P "${CMAKE_SOURCE_DIR}/cmake/BundleColorPacks.cmake"
         COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:VBoyColorVR>/roms"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${CMAKE_SOURCE_DIR}/assets/PlaceRomsHere.txt" "$<TARGET_FILE_DIR:VBoyColorVR>/roms"
@@ -386,6 +388,8 @@ else()
     # to exist next to the exe.
     add_custom_command(
         TARGET VBoyColor POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -D "SRC=${CMAKE_SOURCE_DIR}/colorpacks" -D "DST=$<TARGET_FILE_DIR:VBoyColor>/colorpacks"
+                -P "${CMAKE_SOURCE_DIR}/cmake/BundleColorPacks.cmake"
         COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:VBoyColor>/roms"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${CMAKE_SOURCE_DIR}/assets/PlaceRomsHere.txt" "$<TARGET_FILE_DIR:VBoyColor>/roms"

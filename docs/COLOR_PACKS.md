@@ -38,18 +38,25 @@ Multicolor palette is active (one made from a gradient too); unpainted
 tiles keep the mode's colors. Tint and Gradient modes never show a pack -
 they only tint the game's shades.
 
-## Using a pack elsewhere
+## Built-in packs, and using a pack elsewhere
 
-The `.vbcp` file alone is enough on other platforms: copy it
-next to the ROM on the Quest, or build it into the app - set `colorpacks.dir`
-in `android/local.properties` to a folder of `.vbcp` files (the desktop
-app's `roms` folder, say, with forward slashes:
-`colorpacks.dir=C:/path/to/roms`) and every Android build bundles them (only
-the `.vbcp` files; a `.vbcp` in the headset's ROMs folder still wins). A pack
-records the ROM it was made for (CRC-32 and size), so the game finds it
-whatever its ROM file is called: by name first, else the bundled pack made
-for this ROM (the Android build lists them in `colorpacks/index.txt`), else
-- on desktop - one in the `roms` folder. Packs made before this get their
+The packs in the repository's `colorpacks/` folder are built into every
+build: the Quest app bundles them, and the desktop builds copy them next to
+the executable (`colorpacks/`, with `index.txt`). To ship a new or updated
+pack, copy its `.vbcp` from the desktop app's `roms` folder into
+`colorpacks/` and commit it - only `.vbcp` files, never ROMs, paintings or
+save states.
+
+The `.vbcp` file alone is enough on other platforms: copy it next to the ROM
+(on the Quest too) and it wins over the built-in one. For your own Quest
+builds, `colorpacks.dir` in `android/local.properties` can name a folder of
+`.vbcp` files (the desktop app's `roms` folder, say, with forward slashes:
+`colorpacks.dir=C:/path/to/roms`); they're bundled too, replacing the
+repository's packs of the same name. A pack records the ROM it was made for
+(CRC-32 and size), so the game finds it whatever its ROM file is called: next
+to the ROM by name first, then built in by name, then the built-in pack made
+for this ROM (`colorpacks/index.txt`), else - on desktop - one in the `roms`
+folder. Packs made before this get their
 ROM recorded the first time the game loads them by name, or with
 `tools/vbcp_rom.py PACK.vbcp ROM.vb`.
 

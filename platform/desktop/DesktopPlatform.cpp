@@ -202,13 +202,19 @@ std::vector<uint8_t> DesktopPlatform::LoadAssetBytes(const std::string &name)
             return {};
         return std::vector<uint8_t>(data, data + size);
     }
-    return {};
+    // Anything else (the built-in color packs, colorpacks/): a file next to
+    // the exe (the working directory - see the constructor).
+    std::ifstream in(name, std::ios::binary);
+    if (!in)
+        return {};
+    return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 }
 #else
 std::vector<uint8_t> DesktopPlatform::LoadAssetBytes(const std::string &name)
 {
-    // Non-Windows desktop: fonts/ and icons/ next to the executable (the
-    // working directory - see the constructor; the build copies them there).
+    // Non-Windows desktop: fonts/, icons/, logo/ and colorpacks/ next to the
+    // executable (the working directory - see the constructor; the build
+    // copies them there).
     std::ifstream in(name, std::ios::binary);
     if (!in)
         return {};

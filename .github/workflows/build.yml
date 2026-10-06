@@ -60,6 +60,7 @@ jobs:
           mkdir -p "$dir/roms"
           cp build-pc/Release/VBoyColor.exe build-pc/Release/VBoyColorVR.exe "$dir/"
           cp build-pc/Release/*.dll "$dir/" 2>/dev/null || true
+          cp -r build-pc/Release/colorpacks "$dir/"
           cp assets/PlaceRomsHere.txt "$dir/roms/"
           cp -r README.md LICENSE THIRD-PARTY-NOTICES.md licenses "$dir/"
           7z a -tzip "$dir.zip" "$dir" > /dev/null
@@ -109,7 +110,7 @@ jobs:
           mkdir -p "$dir/roms"
           cp build-pc/VBoyColor "$dir/"
           strip "$dir/VBoyColor"
-          cp -r build-pc/fonts build-pc/icons build-pc/logo build-pc/icon.png "$dir/"
+          cp -r build-pc/fonts build-pc/icons build-pc/logo build-pc/colorpacks build-pc/icon.png "$dir/"
           cp assets/PlaceRomsHere.txt "$dir/roms/"
           cp -r README.md LICENSE THIRD-PARTY-NOTICES.md licenses "$dir/"
           tar czf "$dir.tar.gz" "$dir"
