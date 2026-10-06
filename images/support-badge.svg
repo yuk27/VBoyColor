@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="224" height="28" viewBox="0 0 224 28" role="img" aria-label="Support VBoy Color">
+  <title>Support VBoy Color</title>
+  <clipPath id="r"><rect width="224" height="28" rx="3"/></clipPath>
+  <g clip-path="url(#r)">
+    <rect width="104" height="28" fill="#3a3a3f"/>
+    <rect x="104" width="120" height="28" fill="#22242e"/>
+  </g>
+  <!-- heart -->
+  <path d="M17.5 21.2l-1.1-1C12.5 16.7 10 14.4 10 11.6 10 9.3 11.8 7.5 14.1 7.5c1.3 0 2.5.6 3.4 1.5.9-.9 2.1-1.5 3.4-1.5 2.3 0 4.1 1.8 4.1 4.1 0 2.8-2.5 5.1-6.4 8.6z" fill="#ea4aaa"/>
+  <g font-family="Verdana,'DejaVu Sans',Geneva,sans-serif" font-size="11" font-weight="bold">
+    <text x="31" y="18.5" fill="#ffffff" textLength="62" lengthAdjust="spacingAndGlyphs">SUPPORT</text>
+    <text x="116" y="18.5" textLength="96" lengthAdjust="spacingAndGlyphs"><tspan fill="#ff1e12">VBOY </tspan><tspan fill="#cd2539">C</tspan><tspan fill="#7b74d6">O</tspan><tspan fill="#a3c618">L</tspan><tspan fill="#e0b400">O</tspan><tspan fill="#11a8b4">R</tspan></text>
+  </g>
+</svg>
