@@ -19,17 +19,17 @@ def colorPacksDir = localProps.getProperty("colorpacks.dir")
 def colorPackAssets = new File(layout.buildDirectory.get().asFile, "generated/colorpack-assets")
 
 android {
-    namespace "com.nintendont.virtualboygo"
+    namespace "io.github.yuk27.vboycolor"
     ndkVersion "23.2.8568313"
 
     compileSdk 34
 
     defaultConfig {
-        applicationId "com.nintendont.virtualboygo"
+        applicationId "io.github.yuk27.vboycolor"
         minSdk 29
         targetSdk 34
-        versionCode 7
-        versionName "0.1.0"
+        versionCode 1
+        versionName "1.0.0"
 
         ndk {
             abiFilters "arm64-v8a"
@@ -76,19 +76,35 @@ android {
         }
     }
 
-    // Release keystore lives outside the repo - set keystore.dir in
-    // android/local.properties (gitignored). keystore.txt: line 1 = store
-    // password, line 2 = key password. Absent = unsigned debug builds still work.
+    // Release key, kept outside the repo: keystore.dir in
+    // android/local.properties (gitignored) names a folder with
+    // android.keystore (alias key0) and keystore.txt (line 1 = store
+    // password, line 2 = key password). The CI passes the same as
+    // environment variables (VBC_KEYSTORE = the keystore file,
+    // VBC_STORE_PASSWORD, VBC_KEY_PASSWORD). Neither = release builds are
+    // signed with the debug key, so they still install.
     def keystoreDir = localProps.getProperty("keystore.dir")
-    def keystoreConfigured = keystoreDir != null && new File(keystoreDir, "keystore.txt").exists()
-    if (keystoreConfigured) {
+    def keystoreFile = null
+    def ksStorePassword = null
+    def ksKeyPassword = null
+    if (keystoreDir != null && new File(keystoreDir, "keystore.txt").exists()) {
         def keystoreProps = new File(keystoreDir, "keystore.txt").readLines()
-        signingConfigs {
+        keystoreFile = new File(keystoreDir, "android.keystore")
+        ksStorePassword = keystoreProps[0].trim()
+        ksKeyPassword = keystoreProps[1].trim()
+    } else if (System.getenv("VBC_KEYSTORE") && new File(System.getenv("VBC_KEYSTORE")).exists()) {
+        keystoreFile = new File(System.getenv("VBC_KEYSTORE"))
+        ksStorePassword = System.getenv("VBC_STORE_PASSWORD")
+        ksKeyPassword = System.getenv("VBC_KEY_PASSWORD")
+    }
+
+    signingConfigs {
+        if (keystoreFile != null) {
             release {
-                storeFile new File(keystoreDir, "android.keystore")
-                storePassword keystoreProps[0].trim()
+                storeFile keystoreFile
+                storePassword ksStorePassword
                 keyAlias "key0"
-                keyPassword keystoreProps[1].trim()
+                keyPassword ksKeyPassword
             }
         }
     }
@@ -96,9 +112,7 @@ android {
     buildTypes {
         release {
             minifyEnabled false
-            if (keystoreConfigured) {
-                signingConfig signingConfigs.release
-            }
+            signingConfig keystoreFile != null ? signingConfigs.release : signingConfigs.debug
         }
     }
 

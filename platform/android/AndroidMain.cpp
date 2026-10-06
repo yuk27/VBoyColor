@@ -11,7 +11,7 @@
 #include <android/log.h>
 #include <android_native_app_glue.h>
 
-#define LOG_TAG "VirtualBoyGo"
+#define LOG_TAG "VBoyColor"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 

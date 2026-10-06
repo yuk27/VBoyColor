@@ -1,4 +1,4 @@
-package com.nintendont.virtualboygo;
+package io.github.yuk27.vboycolor;
 
 import android.app.NativeActivity;
 import android.content.ContentResolver;
@@ -24,8 +24,8 @@ import java.util.List;
 // (platform/android/AndroidPlatform.h); they're plain polled methods, so no
 // JNI_OnLoad/RegisterNatives is needed.
 public class MainActivity extends NativeActivity {
-    private static final String TAG = "VirtualBoyGo";
-    private static final String PREFS_NAME = "virtualboygo";
+    private static final String TAG = "VBoyColor";
+    private static final String PREFS_NAME = "vboycolor";
     private static final String PREF_ROMS_TREE_URI = "roms_tree_uri";
     private static final int REQUEST_PICK_ROMS_FOLDER = 1001;
 

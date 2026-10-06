@@ -5,7 +5,7 @@
 // LockResource in DesktopPlatform::LoadAssetBytes. Configured from
 // DesktopAssets.rc.in (see CMakeLists.txt) so the paths below are absolute,
 // independent of whatever working directory rc.exe runs from.
-FONT_VIRTUALLOGO    RCDATA "@VBGO_ASSETS_DIR@/runtime/fonts/VirtualLogo.ttf"
+FONT_AUDIOWIDE      RCDATA "@VBGO_ASSETS_DIR@/runtime/fonts/Audiowide-Regular.ttf"
 FONT_ROBOTO_REGULAR RCDATA "@VBGO_ASSETS_DIR@/runtime/fonts/Roboto-Regular.ttf"
 FONT_ROBOTO_BOLD    RCDATA "@VBGO_ASSETS_DIR@/runtime/fonts/Roboto-Bold.ttf"
 ICON_ATLAS_10       RCDATA "@VBGO_ASSETS_DIR@/runtime/icons/icons_atlas_10.png"

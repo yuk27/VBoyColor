@@ -166,6 +166,7 @@ namespace
         setDefault(VBButtonBit::Start, DeviceLeftTouch, EmuButton_Y);
         setDefault(VBButtonBit::L, DeviceLeftTouch, EmuButton_Trigger);
         setDefault(VBButtonBit::R, DeviceRightTouch, EmuButton_Trigger);
+        ApplyDefaultGamepadBindings(settings.vbButtons);
     }
 } // namespace
 
@@ -233,7 +234,7 @@ void OpenXrApp::CreateInstance(const InitInfo &info)
     createInfo.next = info.instanceCreateNext;
     createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
     createInfo.enabledExtensionNames = extensions.data();
-    std::strncpy(createInfo.applicationInfo.applicationName, "VirtualBoyGo", XR_MAX_APPLICATION_NAME_SIZE - 1);
+    std::strncpy(createInfo.applicationInfo.applicationName, "VBoy Color", XR_MAX_APPLICATION_NAME_SIZE - 1);
     createInfo.applicationInfo.applicationVersion = 1;
     createInfo.applicationInfo.apiVersion = XR_API_VERSION_1_0;
 

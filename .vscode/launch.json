@@ -2,28 +2,28 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug VirtualBoyGoPC2D (Desktop, flat window)",
+            "name": "Debug VBoyColor (Desktop, flat window)",
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/build-pc/Debug/VirtualBoyGoPC2D.exe",
+            "program": "${workspaceFolder}/build-pc/Debug/VBoyColor.exe",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}/build-pc/Debug",
             "environment": [],
             "console": "integratedTerminal",
-            "preLaunchTask": "CMake: build VirtualBoyGoPC2D (Debug)"
+            "preLaunchTask": "CMake: build VBoyColor (Debug)"
         },
         {
-            "name": "Debug VirtualBoyGoPC (Headset via OpenXR)",
+            "name": "Debug VBoyColorVR (Headset via OpenXR)",
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/build-pc/Debug/VirtualBoyGoPC.exe",
+            "program": "${workspaceFolder}/build-pc/Debug/VBoyColorVR.exe",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}/build-pc/Debug",
             "environment": [],
             "console": "integratedTerminal",
-            "preLaunchTask": "CMake: build VirtualBoyGoPC (Debug)"
+            "preLaunchTask": "CMake: build VBoyColorVR (Debug)"
         }
     ]
 }

@@ -52,9 +52,9 @@ void VulkanRenderer::CreateDevice(XrInstance xrInstance, XrSystemId xrSystemId)
     CheckXr(pfnGetReqs2(xrInstance, xrSystemId, &requirements), "xrGetVulkanGraphicsRequirements2KHR");
 
     VkApplicationInfo appInfo{VK_STRUCTURE_TYPE_APPLICATION_INFO};
-    appInfo.pApplicationName = "VirtualBoyGo";
+    appInfo.pApplicationName = "VBoy Color";
     appInfo.applicationVersion = 1;
-    appInfo.pEngineName = "VirtualBoyGo";
+    appInfo.pEngineName = "VBoy Color";
     appInfo.engineVersion = 1;
     appInfo.apiVersion = VK_API_VERSION_1_1;
 
@@ -144,9 +144,9 @@ VkInstance VulkanRenderer::CreateInstanceStandalone(const std::vector<const char
     CheckVk(volkInitialize(), "volkInitialize");
 
     VkApplicationInfo appInfo{VK_STRUCTURE_TYPE_APPLICATION_INFO};
-    appInfo.pApplicationName = "VirtualBoyGo";
+    appInfo.pApplicationName = "VBoy Color";
     appInfo.applicationVersion = 1;
-    appInfo.pEngineName = "VirtualBoyGo";
+    appInfo.pEngineName = "VBoy Color";
     appInfo.engineVersion = 1;
     appInfo.apiVersion = VK_API_VERSION_1_1;
 

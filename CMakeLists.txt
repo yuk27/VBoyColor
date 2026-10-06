@@ -1,12 +1,12 @@
 cmake_minimum_required(VERSION 3.22)
-project(VirtualBoyGo LANGUAGES CXX C)
+project(VBoyColor LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Single source of truth for the release version (SettingsPage's version
 # label) - bump this by hand at each release tag.
-set(VBGO_VERSION "2.0.0")
+set(VBGO_VERSION "1.0.0")
 
 # Deliberately independent of CMAKE_BUILD_TYPE/$<CONFIG>: an optimized
 # Release-config build is still just a local dev build (e.g. for on-device
@@ -293,31 +293,31 @@ if(ANDROID)
     find_library(ANDROID_LIB android)
     find_library(LOG_LIB log)
 
-    add_library(virtualboygo SHARED
+    add_library(vboycolor SHARED
         platform/android/AndroidMain.cpp
     )
-    target_link_libraries(virtualboygo PRIVATE vbgo_app android_native_app_glue ${ANDROID_LIB} ${LOG_LIB})
-    target_include_directories(virtualboygo PRIVATE ${ANDROID_NDK}/sources/android/native_app_glue)
+    target_link_libraries(vboycolor PRIVATE vbgo_app android_native_app_glue ${ANDROID_LIB} ${LOG_LIB})
+    target_include_directories(vboycolor PRIVATE ${ANDROID_NDK}/sources/android/native_app_glue)
     # ANativeActivity_onCreate (in android_native_app_glue.c) is only looked
     # up dynamically by the OS, never called from our own code, so the
     # linker drops it as unreferenced unless forced to keep it.
-    target_link_options(virtualboygo PRIVATE "-u" "ANativeActivity_onCreate")
+    target_link_options(vboycolor PRIVATE "-u" "ANativeActivity_onCreate")
 
     add_library(android_native_app_glue STATIC
         ${ANDROID_NDK}/sources/android/native_app_glue/android_native_app_glue.c
     )
     target_include_directories(android_native_app_glue PUBLIC ${ANDROID_NDK}/sources/android/native_app_glue)
 else()
-    add_executable(VirtualBoyGoPC
+    add_executable(VBoyColorVR
         platform/pc/Main.cpp
     )
-    target_link_libraries(VirtualBoyGoPC PRIVATE vbgo_app)
+    target_link_libraries(VBoyColorVR PRIVATE vbgo_app)
     if(WIN32)
         # Resources must be a source of the executable itself, not the
         # vbgo_app static lib - the linker only pulls .lib members that are
         # referenced by symbol, and a compiled .rc resource has none, so it
         # would silently never make it into the final .exe otherwise.
-        target_sources(VirtualBoyGoPC PRIVATE ${CMAKE_BINARY_DIR}/generated/DesktopAssets.rc)
+        target_sources(VBoyColorVR PRIVATE ${CMAKE_BINARY_DIR}/generated/DesktopAssets.rc)
     endif()
 
     # MSVC's incremental linker has been observed to silently keep a stale
@@ -326,15 +326,15 @@ else()
     # relink every time trades a bit of link speed for actually picking up
     # changes, which matters a lot for the F5 edit-build-run loop.
     if(MSVC)
-        target_link_options(VirtualBoyGoPC PRIVATE "/INCREMENTAL:NO")
+        target_link_options(VBoyColorVR PRIVATE "/INCREMENTAL:NO")
     endif()
 
     if(TARGET openxr_loader AND WIN32)
         get_target_property(OPENXR_LOADER_TYPE openxr_loader TYPE)
         if(OPENXR_LOADER_TYPE STREQUAL "SHARED_LIBRARY")
             add_custom_command(
-                TARGET VirtualBoyGoPC POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:openxr_loader> $<TARGET_FILE_DIR:VirtualBoyGoPC>
+                TARGET VBoyColorVR POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:openxr_loader> $<TARGET_FILE_DIR:VBoyColorVR>
             )
         endif()
     endif()
@@ -343,10 +343,10 @@ else()
     # resources (see DesktopAssets.rc.in above) - only the ROMs folder needs
     # to exist next to the exe.
     add_custom_command(
-        TARGET VirtualBoyGoPC POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:VirtualBoyGoPC>/roms"
+        TARGET VBoyColorVR POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:VBoyColorVR>/roms"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${CMAKE_SOURCE_DIR}/assets/PlaceRomsHere.txt" "$<TARGET_FILE_DIR:VirtualBoyGoPC>/roms"
+                "${CMAKE_SOURCE_DIR}/assets/PlaceRomsHere.txt" "$<TARGET_FILE_DIR:VBoyColorVR>/roms"
     )
 
     # --------------------------------------------------------------------
@@ -367,26 +367,37 @@ else()
     )
     FetchContent_MakeAvailable(glfw)
 
-    add_executable(VirtualBoyGoPC2D
+    add_executable(VBoyColor
         platform/pc2d/Main.cpp
     )
-    target_link_libraries(VirtualBoyGoPC2D PRIVATE vbgo_app glfw)
+    target_link_libraries(VBoyColor PRIVATE vbgo_app glfw)
     if(MSVC)
-        target_link_options(VirtualBoyGoPC2D PRIVATE "/INCREMENTAL:NO")
+        target_link_options(VBoyColor PRIVATE "/INCREMENTAL:NO")
     endif()
     if(WIN32)
-        # See VirtualBoyGoPC's identical target_sources call above for why
+        # See VBoyColorVR's identical target_sources call above for why
         # this can't just live on the shared vbgo_app static lib instead.
-        target_sources(VirtualBoyGoPC2D PRIVATE ${CMAKE_BINARY_DIR}/generated/DesktopAssets.rc)
+        target_sources(VBoyColor PRIVATE ${CMAKE_BINARY_DIR}/generated/DesktopAssets.rc)
     endif()
 
     # Fonts/icons are embedded into the binary as Win32
     # resources (see DesktopAssets.rc.in above) - only the ROMs folder needs
     # to exist next to the exe.
     add_custom_command(
-        TARGET VirtualBoyGoPC2D POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:VirtualBoyGoPC2D>/roms"
+        TARGET VBoyColor POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:VBoyColor>/roms"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${CMAKE_SOURCE_DIR}/assets/PlaceRomsHere.txt" "$<TARGET_FILE_DIR:VirtualBoyGoPC2D>/roms"
+                "${CMAKE_SOURCE_DIR}/assets/PlaceRomsHere.txt" "$<TARGET_FILE_DIR:VBoyColor>/roms"
     )
+    if(NOT WIN32)
+        # Off Windows the fonts and icons are loose files next to the
+        # executable (DesktopPlatform::LoadAssetBytes).
+        add_custom_command(
+            TARGET VBoyColor POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${CMAKE_SOURCE_DIR}/assets/runtime/fonts" "$<TARGET_FILE_DIR:VBoyColor>/fonts"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${CMAKE_SOURCE_DIR}/assets/runtime/icons" "$<TARGET_FILE_DIR:VBoyColor>/icons"
+        )
+    endif()
 endif()

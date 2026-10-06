@@ -1,0 +1,205 @@
+# Builds VBoy Color for Windows, Linux and Quest on every push and pull
+# request; a tag v* also publishes a GitHub release with the three downloads.
+#
+# A failed step reports the end of its log as an error annotation, so the
+# reason shows on the run's summary page.
+#
+# Android release signing (optional): repository secrets
+# ANDROID_KEYSTORE_BASE64 (base64 of the .keystore file, key alias key0),
+# ANDROID_STORE_PASSWORD and ANDROID_KEY_PASSWORD. Without them the APK is
+# signed with a throwaway debug key - fine for testing, but each build then
+# has a different signature, so installing a newer one means uninstalling
+# the old one first.
+
+name: Build
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  OFFICIAL: ${{ startsWith(github.ref, 'refs/tags/v') && 'ON' || 'OFF' }}
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Configure
+        run: |
+          set -o pipefail
+          cmake -B build-pc -A x64 -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DVBGO_RELEASE_BUILD=$OFFICIAL 2>&1 | tee build.log
+
+      - name: Build
+        run: |
+          set -o pipefail
+          cmake --build build-pc --config Release --target VBoyColor VBoyColorVR --parallel 2>&1 | tee build.log
+
+      - name: Package
+        run: |
+          set -e
+          version=$(sed -n 's/.*kGeneratedVersionString = "\([^"]*\)".*/\1/p' build-pc/generated/Version.h)
+          dir=VBoyColor-windows-$version
+          mkdir -p "$dir/roms"
+          cp build-pc/Release/VBoyColor.exe build-pc/Release/VBoyColorVR.exe "$dir/"
+          cp build-pc/Release/*.dll "$dir/" 2>/dev/null || true
+          cp assets/PlaceRomsHere.txt "$dir/roms/"
+          cp -r README.md LICENSE THIRD-PARTY-NOTICES.md licenses "$dir/"
+          7z a -tzip "$dir.zip" "$dir" > /dev/null
+          echo "PACKAGE=$dir" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE }}
+          path: ${{ env.PACKAGE }}.zip
+          if-no-files-found: error
+
+      - name: Report the failure
+        if: failure()
+        run: |
+          [ -f build.log ] || exit 0
+          tail -n 60 build.log | sed 's/%/%25/g; s/\r//g' | awk 'BEGIN{ORS="%0A"} {print}' | sed 's/^/::error title=windows::/'
+          echo
+
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libvulkan1
+
+      - name: Configure
+        run: |
+          set -o pipefail
+          cmake -B build-pc -G Ninja -DCMAKE_BUILD_TYPE=Release -DGLFW_BUILD_WAYLAND=OFF -DVBGO_RELEASE_BUILD=$OFFICIAL 2>&1 | tee build.log
+
+      - name: Build
+        run: |
+          set -o pipefail
+          cmake --build build-pc --target VBoyColor 2>&1 | tee build.log
+
+      - name: Package
+        run: |
+          set -e
+          version=$(sed -n 's/.*kGeneratedVersionString = "\([^"]*\)".*/\1/p' build-pc/generated/Version.h)
+          dir=VBoyColor-linux-$version
+          mkdir -p "$dir/roms"
+          cp build-pc/VBoyColor "$dir/"
+          strip "$dir/VBoyColor"
+          cp -r build-pc/fonts build-pc/icons "$dir/"
+          cp assets/PlaceRomsHere.txt "$dir/roms/"
+          cp -r README.md LICENSE THIRD-PARTY-NOTICES.md licenses "$dir/"
+          tar czf "$dir.tar.gz" "$dir"
+          echo "PACKAGE=$dir" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE }}
+          path: ${{ env.PACKAGE }}.tar.gz
+          if-no-files-found: error
+
+      - name: Report the failure
+        if: failure()
+        run: |
+          [ -f build.log ] || exit 0
+          tail -n 60 build.log | sed 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}' | sed 's/^/::error title=linux::/'
+          echo
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "VBC_KEYSTORE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+          else
+            echo "No signing key in the secrets: the APK is signed with a debug key."
+          fi
+
+      - name: Build
+        env:
+          VBC_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          VBC_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        working-directory: android
+        run: |
+          set -o pipefail
+          official=""
+          [ "$OFFICIAL" = "ON" ] && official="-Pofficial=true"
+          chmod +x gradlew
+          ./gradlew assembleRelease $official --no-daemon --stacktrace 2>&1 | tee ../build.log
+
+      - name: Package
+        run: |
+          set -e
+          base=$(sed -n 's/^set(VBGO_VERSION "\([^"]*\)")/\1/p' CMakeLists.txt)
+          if [ "$OFFICIAL" = "ON" ]; then version="v$base"; else version="v$base-dev.$(git rev-list --count HEAD)"; fi
+          cp android/app/build/outputs/apk/release/app-release.apk "VBoyColor-$version.apk"
+          echo "PACKAGE=VBoyColor-$version" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE }}
+          path: ${{ env.PACKAGE }}.apk
+          if-no-files-found: error
+
+      - name: Report the failure
+        if: failure()
+        run: |
+          [ -f build.log ] || exit 0
+          grep -E "error|Error|FAILED|What went wrong" -A3 build.log | head -n 50 > failure.log || true
+          [ -s failure.log ] || tail -n 60 build.log > failure.log
+          sed 's/%/%25/g' failure.log | awk 'BEGIN{ORS="%0A"} {print}' | sed 's/^/::error title=android::/'
+          echo
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, linux, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

@@ -62,13 +62,13 @@ namespace
     // otherwise care about. Without this, that log line dereferences a null
     // function pointer the moment the core changes 3D mode during
     // retro_load_game, crashing (found via a real access violation there).
-    // A log line: logcat on Android (tag VirtualBoyGo), stderr elsewhere.
+    // A log line: logcat on Android (tag VBoyColor), stderr elsewhere.
     void LogLine(const char *fmt, ...)
     {
         va_list args;
         va_start(args, fmt);
 #ifdef __ANDROID__
-        __android_log_vprint(ANDROID_LOG_INFO, "VirtualBoyGo", fmt, args);
+        __android_log_vprint(ANDROID_LOG_INFO, "VBoyColor", fmt, args);
 #else
         std::vfprintf(stderr, fmt, args);
         std::fputc('\n', stderr);
@@ -307,7 +307,7 @@ void Emulator::RunFrame(float deltaSeconds)
         PresentFrame();
 
     // Frame times, logged every few seconds - to check them on the headset
-    // (logcat: VirtualBoyGo). Both run on the render thread, once per
+    // (logcat: VBoyColor). Both run on the render thread, once per
     // emulated frame (50 a second); "behind" counts app frames that had to
     // run the core more than once to catch up (the app missed frames).
     if (m_timedFrames >= 250)

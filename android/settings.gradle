@@ -13,6 +13,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "VirtualBoyGo"
+rootProject.name = "VBoyColor"
 include(":app")
 project(":app").projectDir = file("app")

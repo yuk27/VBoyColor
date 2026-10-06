@@ -9,6 +9,11 @@
 class DesktopPlatform : public Platform
 {
 public:
+    // Makes the exe's folder the working directory, so the roms folder (and,
+    // off Windows, fonts/ and icons/) next to it are found however the app
+    // was started (a shortcut, a terminal somewhere else).
+    DesktopPlatform();
+
     bool HasRomsFolder() const override { return true; } // no picker - always "has" the fixed folder
     bool SupportsChangeRomsFolder() const override { return false; }
     void RequestChangeRomsFolder() override {}

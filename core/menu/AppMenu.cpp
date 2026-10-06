@@ -1,6 +1,7 @@
 #include "menu/AppMenu.h"
 #include "io/Platform.h"
 #include "io/Settings.h"
+#include "emu/AutoColors.h"
 
 #include <algorithm>
 #include <cmath>
@@ -10,14 +11,25 @@
 namespace
 {
     constexpr XrColor4f kClearColor = {0.0f, 0.0f, 0.0f, 1.0f};
-    constexpr XrColor4f kHeaderTextColor = {0.9f, 0.1f, 0.1f, 1.0f};
+    constexpr XrColor4f kHeaderTextColor = {0.94f, 0.94f, 0.96f, 1.0f};
     constexpr XrColor4f kHeaderTextBackColor = {0.0f, 0.0f, 0.0f, 0.45f};
     // Font pixel sizes are inherently integer (FreeType rasterizes whole
     // pixels only) - 65/2 doesn't land on a whole number like the other
     // logical-space constants do, so this one is just rounded. Still
     // rasterizes crisp: this is a font *size* fed to FreeType, unrelated to
     // kMenuScale's physical-vs-logical pixel mapping.
-    constexpr int kHeaderFontSize = 33;
+    constexpr int kHeaderFontSize = 20;
+
+    // The title: "VBOY" in white, then "COLOR" a letter at a time in the Auto
+    // mode's colors - its layers' far to near, then its sprites' red (see
+    // AutoColors.h): what the app paints games with.
+    XrColor4f TitleLetterColor(int i)
+    {
+        const AutoColors::Rgb &c = i < 4 ? AutoColors::kLayerRamps[i][1] : AutoColors::kSpriteRamps[0][1];
+        // (lifted a little toward white: the header is dark gray)
+        auto lift = [](uint8_t v) { return (v + (255 - v) * 0.15f) / 255.0f; };
+        return XrColor4f{lift(c[0]), lift(c[1]), lift(c[2]), 1.0f};
+    }
 
     // Clock + battery indicator, ported from FrontendGo's Menu.cpp
     // (SetTimeString/BatteryColors/DrawMenu's battery block) - two rows
@@ -84,7 +96,7 @@ namespace
 void AppMenu::Initialize(UiRenderer &ui, VkFormat targetFormat, Emulator &emulator, AppSettings &settings,
                          Platform &platform, ButtonMappingProfile mappingProfile)
 {
-    const std::vector<uint8_t> headerFontBytes = platform.LoadAssetBytes("fonts/VirtualLogo.ttf");
+    const std::vector<uint8_t> headerFontBytes = platform.LoadAssetBytes("fonts/Audiowide-Regular.ttf");
     const std::vector<uint8_t> menuFontBytes = platform.LoadAssetBytes("fonts/Roboto-Regular.ttf");
     const std::vector<uint8_t> smallFontBytes = platform.LoadAssetBytes("fonts/Roboto-Bold.ttf");
 
@@ -129,7 +141,7 @@ void AppMenu::SetMenuScale(UiRenderer &ui, float scale)
     ui.ResizeRenderTexture(m_offscreenTexture, static_cast<uint32_t>(kMenuWidth * m_menuScale),
                            static_cast<uint32_t>(kMenuHeight * m_menuScale));
 
-    const std::vector<uint8_t> headerFontBytes = m_resources.platform->LoadAssetBytes("fonts/VirtualLogo.ttf");
+    const std::vector<uint8_t> headerFontBytes = m_resources.platform->LoadAssetBytes("fonts/Audiowide-Regular.ttf");
     const std::vector<uint8_t> menuFontBytes = m_resources.platform->LoadAssetBytes("fonts/Roboto-Regular.ttf");
     const std::vector<uint8_t> smallFontBytes = m_resources.platform->LoadAssetBytes("fonts/Roboto-Bold.ttf");
     ui.RebakeFont(m_titleFont, headerFontBytes, static_cast<int>(kHeaderFontSize * m_menuScale), m_menuScale);
@@ -324,9 +336,21 @@ void AppMenu::RenderContent(UiRenderer &ui)
 
     // Centred header title
     const float headerTextY = kHeaderHeight / 2.0f - ui.GetFontPHeight(m_titleFont) / 2.0f - ui.GetFontPStart(m_titleFont);
-    const float headerTextX = (kMenuWidth - ui.GetTextWidth(m_titleFont, "VirtualBoyGo")) / 2.0f;
-    ui.DrawText(m_titleFont, "VirtualBoyGo", headerTextX + 0.5f, headerTextY + 0.5f, 1.0f, kHeaderTextBackColor);
-    ui.DrawText(m_titleFont, "VirtualBoyGo", headerTextX, headerTextY, 1.0f, kHeaderTextColor);
+    {
+        const char *kFirst = "VBOY ";
+        const char *kSecond = "COLOR";
+        float x = (kMenuWidth - ui.GetTextWidth(m_titleFont, std::string(kFirst) + kSecond)) / 2.0f;
+        ui.DrawText(m_titleFont, kFirst, x + 0.5f, headerTextY + 0.5f, 1.0f, kHeaderTextBackColor);
+        ui.DrawText(m_titleFont, kFirst, x, headerTextY, 1.0f, kHeaderTextColor);
+        x += ui.GetTextWidth(m_titleFont, kFirst);
+        for (int i = 0; kSecond[i]; ++i)
+        {
+            const std::string letter(1, kSecond[i]);
+            ui.DrawText(m_titleFont, letter, x + 0.5f, headerTextY + 0.5f, 1.0f, kHeaderTextBackColor);
+            ui.DrawText(m_titleFont, letter, x, headerTextY, 1.0f, TitleLetterColor(i));
+            x += ui.GetTextWidth(m_titleFont, letter);
+        }
+    }
 
     const bool showBattery = m_batteryPercent >= 0 && m_batteryPercent <= 100;
 
@@ -375,7 +399,7 @@ void AppMenu::RenderContent(UiRenderer &ui)
     if (m_transitionState > 0.0f && m_nextPage)
     {
         const float rawProgress = m_transitionState; // 1.0 -> 0.0
-        const float eased = std::sinf(rawProgress * (3.14159265f / 2.0f));
+        const float eased = std::sin(rawProgress * (3.14159265f / 2.0f));
         const float dist = kTransitionSlideDistance;
 
         // Current page: offset ramps from 0 up to dist (slides away)
@@ -405,7 +429,7 @@ void AppMenu::Draw(UiRenderer &ui, float x, float y)
     // shrinking back down on close), eased the same way as the page-slide
     // transition (see StartTransition's doc comment) so both feel consistent.
     constexpr float kMinScale = 0.9f;
-    const float eased = std::sinf(m_visibility * (3.14159265f / 2.0f));
+    const float eased = std::sin(m_visibility * (3.14159265f / 2.0f));
     const float scale = kMinScale + (1.0f - kMinScale) * eased;
 
     // 1:1 at scale=1 - m_offscreenTexture is already the full kMenuWidth*

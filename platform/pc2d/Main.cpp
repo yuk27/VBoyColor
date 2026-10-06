@@ -164,6 +164,50 @@ namespace
         setDefault(VBButtonBit::R, GLFW_KEY_E);
         setDefault(VBButtonBit::Start, GLFW_KEY_ENTER);
         setDefault(VBButtonBit::Select, GLFW_KEY_BACKSPACE);
+        ApplyDefaultGamepadBindings(settings.vbButtons);
+    }
+
+    // Where the game screen goes in a w x h window: as big as fits with the
+    // Virtual Boy's shape kept, at a whole multiple of its pixels when that
+    // wastes little room (sharp pixels), else exactly as big as fits.
+    void ScreenRect(int w, int h, float &x, float &y, float &sw, float &sh)
+    {
+        const float fit = std::min(w / static_cast<float>(Emulator::kPreviewWidth), h / static_cast<float>(Emulator::kPreviewHeight));
+        const float whole = std::floor(fit);
+        const float scale = whole >= 1.0f && whole / fit >= 0.85f ? whole : fit;
+        sw = Emulator::kPreviewWidth * scale;
+        sh = Emulator::kPreviewHeight * scale;
+        x = std::floor((w - sw) / 2.0f);
+        y = std::floor((h - sh) / 2.0f);
+    }
+
+    // Alt+Enter: fullscreen on the monitor the window is on, and back.
+    void ToggleFullscreen(GLFWwindow *window)
+    {
+        static int savedX = 100, savedY = 100, savedW = 0, savedH = 0;
+        if (GLFWmonitor *current = glfwGetWindowMonitor(window))
+        {
+            (void)current;
+            glfwSetWindowMonitor(window, nullptr, savedX, savedY, savedW, savedH, GLFW_DONT_CARE);
+            return;
+        }
+        glfwGetWindowPos(window, &savedX, &savedY);
+        glfwGetWindowSize(window, &savedW, &savedH);
+        // (the monitor holding the window's center, else the primary one)
+        int count = 0;
+        GLFWmonitor **monitors = glfwGetMonitors(&count);
+        GLFWmonitor *target = glfwGetPrimaryMonitor();
+        const int cx = savedX + savedW / 2, cy = savedY + savedH / 2;
+        for (int i = 0; i < count; ++i)
+        {
+            int mx = 0, my = 0;
+            glfwGetMonitorPos(monitors[i], &mx, &my);
+            const GLFWvidmode *mode = glfwGetVideoMode(monitors[i]);
+            if (mode && cx >= mx && cx < mx + mode->width && cy >= my && cy < my + mode->height)
+                target = monitors[i];
+        }
+        if (const GLFWvidmode *mode = target ? glfwGetVideoMode(target) : nullptr)
+            glfwSetWindowMonitor(window, target, 0, 0, mode->width, mode->height, mode->refreshRate);
     }
 
 } // namespace
@@ -182,16 +226,16 @@ int main()
 
     if (!glfwInit())
     {
-        std::fprintf(stderr, "VirtualBoyGo 2D: glfwInit failed\n");
+        std::fprintf(stderr, "VBoy Color: glfwInit failed\n");
         return 1;
     }
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
-    GLFWwindow *window = glfwCreateWindow(windowWidth, windowHeight, "VirtualBoyGo (2D debug)", nullptr, nullptr);
+    GLFWwindow *window = glfwCreateWindow(windowWidth, windowHeight, "VBoy Color", nullptr, nullptr);
     if (!window)
     {
-        std::fprintf(stderr, "VirtualBoyGo 2D: glfwCreateWindow failed\n");
+        std::fprintf(stderr, "VBoy Color: glfwCreateWindow failed\n");
         glfwTerminate();
         return 1;
     }
@@ -295,7 +339,7 @@ int main()
         VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
         CheckVk(vkCreateFence(renderer.GetDevice(), &fenceInfo, nullptr, &acquireFence), "vkCreateFence");
 
-        std::printf("VirtualBoyGo 2D debug window running (%ux%u)\n", extent.width, extent.height);
+        std::printf("VBoy Color running (%ux%u)\n", extent.width, extent.height);
 
         uint32_t buttonStates[3]{};
         uint32_t lastButtonStates[3]{};
@@ -321,7 +365,7 @@ int main()
         // red and colored, frame for frame (roms/recordings/<rom> NNN, see
         // Emulator::ToggleRecording).
         bool f9WasPressed = false, f10WasPressed = false, f8WasPressed = false, f11WasPressed = false,
-             f7WasPressed = false, f6WasPressed = false, f12WasPressed = false;
+             f7WasPressed = false, f6WasPressed = false, f12WasPressed = false, fullscreenWasPressed = false;
         bool keyboardWasDown[GLFW_KEY_LAST + 1]{};
 
         while (!glfwWindowShouldClose(window))
@@ -348,7 +392,18 @@ int main()
             const float deltaSeconds = std::chrono::duration<float>(now - lastFrameTime).count();
             lastFrameTime = now;
 
-            const bool tabPressed = glfwGetKey(window, GLFW_KEY_TAB) == GLFW_PRESS;
+            const bool altDown = glfwGetKey(window, GLFW_KEY_LEFT_ALT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS;
+            const bool fullscreenPressed = altDown && glfwGetKey(window, GLFW_KEY_ENTER) == GLFW_PRESS;
+            if (fullscreenPressed && !fullscreenWasPressed)
+                ToggleFullscreen(window);
+            fullscreenWasPressed = fullscreenPressed;
+
+            // (a gamepad's Guide button or left stick click too, as on the Quest)
+            GLFWgamepadstate menuPad{};
+            const bool padMenu = glfwJoystickIsGamepad(GLFW_JOYSTICK_1) && glfwGetGamepadState(GLFW_JOYSTICK_1, &menuPad) &&
+                                 (menuPad.buttons[GLFW_GAMEPAD_BUTTON_GUIDE] == GLFW_PRESS ||
+                                  menuPad.buttons[GLFW_GAMEPAD_BUTTON_LEFT_THUMB] == GLFW_PRESS);
+            const bool tabPressed = glfwGetKey(window, GLFW_KEY_TAB) == GLFW_PRESS || padMenu;
             if (tabPressed && !tabWasPressed)
                 appMenu.ToggleOpen();
             tabWasPressed = tabPressed;
@@ -438,7 +493,8 @@ int main()
             // keep advancing behind it.
             if (!appMenu.IsOpen())
             {
-                emulator.SetGameplayInput(PollGameplayInput(window, settings, appMenu));
+                // (no game input while Alt is held: Alt+Enter toggles fullscreen, not Start)
+                emulator.SetGameplayInput(altDown ? 0 : PollGameplayInput(window, settings, appMenu));
                 emulator.RunFrame(deltaSeconds);
             }
 
@@ -476,8 +532,9 @@ int main()
                                   appMenu.GetBackgroundColor());
             if (emulator.HasScreen())
             {
-                emulator.DrawScreen(uiRenderer, 0, 0, static_cast<float>(extent.width), static_cast<float>(extent.height),
-                                    Emulator::Eye::Left, settings.ScreenTint(), settings.ScreenPattern());
+                float sx = 0, sy = 0, sw = 0, sh = 0;
+                ScreenRect(static_cast<int>(extent.width), static_cast<int>(extent.height), sx, sy, sw, sh);
+                emulator.DrawScreen(uiRenderer, sx, sy, sw, sh, Emulator::Eye::Left, settings.ScreenTint(), settings.ScreenPattern());
             }
             if (appMenu.IsVisible())
                 appMenu.Draw(uiRenderer, menuX, menuY);
@@ -496,7 +553,7 @@ int main()
     }
     catch (const std::exception &ex)
     {
-        std::fprintf(stderr, "VirtualBoyGo 2D: %s\n", ex.what());
+        std::fprintf(stderr, "VBoy Color: %s\n", ex.what());
         exitCode = 1;
     }
 

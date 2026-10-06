@@ -43,7 +43,7 @@ namespace
 #if defined(_DEBUG)
         return DebugSdRomsDir(); // repo's checked-in sample ROMs
 #else
-        return "roms"; // relative to the exe's folder, like LoadAssetBytes
+        return "roms"; // next to the exe (the working directory - see the constructor)
 #endif
     }
 
@@ -52,6 +52,24 @@ namespace
         return RomDirectory() + (inStatesDir ? "/States/" : "/") + fileName;
     }
 } // namespace
+
+DesktopPlatform::DesktopPlatform()
+{
+#if defined(_WIN32)
+    wchar_t exe[MAX_PATH * 4];
+    const DWORD length = GetModuleFileNameW(nullptr, exe, static_cast<DWORD>(sizeof(exe) / sizeof(exe[0])));
+    if (length > 0 && length < sizeof(exe) / sizeof(exe[0]))
+    {
+        std::error_code ec;
+        std::filesystem::current_path(std::filesystem::path(exe).parent_path(), ec);
+    }
+#elif defined(__linux__)
+    std::error_code ec;
+    const std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+    if (!ec)
+        std::filesystem::current_path(exe.parent_path(), ec);
+#endif
+}
 
 std::vector<RomEntry> DesktopPlatform::ScanRoms()
 {
@@ -151,7 +169,7 @@ std::vector<uint8_t> DesktopPlatform::LoadAssetBytes(const std::string &name)
         LPCWSTR resourceId;
     };
     static const Entry kEmbedded[] = {
-        {"fonts/VirtualLogo.ttf", L"FONT_VIRTUALLOGO"},
+        {"fonts/Audiowide-Regular.ttf", L"FONT_AUDIOWIDE"},
         {"fonts/Roboto-Regular.ttf", L"FONT_ROBOTO_REGULAR"},
         {"fonts/Roboto-Bold.ttf", L"FONT_ROBOTO_BOLD"},
         {"icons/icons_atlas_10.png", L"ICON_ATLAS_10"},
@@ -189,8 +207,8 @@ std::vector<uint8_t> DesktopPlatform::LoadAssetBytes(const std::string &name)
 #else
 std::vector<uint8_t> DesktopPlatform::LoadAssetBytes(const std::string &name)
 {
-    // Non-Windows desktop fallback - relative to the working directory, the
-    // exe's own folder for how this app is packaged/run.
+    // Non-Windows desktop: fonts/ and icons/ next to the executable (the
+    // working directory - see the constructor; the build copies them there).
     std::ifstream in(name, std::ios::binary);
     if (!in)
         return {};

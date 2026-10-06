@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <sys/types.h>
 #include <string>
 
@@ -81,6 +82,13 @@ namespace ButtonMapper {
     // This is what makes the button-remapping menu page (EmulatorButtonMapPage)
     // actually affect gameplay, instead of each platform hardcoding VB bits.
     uint32_t TranslateToVBBitmask(const uint32_t buttonStates[3], const MappedButtons (&vbButtons)[16]);
+
+    // Gamepad defaults in every Virtual Boy button's second slot (the first
+    // holds the platform's own default - controllers or keyboard), only
+    // where that slot is unset: left D-pad on the D-pad, right D-pad on the
+    // right stick, A/B on A/B, L/R on the bumpers, Start/Select on
+    // Start/Back. Same on every platform.
+    void ApplyDefaultGamepadBindings(MappedButtons (&vbButtons)[16]);
 
     // gamepad button names; ltouch button names; rtouch button names
     const std::string MapButtonStr[32 * 3] = {

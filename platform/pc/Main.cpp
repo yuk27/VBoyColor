@@ -31,7 +31,7 @@ int main()
         } });
     exitPollingThread.detach();
 
-    std::printf("VirtualBoyGo PC starting...\n");
+    std::printf("VBoy Color VR starting...\n");
 
     DesktopPlatform platform;
     OpenXrApp app;
@@ -40,11 +40,11 @@ int main()
         OpenXrApp::InitInfo info;
         info.platform = &platform;
         app.Initialize(info);
-        std::printf("VirtualBoyGo PC initialized OK\n");
+        std::printf("VBoy Color VR initialized OK\n");
     }
     catch (const std::exception &ex)
     {
-        std::fprintf(stderr, "VirtualBoyGo: init failed: %s\n", ex.what());
+        std::fprintf(stderr, "VBoy Color VR: init failed: %s\n", ex.what());
         return 1;
     }
 
@@ -58,7 +58,7 @@ int main()
             app.PollEvents(exitRenderLoop, requestRestart);
             if (exitRenderLoop)
             {
-                std::printf("VirtualBoyGo PC: exitRenderLoop requested\n");
+                std::printf("VBoy Color VR: exitRenderLoop requested\n");
                 break;
             }
 
@@ -73,13 +73,13 @@ int main()
         }
         catch (const std::exception &ex)
         {
-            std::fprintf(stderr, "VirtualBoyGo: render loop failed: %s\n", ex.what());
+            std::fprintf(stderr, "VBoy Color VR: render loop failed: %s\n", ex.what());
             exitCode = 1;
             break;
         }
     }
 
     app.Shutdown();
-    std::printf("VirtualBoyGo PC exiting\n");
+    std::printf("VBoy Color VR exiting\n");
     return exitCode;
 }

@@ -10,20 +10,20 @@
             "problemMatcher": []
         },
         {
-            "label": "CMake: build VirtualBoyGoPC2D (Debug)",
+            "label": "CMake: build VBoyColor (Debug)",
             "type": "process",
             "command": "cmake",
-            "args": ["--build", "build-pc", "--config", "Debug", "--target", "VirtualBoyGoPC2D"],
+            "args": ["--build", "build-pc", "--config", "Debug", "--target", "VBoyColor"],
             "options": { "cwd": "${workspaceFolder}" },
             "dependsOn": ["CMake: configure (PC)"],
             "group": { "kind": "build", "isDefault": true },
             "problemMatcher": ["$msCompile"]
         },
         {
-            "label": "CMake: build VirtualBoyGoPC (Debug)",
+            "label": "CMake: build VBoyColorVR (Debug)",
             "type": "process",
             "command": "cmake",
-            "args": ["--build", "build-pc", "--config", "Debug", "--target", "VirtualBoyGoPC"],
+            "args": ["--build", "build-pc", "--config", "Debug", "--target", "VBoyColorVR"],
             "options": { "cwd": "${workspaceFolder}" },
             "dependsOn": ["CMake: configure (PC)"],
             "group": "build",

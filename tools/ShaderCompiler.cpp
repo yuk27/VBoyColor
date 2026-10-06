@@ -5,6 +5,7 @@
 #include <SPIRV/GlslangToSpv.h>
 
 #include <cctype>
+#include <cstdint>
 #include <fstream>
 #include <iostream>
 #include <string>

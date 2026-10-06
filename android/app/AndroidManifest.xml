@@ -23,20 +23,20 @@
 
     <application
             android:allowBackup="false"
-            android:label="VirtualBoyGo">
+            android:label="VBoy Color">
 
         <meta-data android:name="com.oculus.supportedDevices" android:value="all" />
 
         <activity
                 android:name=".MainActivity"
                 android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
-                android:label="VirtualBoyGo"
+                android:label="VBoy Color"
                 android:launchMode="singleTask"
                 android:excludeFromRecents="false"
                 android:screenOrientation="landscape"
                 android:configChanges="screenSize|screenLayout|orientation|keyboardHidden|keyboard|navigation|uiMode|density"
                 android:exported="true">
-            <meta-data android:name="android.app.lib_name" android:value="virtualboygo" />
+            <meta-data android:name="android.app.lib_name" android:value="vboycolor" />
 
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
