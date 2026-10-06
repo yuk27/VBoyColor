@@ -10,7 +10,9 @@ and it should be 0.00%.
 
 Per-eye pairs (a left-only layer next to a right-only one, as the renderer
 classifies them): a right-picture pixel of a tile the left picture also uses,
-at the nearest spot the left picture shows that tile pixel on the row -
+at the spot nearest to where its band's disparity puts it that the left
+picture shows that tile pixel on the row (pictures repeat tiles, so this is
+only a guide: a few pixels of depth inside a band can pair the wrong copy) -
 colored by tile, so mostly the same, short of map-cell colors only the left
 picture's cells have. The right picture's own tiles (and right-eye-only
 sprites) have no point-for-point counterpart - they're colored by region from
@@ -28,7 +30,7 @@ def measure(vb, left, right):
     shade = vb.raw()[:, :, 3] & 3
     off = shade.shape[1] - 384
     t = vb.tags()
-    info, _ = vb.world_info()
+    info, disparity = vb.world_info()
     F = [{k: v[e] for k, v in tag_fields(t).items()} for e in (0, 1)]
     lit = [(t[e] != 0) & (shade[:, off * e:off * e + 384] > 0) & (F[e]["pixel"] > 0) for e in (0, 1)]
 
@@ -53,8 +55,11 @@ def measure(vb, left, right):
         for x in np.nonzero(lit[1][y])[0]:
             xs = tiles.get((int(partner[rw[y, x]]), int(T1[y, x]))) if pair_right[y, x] else at.get(int(K1[y, x]))
             kind = "pair" if pair_right[y, x] else "shared"
-            xl = min(xs, key=lambda v: abs(v - x)) if xs else None
-            if xl is None or abs(xl - x) > 64:
+            # (a pair: the instance nearest to where its band's disparity puts it - pictures repeat tiles)
+            d = int(disparity[rw[y, x]][y // 8]) if pair_right[y, x] else 0
+            target = x + (d if d != 0x7FFF else 0)
+            xl = min(xs, key=lambda v: abs(v - target)) if xs else None
+            if xl is None or abs(xl - target) > 64:
                 st["pair_own" if pair_right[y, x] else "right_only"] += 1
                 continue
             st[kind] += 1

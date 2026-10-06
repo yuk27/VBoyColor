@@ -26,7 +26,8 @@ for name, args, res in [
     ("vbp_state_size", [], C.c_size_t), ("vbp_save", [C.c_void_p, C.c_size_t], C.c_int), ("vbp_load", [C.c_void_p, C.c_size_t], C.c_int),
     ("vbp_pack_load", [C.c_void_p, C.c_size_t], C.c_int), ("vbp_palette", [C.c_void_p], None), ("vbp_auto", [C.c_int, C.c_int], None),
     ("vbp_render", [C.c_void_p, C.c_int, C.c_void_p], None), ("vbp_render_full", [C.c_void_p, C.c_int], C.c_int),
-    ("vbp_worldinfo", [C.c_void_p], None), ("vbp_right_own", [C.c_void_p], C.c_int), ("vbp_time_paint", [C.c_int], C.c_double),
+    ("vbp_worldinfo", [C.c_void_p], None), ("vbp_right_own", [C.c_void_p], C.c_int),
+    ("vbp_block_disparity", [C.c_uint, C.c_int, C.c_void_p], None), ("vbp_time_paint", [C.c_int], C.c_double),
     ("vbp_capture_eye", [C.c_uint, C.c_void_p, C.c_void_p], C.c_int), ("vbp_import_begin", [], None),
     ("vbp_import_add", [C.c_void_p, C.c_int, C.c_int, C.c_void_p, C.c_size_t], C.c_int), ("vbp_import_finish", [], C.c_int),
     ("vbp_paint_bytes", [C.c_void_p], C.c_size_t), ("vbp_import_stats", [C.c_void_p], None),
@@ -111,6 +112,13 @@ class VB:
         a = np.zeros(128 + 32 * 28, np.int16)
         lib.vbp_worldinfo(a.ctypes.data)
         return a[:128].reshape(32, 4), a[128:].reshape(32, 28)
+
+    def block_disparity(self, right_world, sprites=False):
+        """A pair's disparity per 8x8 block of its right picture (28x48; 0x7FFF unknown) - right_world: the pair's
+        right world, or the sprite world for its one-eye sprites (sprites=True)."""
+        a = np.zeros((28, 48), np.int16)
+        lib.vbp_block_disparity(right_world, 1 if sprites else 0, a.ctypes.data)
+        return a
 
     def right_own(self):
         """The last painted frame's right eye: True where a right picture showed a tile of its own (what a

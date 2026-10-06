@@ -188,6 +188,7 @@ private:
         const TileColorPack::CellTile *cell = nullptr;
     };
     std::vector<MapEntry> m_mapCache;
+    static constexpr int kMapClose = 4, kMapReach = 16; // how far from the band's disparity a left tile is looked for (see MappedCell)
     // The left eye's pixels of pairs' left pictures this frame: that pair + 1
     // (bits 0-4), the shade (bits 5-6) - 0 elsewhere (and in a guard band
     // all round, see the .cpp).

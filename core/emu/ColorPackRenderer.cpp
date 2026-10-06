@@ -433,10 +433,14 @@ const TileColorPack::CellTile *ColorPackRenderer::MappedCell(int pair, uint64_t 
 {
     // A tile both pictures of a pair use, that the pack colors per map cell
     // (the left picture's cells - painted from the left eye): the left
-    // picture's cell showing the same tile pixel on this row, nearest to
-    // where the band's disparity puts it - once per right-picture cell and
-    // frame, so a cell's pixels all go by the same one.
-    const unsigned palette = VBGO_TAG_PALETTE(tag), index = VBGO_TAG_INDEX(tag);
+    // picture's cell showing the same tile where the band's disparity puts
+    // it - once per right-picture cell and frame, so a cell's pixels
+    // all go by the same one. The same tile pixel on the row, nearest that
+    // spot; if the left eye doesn't show it (Mario Clash's score digits sit
+    // in front, at another depth, hiding other pixels in each eye), any
+    // other pixel of the tile's row - or rows below - where it says the tile
+    // is (its column in the tile from its left edge; flipped, its right).
+    const unsigned palette = VBGO_TAG_PALETTE(tag), index = VBGO_TAG_INDEX(tag), subX = index & 7, subY = index >> 3;
     const uint32_t key = (VBGO_TAG_CELL(tag) << 13) | (palette << 11) | VBGO_TAG_CHAR(tag);
     const uint32_t mask = static_cast<uint32_t>(m_mapCache.size() - 1);
     uint32_t i = (key * 2654435761u) >> 20 & mask;
@@ -445,14 +449,50 @@ const TileColorPack::CellTile *ColorPackRenderer::MappedCell(int pair, uint64_t 
     MapEntry &entry = m_mapCache[i];
     if (entry.frame == m_frame)
         return entry.cell;
+    // (the band's disparity, not the block's: blocks are found by shades,
+    // for region colors - a tile's spot is better told by the band, and the
+    // tile itself: Teleroboxer's opponent's eyes go by the wrong rim cell
+    // otherwise)
     const Pair &p = m_pairs[pair];
-    const int d = p.estimated ? p.disparity[y >> 3] : kNoDisparity;
-    const int target = x + (d == kNoDisparity ? 0 : d);
-    const LeftPixel *best = nullptr;
-    int bestDistance = kMaxDisparity + 1;
-    for (const LeftPixel &l : m_pairRows[y])
-        if (l.hash == hash && l.index == index && l.palette == palette && l.world == p.left && std::abs(l.x - target) < bestDistance)
-            best = &l, bestDistance = std::abs(l.x - target);
+    const int d = p.estimated && p.disparity[y >> 3] != kNoDisparity ? p.disparity[y >> 3] : 0;
+    const int target = x + d;
+    // The same tile pixel on the row, the nearest within reach of that spot.
+    auto samePixel = [&](int reach) {
+        const LeftPixel *best = nullptr;
+        int bestOff = reach + 1;
+        for (const LeftPixel &l : m_pairRows[y])
+            if (l.hash == hash && l.index == index && l.palette == palette && l.world == p.left && std::abs(l.x - target) < bestOff)
+                best = &l, bestOff = std::abs(l.x - target);
+        return best;
+    };
+    // Any pixel of the tile's row (or rows below) that says the tile is within reach.
+    auto sameTile = [&](int reach) {
+        const LeftPixel *best = nullptr;
+        int bestOff = reach + 1;
+        for (unsigned dy = 0; dy + subY < 8 && y + static_cast<int>(dy) < VBGO_TT_HEIGHT; ++dy)
+            for (const LeftPixel &l : m_pairRows[y + dy])
+            {
+                if (l.hash != hash || l.palette != palette || l.world != p.left || (l.index >> 3) != subY + dy)
+                    continue;
+                const int lsub = l.index & 7;
+                const int off = std::min(std::abs(l.x - lsub - (target - static_cast<int>(subX))),
+                                         std::abs(l.x + lsub - (target + static_cast<int>(subX))));
+                if (off < bestOff)
+                    best = &l, bestOff = off;
+            }
+        return best;
+    };
+    // Close to the spot first (the very pixel, else the tile where its
+    // pixel is hidden); then - the tile's own copy can be well off what the
+    // shades say (Teleroboxer's opponent) - the same pixel further out, the
+    // tile further out.
+    const LeftPixel *best = samePixel(kMapClose);
+    if (!best)
+        best = sameTile(kMapClose);
+    if (!best)
+        best = samePixel(kMaxDisparity);
+    if (!best)
+        best = sameTile(kMapReach);
     entry = {key, m_frame, best ? FindCell(best->cell, palette, hash) : nullptr};
     return entry.cell;
 }
