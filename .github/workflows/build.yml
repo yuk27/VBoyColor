@@ -29,7 +29,9 @@ permissions:
   contents: read
 
 env:
-  OFFICIAL: ${{ startsWith(github.ref, 'refs/tags/v') && 'ON' || 'OFF' }}
+  # A release tag (v1.0.0) builds the clean version string; a pre-release
+  # tag (v1.0.0-beta.1) keeps the dev one, so testers can tell builds apart.
+  OFFICIAL: ${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') && 'ON' || 'OFF' }}
 
 jobs:
   windows:
