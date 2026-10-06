@@ -410,10 +410,10 @@ int ColorPackRenderer::LeftX(const uint64_t tag, int x, unsigned eye, unsigned y
 
 uint64_t ColorPackRenderer::Near(int x, int y, unsigned world)
 {
-    // Markers drawn within reach over the last two frames (of a layer-bound
-    // group, only ones drawn on this pixel's layer) - in left-eye terms;
-    // kept per grid cell and layer for the frame. (Sprites' groups:
-    // m_nearSprites.)
+    // Markers drawn within reach this frame (as gathered before coloring
+    // it) and over the last two (of a layer-bound group, only ones drawn on
+    // this pixel's layer) - in left-eye terms; kept per grid cell and layer
+    // for the frame. (Sprites' groups: m_nearSprites.)
     const int cx = x >> 3, cy = y >> 3;
     std::vector<NearCell> &cache = m_nearCache[world & 31];
     if (cache.empty())
@@ -422,7 +422,7 @@ uint64_t ColorPackRenderer::Near(int x, int y, unsigned world)
     if (known.frame == m_frame)
         return known.bits;
     uint64_t bits = 0;
-    for (unsigned k = 1; k <= 2; ++k)
+    for (unsigned k = 0; k <= 2; ++k)
     {
         const unsigned g = (m_gridCurrent + k) % 3;
         const uint64_t *grid = m_markerGrid[g].data();
@@ -777,7 +777,7 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
     const bool haveCells = pack && !m_cellStart.empty();
     const TileColorPack::ContextTile *contexts = pack ? pack->ContextTiles().data() : nullptr;
     const bool haveContexts = pack && !m_markerGrid[0].empty();
-    uint64_t *markers = nullptr; // this frame's marker grid (Near reads the two before it)
+    uint64_t *markers = nullptr; // this frame's marker grid (Near reads it and the two before it)
     uint8_t *markerLayers = nullptr;
     if (haveContexts)
     {
@@ -789,8 +789,54 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
             markerLayers = m_markerLayer[m_gridCurrent].data();
             std::fill(markerLayers, markerLayers + kGridW * kGridH, 0xFF);
         }
-        // Sprites' groups: the last two frames' markers within reach of each
-        // cell, once (rows, then columns), so a lookup is one read.
+        // This frame's own markers, before anything is colored (the left
+        // picture's - markers count at their left-eye spot): a figure's
+        // colors are on from the first frame it shows its markers, rather
+        // than a frame later (each new pose of an animation would otherwise
+        // show its shared tiles' usual colors for a frame - a flash of Luigi's
+        // green on Mario's back in Mario's Tennis's intro).
+        if (have[0])
+        {
+            const vbgo_tt_eye_view &v = view[0];
+            ResolveSlots(v.hashes);
+            uint64_t any = 0;
+            for (unsigned c = 0; c < 2048; ++c)
+                any |= m_slotMarkers[c] = m_slots[c].markerBits;
+            for (uint32_t x = 0; any && x < VBGO_TT_WIDTH; ++x)
+            {
+                const uint64_t *column = v.columns[x];
+                if (!column)
+                    continue;
+                const uint8_t *r = &raw[(static_cast<size_t>(eyeOffset[0]) + x) * 4];
+                unsigned lastChr = ~0u, lastBand = ~0u; // (a cell's marker counted once per tile and band)
+                for (uint32_t y = 0; y < VBGO_TT_HEIGHT; ++y)
+                {
+                    const uint64_t t = column[y];
+                    if ((t >> 48) != v.stamp)
+                        continue;
+                    const unsigned chr = VBGO_TAG_CHAR(t);
+                    const uint64_t slotBits = m_slotMarkers[chr];
+                    if (!slotBits || !VBGO_TAG_PIXEL(t) || (chr == lastChr && (y >> 3) == lastBand))
+                        continue;
+                    uint32_t rawPixel;
+                    std::memcpy(&rawPixel, r + static_cast<size_t>(y) * fbWidth * 4, 4);
+                    if (!(rawPixel & 0xFFFFFFu))
+                        continue; // (a shade the game switched off)
+                    lastChr = chr, lastBand = y >> 3;
+                    const bool sprite = VBGO_TAG_IS_OBJ(t) != 0;
+                    const uint64_t bits = slotBits & (sprite ? ~m_layerBound : m_layerBound);
+                    if (!bits)
+                        continue;
+                    const unsigned cell = (y >> 3) * kGridW + (x >> 3);
+                    markers[cell] |= bits;
+                    if (!sprite && markerLayers)
+                        markerLayers[cell] = static_cast<uint8_t>(m_worlds[VBGO_TAG_WORLD(t)].colors);
+                }
+            }
+        }
+        // Sprites' groups: this frame's and the last two frames' markers
+        // within reach of each cell, once (rows, then columns), so a lookup
+        // is one read.
         std::vector<uint64_t> rows(kGridW * kGridH, 0);
         const uint64_t *a = m_markerGrid[(m_gridCurrent + 1) % 3].data(), *b = m_markerGrid[(m_gridCurrent + 2) % 3].data();
         for (int gy = 0; gy < kGridH; ++gy)
@@ -798,7 +844,7 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
             {
                 uint64_t bits = 0;
                 for (int x = std::max(0, gx - kContextReach); x <= std::min(kGridW - 1, gx + kContextReach); ++x)
-                    bits |= a[gy * kGridW + x] | b[gy * kGridW + x];
+                    bits |= a[gy * kGridW + x] | b[gy * kGridW + x] | markers[gy * kGridW + x];
                 rows[gy * kGridW + gx] = bits & ~m_layerBound;
             }
         m_nearSprites.assign(kGridW * kGridH, 0);

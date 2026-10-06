@@ -276,8 +276,8 @@ private:
     // Context (see TileColorPack.h): where markers were drawn, on a grid of
     // 8x8-pixel cells in the left eye's terms (a right-eye pixel at its
     // left-eye spot - so both eyes see the same markers around the same
-    // thing), over the last two frames (a marker the game shows every other
-    // frame still counts). A shared tile takes a group's colors if one of
+    // thing), this frame's (gathered before it's colored) and the last two
+    // frames' (a marker the game shows every other frame still counts). A shared tile takes a group's colors if one of
     // its markers is within kContextReach cells. Sprites' groups only color
     // sprites; layer-bound groups (background figures) only their own
     // layer, by a marker drawn on it (each cell remembers the layer its last
@@ -286,6 +286,7 @@ private:
     std::unordered_map<uint32_t, uint64_t> m_markerBits;
     std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>> m_contextRange; // hash -> (first, count)
     std::vector<uint64_t> m_markerGrid[3];
+    std::array<uint64_t, 2048> m_slotMarkers{}; // per slot: its markerBits (compact, for gathering this frame's markers)
     std::vector<uint8_t> m_markerLayer[3];
     uint64_t m_layerBound = 0;
     unsigned m_gridCurrent = 0;
@@ -296,7 +297,7 @@ private:
         uint64_t bits = 0;
     };
     std::array<std::vector<NearCell>, 32> m_nearCache; // (Near's, per layer and grid cell)
-    std::vector<uint64_t> m_nearSprites; // per grid cell: sprites' groups with a marker within reach (last two frames)
+    std::vector<uint64_t> m_nearSprites; // per grid cell: sprites' groups with a marker within reach (this frame and the last two)
 
     // Auto mode, what no tile drew (the game's CPU wrote it into the frame
     // buffer): colored by depth. Returns the brightest level it painted.
