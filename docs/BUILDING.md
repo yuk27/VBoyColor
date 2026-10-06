@@ -145,6 +145,14 @@ for a numbered release passes `-DVBGO_RELEASE_BUILD=ON` (Android:
 `v<VBGO_VERSION>`. Bump `VBGO_VERSION` in `CMakeLists.txt` and `versionCode` /
 `versionName` in `android/app/build.gradle` for each release.
 
+## App icon
+
+`tools/make_icon.py` (Pillow) draws the icon and writes every size: the
+Windows `.ico` (embedded in both desktop exes), the Linux window icon
+(`assets/runtime/icon.png`) and the Quest launcher icon
+(`android/app/res/mipmap-*`). Replace its drawing, run it, commit the
+outputs.
+
 ## Test harness
 
 `tools/harness/` builds the core plus the coloring code as a shared library
