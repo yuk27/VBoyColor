@@ -93,7 +93,7 @@ public:
     // own pages.
     void SetBackPress(std::function<void()> back) { m_menu.BackPress = std::move(back); }
     bool HasBackAction() const { return static_cast<bool>(m_menu.BackPress); }
-    // B / Y clicked in the hints row.
+    // B / Y / X clicked in the hints row.
     void PressBack()
     {
         if (m_menu.BackPress)
@@ -108,6 +108,14 @@ public:
         {
             const auto y = m_menu.YPress;
             y();
+        }
+    }
+    void PressX()
+    {
+        if (m_menu.XPress)
+        {
+            const auto x = m_menu.XPress;
+            x();
         }
     }
     // Left at the page's left edge (to the sidebar).

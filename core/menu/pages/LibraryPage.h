@@ -31,6 +31,7 @@ public:
 private:
     void Play(int game);
     void ToggleView();
+    void ToggleSort();
     bool HasGames() const;
 
     std::shared_ptr<LibraryGrid> m_grid;

@@ -105,9 +105,9 @@ std::string LibraryGrid::Fit(UiFontHandle font, const std::string &text, float w
 void LibraryGrid::RefreshLabels()
 {
     const auto &games = m_library->Games();
-    if (m_labelsFor == games.size() && m_labelsList == m_listView)
+    if (m_labelsFor == m_library->Version() && m_labelsList == m_listView)
         return;
-    m_labelsFor = games.size();
+    m_labelsFor = m_library->Version();
     m_labelsList = m_listView;
     const UiMenuResources &r = *m_resources;
     const UiFontHandle titleFont = m_listView ? r.bodyFont : r.cardFont;
@@ -261,7 +261,7 @@ void LibraryGrid::Draw(UiRenderer &ui, float offsetX, float offsetY, float alpha
     const float x0 = m_x + offsetX, y0 = m_y + offsetY - m_scroll;
     const float cardW = CardWidth(), thumbH = ThumbHeight(), rowH = RowHeight();
     const float pulse = 0.75f + 0.25f * std::cos(m_pulse * 3.14159265f);
-    const bool labelsOk = m_titles.size() == games.size();
+    const bool labelsOk = m_labelsFor == m_library->Version() && m_titles.size() == games.size();
 
     ui.SetClipRect(m_x + offsetX - 6.0f, m_y + offsetY - 4.0f, m_width + 10.0f, m_height + 4.0f);
     for (int i = 0; i < static_cast<int>(games.size()); ++i)

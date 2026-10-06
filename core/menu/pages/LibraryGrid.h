@@ -63,6 +63,6 @@ private:
 
     // Names fitted to the cards: regular, bold (selected), region.
     std::vector<std::string> m_titles, m_titlesBold, m_details;
-    size_t m_labelsFor = static_cast<size_t>(-1);
+    int m_labelsFor = -1; // (ThumbnailLibrary::Version they were made for)
     bool m_labelsList = false;
 };

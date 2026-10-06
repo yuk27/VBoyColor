@@ -43,6 +43,7 @@ public:
         bool hasPack = false; // made with a color pack (known once its thumbnail is)
         bool ready = false;   // `texture` shows its thumbnail (or box art)
         bool showingBox = false; // ...its box art
+        int order = 0;           // its place A-Z (the ROMs folder's order)
         bool failed = false;  // it couldn't be made
         UiImageHandle texture;
     };
@@ -62,6 +63,13 @@ public:
     void Recheck(const std::string &name);
     // Makes every thumbnail again.
     void RebuildAll();
+    // The games A-Z, or the last played first (then the rest A-Z) - the
+    // order Games() lists them in.
+    void SetSortRecent(bool recent);
+    bool IsSortRecent() const { return m_sortRecent; }
+    // Bumped whenever Games() changes (rescan, order) - for anything that
+    // keeps per-game data by index.
+    int Version() const { return m_version; }
     // Box art instead of title screens (downloaded as needed).
     void SetBoxArt(bool boxArt);
     // Box art is being downloaded right now.
@@ -106,6 +114,15 @@ private:
     bool m_makingHasPack = false;
     bool m_archiveDirty = false;
     int m_framesSinceSave = 0;
+
+    // Last played first (States/recent.txt, a name per line) - noticed in
+    // Update whenever the emulator's game changes.
+    void Sort();
+    void NotePlayed(const std::string &name);
+    std::vector<std::string> m_recent;
+    std::string m_lastPlayed;
+    bool m_sortRecent = false;
+    int m_version = 0;
 
     bool m_boxArt = false;
     std::string m_downloading;            // the game whose box art is downloading

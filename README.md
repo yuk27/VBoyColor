@@ -50,7 +50,7 @@ pack).*
   and remembers yours once you change it.
 - **A library of your games** - each one a card with its title screen in
   its own colors, made on your device the first time (nothing of any game
-  ships with the app). Or a list (Y), or - Settings → Download box art, off
+  ships with the app). As a list (Y), last played first (X), or - Settings → Download box art, off
   by default - the box art from libretro's thumbnail collection. Pick with
   the sticks, a gamepad, the mouse, or by pointing a Quest controller and
   pulling its trigger.

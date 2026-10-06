@@ -37,7 +37,7 @@ struct AppSettings
     // defaults in place) on a mismatch rather than attempting migration,
     // except from version 11, whose layout is an exact prefix of this one
     // (12 only appended selectedShadePalette) - see Settings.cpp.
-    static constexpr int kVersion = 14;
+    static constexpr int kVersion = 15;
 
     // Move Screen / Follow Head. Only OpenXrApp's quad-layer pose consumes
     // these - meaningless on the flat pc2d debug build.
@@ -87,6 +87,9 @@ struct AppSettings
     // (downloaded) instead of title screens.
     bool libraryListView = false;
     bool downloadBoxArt = false;
+
+    // Version 15 (appended): the library's last played games first.
+    bool librarySortRecent = false;
 
     // What the screen should be drawn with (Emulator::DrawScreen's tint/
     // patternIndex) - neutral while a shade palette is active, since its

@@ -16,6 +16,7 @@ namespace
     // Where the thumbnails are kept: one file, so the ROMs folder isn't
     // searched once per game (slow through Android's folder access).
     constexpr const char *kArchiveName = "library.thumbs";
+    constexpr const char *kRecentName = "recent.txt";
     constexpr char kArchiveMagic[8] = {'V', 'B', 'C', 'T', 'H', 'U', 'M', '1'};
     // Part of every thumbnail's key: bump it when the thumbnails themselves
     // should change (how they're made or colored), to make them all again.
@@ -192,8 +193,67 @@ void ThumbnailLibrary::Init(UiRenderer &ui, Platform &platform, Emulator &emulat
     m_emulator = &emulator;
     m_settings = &settings;
     m_boxArt = settings.downloadBoxArt;
+    m_sortRecent = settings.librarySortRecent;
+    {
+        const std::vector<uint8_t> bytes = platform.ReadRomsFile(kRecentName, true);
+        const std::string text(bytes.begin(), bytes.end());
+        for (size_t start = 0; start < text.size();)
+        {
+            size_t end = text.find('\n', start);
+            if (end == std::string::npos)
+                end = text.size();
+            std::string line = text.substr(start, end - start);
+            start = end + 1;
+            while (!line.empty() && line.back() == '\r')
+                line.pop_back();
+            if (!line.empty())
+                m_recent.push_back(line);
+        }
+    }
     LoadArchive();
     Rescan();
+}
+
+void ThumbnailLibrary::Sort()
+{
+    auto recentRank = [this](const std::string &name)
+    {
+        const auto it = std::find(m_recent.begin(), m_recent.end(), name);
+        return it == m_recent.end() ? static_cast<int>(m_recent.size()) : static_cast<int>(it - m_recent.begin());
+    };
+    std::stable_sort(m_games.begin(), m_games.end(), [&](const Game &a, const Game &b)
+                     {
+                         if (m_sortRecent)
+                         {
+                             const int ra = recentRank(a.rom.name), rb = recentRank(b.rom.name);
+                             if (ra != rb)
+                                 return ra < rb;
+                         }
+                         return a.order < b.order;
+                     });
+    ++m_version;
+}
+
+void ThumbnailLibrary::SetSortRecent(bool recent)
+{
+    if (m_sortRecent == recent)
+        return;
+    m_sortRecent = recent;
+    Sort();
+}
+
+void ThumbnailLibrary::NotePlayed(const std::string &name)
+{
+    m_recent.erase(std::remove(m_recent.begin(), m_recent.end(), name), m_recent.end());
+    m_recent.insert(m_recent.begin(), name);
+    if (m_recent.size() > 200)
+        m_recent.resize(200);
+    std::string text;
+    for (const std::string &line : m_recent)
+        text += line + "\n";
+    m_platform->WriteRomsFile(kRecentName, true, text.data(), text.size());
+    if (m_sortRecent)
+        Sort();
 }
 
 ThumbnailLibrary::Game *ThumbnailLibrary::Find(const std::string &name)
@@ -224,6 +284,7 @@ void ThumbnailLibrary::Rescan()
     {
         Game game;
         game.rom = rom;
+        game.order = static_cast<int>(m_games.size());
         SplitName(rom.name, game.title, game.details);
         // Keep what's already showing (and its texture) for games still here.
         for (Game &old : previous)
@@ -244,6 +305,7 @@ void ThumbnailLibrary::Rescan()
         m_decodeQueue.push_back(game.rom.name);
         m_checkQueue.push_back(game.rom.name);
     }
+    Sort();
     // Textures of games no longer in the folder are kept for new ones (the
     // UI's descriptor pool can't free them).
     for (Game &old : previous)
@@ -343,6 +405,14 @@ void ThumbnailLibrary::FinishDownload(const std::vector<uint8_t> &bytes)
 void ThumbnailLibrary::Update(bool allowed)
 {
     m_emulator->SetThumbnailsAllowed(allowed);
+
+    // A game started (from the library, a dropped file, ...): it's the most recent.
+    if (m_emulator->RomName() != m_lastPlayed)
+    {
+        m_lastPlayed = m_emulator->RomName();
+        if (!m_lastPlayed.empty())
+            NotePlayed(m_lastPlayed);
+    }
 
     // A finished one: show it, file it.
     std::string name;

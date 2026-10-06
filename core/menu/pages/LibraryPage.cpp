@@ -7,12 +7,18 @@
 #include "menu/pages/AppMenuLayout.h"
 #include "menu/pages/LibraryGrid.h"
 
+#include <algorithm>
+
 namespace
 {
-    // The list/cards switch, top right.
+    // The list/cards switch, top right, and the sort chip left of it.
     constexpr float kChipW = 36.0f, kChipH = 13.0f;
     constexpr float kChipX = kContentRight - kChipW;
     constexpr float kChipY = kPageTitleY + (kPageTitleHeight - kChipH) / 2.0f;
+    constexpr float kSortW = 40.0f;
+    constexpr float kSortX = kChipX - 4.0f - kSortW;
+    constexpr const char *kSortAz = "A\xE2\x80\x93Z";
+    constexpr const char *kSortRecent = "Recent";
     constexpr const char *kMakingText = " \xC2\xB7 making thumbnails\xE2\x80\xA6";
     constexpr const char *kDownloadingText = " \xC2\xB7 getting box art\xE2\x80\xA6";
 
@@ -41,6 +47,8 @@ void LibraryPage::Init(UiRenderer &ui, const UiMenuResources &resources)
         m_grid->onPlay = [this](int game) { Play(game); };
         m_menu.MenuItems.push_back(m_grid);
         m_menu.YPress = [this]() { ToggleView(); };
+        m_menu.XPress = [this]() { ToggleSort(); };
+        ui.EnsureGlyphsForText(resources.cardFont, std::string(kSortAz) + kSortRecent);
     }
     else
     {
@@ -95,11 +103,14 @@ std::vector<MenuHint> LibraryPage::Hints() const
         return {{UiIconId::ButtonA, "Select"}, {UiIconId::ButtonB, back}};
     return {{UiIconId::ButtonA, "Play"},
             {UiIconId::ButtonB, back},
-            {UiIconId::ButtonY, m_grid->IsListView() ? "Card view" : "List view"}};
+            {UiIconId::ButtonY, m_grid->IsListView() ? "Card view" : "List view"},
+            {UiIconId::ButtonX, m_library->IsSortRecent() ? "A\xE2\x80\x93Z" : "Recent first"}};
 }
 
 void LibraryPage::OnShow()
 {
+    if (m_grid)
+        m_grid->RefreshLabels(); // (the order may have changed: a game was played)
     // On the game being played, if any.
     if (m_grid && m_emulator && m_library)
     {
@@ -140,6 +151,25 @@ void LibraryPage::ToggleView()
     }
 }
 
+void LibraryPage::ToggleSort()
+{
+    if (!m_grid || !m_library)
+        return;
+    // (the selection stays on the same game)
+    const auto &games = m_library->Games();
+    const std::string selected = m_grid->SelectedGame() < static_cast<int>(games.size())
+                                     ? games[m_grid->SelectedGame()].rom.name
+                                     : std::string();
+    m_library->SetSortRecent(!m_library->IsSortRecent());
+    m_grid->RefreshLabels();
+    m_grid->SetSelectedGame(std::max(0, m_library->IndexOf(selected)), true);
+    if (m_settings)
+    {
+        m_settings->librarySortRecent = m_library->IsSortRecent();
+        m_settings->Save(*m_platform);
+    }
+}
+
 void LibraryPage::Draw(UiRenderer &ui, int transitionDirX, int transitionDirY, float moveProgress, float moveDist,
                        float fadeProgress)
 {
@@ -148,6 +178,16 @@ void LibraryPage::Draw(UiRenderer &ui, int transitionDirX, int transitionDirY, f
         return;
     const float ox = transitionDirX * moveProgress * moveDist, oy = transitionDirY * moveProgress * moveDist;
     const float a = fadeProgress;
+    // Sort: A-Z or Recent.
+    {
+        const char *label = m_library && m_library->IsSortRecent() ? kSortRecent : kSortAz;
+        const UiFontHandle font = m_resources->cardFont;
+        ui.DrawQuadRounded(kSortX + ox, kChipY + oy, kSortW, kChipH, WithAlpha(kMenuCardColor, a), kChipH / 2.0f);
+        const float tw = ui.GetTextWidth(font, label);
+        ui.DrawText(font, label, kSortX + (kSortW - tw) / 2.0f + ox,
+                    kChipY + kChipH / 2.0f - ui.GetFontPHeight(font) / 2.0f - ui.GetFontPStart(font) + oy, 1.0f,
+                    WithAlpha(kMenuTextColor, a));
+    }
     ui.DrawQuadRounded(kChipX + ox, kChipY + oy, kChipW, kChipH, WithAlpha(kMenuCardColor, a), kChipH / 2.0f);
     const bool list = m_grid->IsListView();
     constexpr float kHalf = kChipW / 2.0f, kIcon = 8.0f;
@@ -165,6 +205,12 @@ void LibraryPage::Draw(UiRenderer &ui, int transitionDirX, int transitionDirY, f
 
 void LibraryPage::HandlePointer(const MenuPointer &pointer)
 {
+    if (m_grid && pointer.clicked && pointer.x >= kSortX && pointer.x <= kSortX + kSortW && pointer.y >= kChipY &&
+        pointer.y <= kChipY + kChipH)
+    {
+        ToggleSort();
+        return;
+    }
     if (m_grid && pointer.clicked && pointer.x >= kChipX && pointer.x <= kChipX + kChipW && pointer.y >= kChipY &&
         pointer.y <= kChipY + kChipH)
     {

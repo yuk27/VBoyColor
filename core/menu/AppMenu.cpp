@@ -499,7 +499,7 @@ void AppMenu::HandlePointer()
 
     if (p.y >= kMenuHeight - kHintsHeight)
     {
-        // The hints are buttons too: B, and Y.
+        // The hints are buttons too: B, Y and X.
         for (const HintRect &hint : m_hintRects)
         {
             if (!clicked || p.x < hint.x0 || p.x > hint.x1)
@@ -516,6 +516,8 @@ void AppMenu::HandlePointer()
             }
             else if (hint.icon == UiIconId::ButtonY && !m_sidebarFocus && TargetPage())
                 TargetPage()->PressY();
+            else if (hint.icon == UiIconId::ButtonX && !m_sidebarFocus && TargetPage())
+                TargetPage()->PressX();
         }
         return;
     }
