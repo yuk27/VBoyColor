@@ -13,7 +13,7 @@ namespace
 std::string FormatDeg(const char *prefix, float value)
 {
     char buf[32];
-    std::snprintf(buf, sizeof(buf), "%s%.0f deg", prefix, value);
+    std::snprintf(buf, sizeof(buf), "%s%.0f\xC2\xB0", prefix, value);
     return buf;
 }
 std::string FormatValue(const char *prefix, float value, const char *suffix = "")
@@ -35,55 +35,45 @@ void MoveScreenPage::Init(UiRenderer &ui, const UiMenuResources &resources)
     m_settings = resources.settings;
     m_platform = resources.platform;
 
-    auto list = std::make_shared<MenuList>(ui, resources.menuFont, kMenuContentX, kMenuContentY, kListWidth, kListHeight,
-                                           kMenuItemSize, resources.icons);
-    list->Color          = kMenuTextColor;
-    list->SelectionColor = kMenuSelectionColor;
-    list->HighlightColor = kMenuHighlightColor;
+    auto list = MakeList(ui, resources);
 
     // Select resets just that row's value to its default (unlike the other
     // rows below, where Select acts like Right).
-    m_yawEntry = list->AddEntry("Yaw: 0 deg", [this](MenuItem *) { ResetToDefault(&AppSettings::screenYaw, kDefaultYaw); },
+    list->AddHeader("Position");
+    m_yawEntry = list->AddEntry("Yaw", [this](MenuItem *) { ResetToDefault(&AppSettings::screenYaw, kDefaultYaw); },
         [this](MenuItem *) { ChangeYaw(-kYawPitchStep); }, [this](MenuItem *) { ChangeYaw(kYawPitchStep); }, UiIconId::LeftRight);
-    m_pitchEntry = list->AddEntry("Pitch: 0 deg", [this](MenuItem *) { ResetToDefault(&AppSettings::screenPitch, kDefaultPitch); },
+    m_pitchEntry = list->AddEntry("Pitch", [this](MenuItem *) { ResetToDefault(&AppSettings::screenPitch, kDefaultPitch); },
         [this](MenuItem *) { ChangePitch(-kYawPitchStep); }, [this](MenuItem *) { ChangePitch(kYawPitchStep); }, UiIconId::UpDown);
-    m_rollEntry = list->AddEntry("Roll: 0 deg", [this](MenuItem *) { ResetToDefault(&AppSettings::screenRoll, kDefaultRoll); },
+    m_rollEntry = list->AddEntry("Roll", [this](MenuItem *) { ResetToDefault(&AppSettings::screenRoll, kDefaultRoll); },
         [this](MenuItem *) { ChangeRoll(-kRollStep); }, [this](MenuItem *) { ChangeRoll(kRollStep); }, UiIconId::Reset);
-
-    list->AddSpacer(kMenuSpacerSize);
-
-    m_distanceEntry = list->AddEntry("Distance: 2.20", [this](MenuItem *) { ResetToDefault(&AppSettings::screenDistance, kDefaultDistance); },
+    m_distanceEntry = list->AddEntry("Distance", [this](MenuItem *) { ResetToDefault(&AppSettings::screenDistance, kDefaultDistance); },
         [this](MenuItem *) { ChangeDistance(-kDistanceStep); }, [this](MenuItem *) { ChangeDistance(kDistanceStep); }, UiIconId::Distance);
-    m_scaleEntry = list->AddEntry("Scale: 1.00x", [this](MenuItem *) { ResetToDefault(&AppSettings::screenScale, kDefaultScale); },
+    m_scaleEntry = list->AddEntry("Scale", [this](MenuItem *) { ResetToDefault(&AppSettings::screenScale, kDefaultScale); },
         [this](MenuItem *) { ChangeScale(-kScaleStep); }, [this](MenuItem *) { ChangeScale(kScaleStep); }, UiIconId::Scale);
-
-    list->AddSpacer(kMenuSpacerSize);
 
     // Off/Smooth/Instant - Left/Right cycle backward/forward, Select acts
     // like Right (matches Yaw/Pitch/Roll/Distance/Scale above).
-    m_followHeadEntry = list->AddEntry("Follow Head: Off", [this](MenuItem *) { CycleFollowHeadMode(1); },
+    list->AddHeader("View");
+    m_followHeadEntry = list->AddEntry("Follow head", [this](MenuItem *) { CycleFollowHeadMode(1); },
         [this](MenuItem *) { CycleFollowHeadMode(-1); }, [this](MenuItem *) { CycleFollowHeadMode(1); }, UiIconId::FollowHead);
-    m_threeDeeEntry = list->AddEntry("3D Screen: Yes", [this](MenuItem *) { ToggleThreeDeeMode(); }, // Select acts like Right - same toggle
-        [this](MenuItem *) { ToggleThreeDeeMode(); }, [this](MenuItem *) { ToggleThreeDeeMode(); }, UiIconId::ThreeD);
-    m_curvedScreenEntry = list->AddEntry("Screen: Flat", [this](MenuItem *) { ToggleCurvedScreen(); }, // Select acts like Right - same toggle
-        [this](MenuItem *) { ToggleCurvedScreen(); }, [this](MenuItem *) { ToggleCurvedScreen(); }, UiIconId::FlatScreen);
+    m_threeDeeEntry = list->AddEntry("3D screen", [this](MenuItem *) { ToggleThreeDeeMode(); }, nullptr, nullptr, UiIconId::ThreeD);
+    m_threeDeeEntry->toggle = [this]() { return m_settings && m_settings->useThreeDeeMode; };
     // The room around the screen (passthrough) or black - only where the
     // headset can show it.
     if (resources.passthroughSupported)
     {
-        m_passthroughEntry = list->AddEntry("Background: Black", [this](MenuItem *) { TogglePassthrough(); },
-            [this](MenuItem *) { TogglePassthrough(); }, [this](MenuItem *) { TogglePassthrough(); });
+        m_passthroughEntry = list->AddEntry("Show your room around it", [this](MenuItem *) { TogglePassthrough(); });
+        m_passthroughEntry->toggle = [this]() { return m_settings && m_settings->passthrough; };
         m_passthroughEntry->reserveIconSpace = true;
     }
     // IPD is the one exception to "Select acts like Right" - press already
     // has a distinct, meaningful action (reset to 0), so it stays that way
     // rather than doubling up with Right's step.
-    m_ipdEntry = list->AddEntry("IPD offset: 0.000", [this](MenuItem *) { ChangeIpd(0); /* press resets - see ChangeIpd */ },
+    m_ipdEntry = list->AddEntry("IPD offset", [this](MenuItem *) { ChangeIpd(0); /* press resets - see ChangeIpd */ },
         [this](MenuItem *) { ChangeIpd(-1); }, [this](MenuItem *) { ChangeIpd(1); }, UiIconId::Ipd);
 
-    list->AddSpacer(kMenuSpacerSize);
-
-    list->AddEntry("Reset Values", [this](MenuItem *) { ResetView(); }, nullptr, nullptr, UiIconId::ResetView);
+    list->AddSpacer(kGroupGap);
+    list->AddEntry("Reset values", [this](MenuItem *) { ResetView(); }, nullptr, nullptr, UiIconId::ResetView)->centered = true;
 
     m_menu.MenuItems.push_back(list);
 
@@ -151,7 +141,6 @@ void MoveScreenPage::ResetView()
     m_settings->followHeadMode = FollowHeadMode::Off;
     m_settings->useThreeDeeMode = true;
     m_settings->ipdOffset = 0.0f;
-    m_settings->curvedScreen = false;
     RefreshLabels();
 }
 
@@ -168,13 +157,6 @@ void MoveScreenPage::ToggleThreeDeeMode()
 {
     if (!m_settings) return;
     m_settings->useThreeDeeMode = !m_settings->useThreeDeeMode;
-    RefreshLabels();
-}
-
-void MoveScreenPage::ToggleCurvedScreen()
-{
-    if (!m_settings) return;
-    m_settings->curvedScreen = !m_settings->curvedScreen;
     RefreshLabels();
 }
 
@@ -206,23 +188,18 @@ void MoveScreenPage::RefreshLabels()
     if (!m_settings)
         return;
 
-    m_yawEntry->SetText(FormatDeg("Yaw: ", m_settings->screenYaw));
-    m_pitchEntry->SetText(FormatDeg("Pitch: ", m_settings->screenPitch));
-    m_rollEntry->SetText(FormatDeg("Roll: ", m_settings->screenRoll));
-    m_distanceEntry->SetText(FormatValue("Distance: ", m_settings->screenDistance));
-    m_scaleEntry->SetText(FormatValue("Scale: ", m_settings->screenScale, "x"));
+    m_yawEntry->SetValue(FormatDeg("", m_settings->screenYaw));
+    m_pitchEntry->SetValue(FormatDeg("", m_settings->screenPitch));
+    m_rollEntry->SetValue(FormatDeg("", m_settings->screenRoll));
+    m_distanceEntry->SetValue(FormatValue("", m_settings->screenDistance, " m"));
+    m_scaleEntry->SetValue(FormatValue("", m_settings->screenScale, "x"));
 
     const char *followHeadLabel = m_settings->followHeadMode == FollowHeadMode::Off      ? "Off"
                                   : m_settings->followHeadMode == FollowHeadMode::Smooth ? "Smooth"
                                                                                           : "Instant";
-    m_followHeadEntry->SetText(std::string("Follow Head: ") + followHeadLabel);
-    m_threeDeeEntry->SetText(m_settings->useThreeDeeMode ? "3D Screen: Yes" : "3D Screen: No");
+    m_followHeadEntry->SetValue(followHeadLabel);
     m_threeDeeEntry->icon = m_settings->useThreeDeeMode ? UiIconId::ThreeD : UiIconId::TwoD;
-    m_ipdEntry->SetText(FormatFloat("IPD offset: ", m_settings->ipdOffset));
-    m_curvedScreenEntry->SetText(m_settings->curvedScreen ? "Screen: Curved" : "Screen: Flat");
-    m_curvedScreenEntry->icon = m_settings->curvedScreen ? UiIconId::CurvedScreen : UiIconId::FlatScreen;
-    if (m_passthroughEntry)
-        m_passthroughEntry->SetText(m_settings->passthrough ? "Background: Your room" : "Background: Black");
+    m_ipdEntry->SetValue(FormatFloat("", m_settings->ipdOffset));
 
     m_settings->Save(*m_platform); // always-on autosave - no explicit save action anywhere in the menu anymore
 }

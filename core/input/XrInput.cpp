@@ -59,6 +59,8 @@ void XrInput::Initialize(XrInstance instance, XrSession session)
     m_triggerAction = createAction("trigger", "Trigger", XR_ACTION_TYPE_FLOAT_INPUT, true);
     m_menuClickAction = createAction("menu_click", "Menu Button", XR_ACTION_TYPE_BOOLEAN_INPUT, false);
     m_thumbstickClickAction = createAction("thumbstick_click", "Left Stick Click", XR_ACTION_TYPE_BOOLEAN_INPUT, false);
+    // The menu's laser pointer (see LocateAim).
+    m_aimAction = createAction("aim", "Aim", XR_ACTION_TYPE_POSE_INPUT, true);
 
     auto path = [&](const char *p)
     {
@@ -86,6 +88,8 @@ void XrInput::Initialize(XrInstance instance, XrSession session)
         // left stick click doubles as a menu toggle.
         {m_menuClickAction, path("/user/hand/left/input/menu/click")},
         {m_thumbstickClickAction, path("/user/hand/left/input/thumbstick/click")},
+        {m_aimAction, path("/user/hand/left/input/aim/pose")},
+        {m_aimAction, path("/user/hand/right/input/aim/pose")},
     };
 
     XrPath profilePath;
@@ -102,10 +106,42 @@ void XrInput::Initialize(XrInstance instance, XrSession session)
     attachInfo.countActionSets = 1;
     attachInfo.actionSets = &m_actionSet;
     CheckXr(xrAttachSessionActionSets(session, &attachInfo), "xrAttachSessionActionSets");
+
+    for (int hand = 0; hand < 2; ++hand)
+    {
+        XrActionSpaceCreateInfo spaceInfo{XR_TYPE_ACTION_SPACE_CREATE_INFO};
+        spaceInfo.action = m_aimAction;
+        spaceInfo.subactionPath = subactionPaths[hand];
+        spaceInfo.poseInActionSpace.orientation.w = 1.0f;
+        // (no laser without it - not worth failing over)
+        if (XR_FAILED(xrCreateActionSpace(session, &spaceInfo, &m_aimSpaces[hand])))
+            m_aimSpaces[hand] = XR_NULL_HANDLE;
+    }
+}
+
+bool XrInput::LocateAim(XrSpace baseSpace, XrTime time, bool rightHand, XrPosef &pose) const
+{
+    const XrSpace space = m_aimSpaces[rightHand ? 1 : 0];
+    if (space == XR_NULL_HANDLE || baseSpace == XR_NULL_HANDLE)
+        return false;
+    XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
+    if (XR_FAILED(xrLocateSpace(space, baseSpace, time, &location)))
+        return false;
+    constexpr XrSpaceLocationFlags kValid = XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+    if ((location.locationFlags & kValid) != kValid)
+        return false;
+    pose = location.pose;
+    return true;
 }
 
 void XrInput::Shutdown()
 {
+    for (XrSpace &space : m_aimSpaces)
+        if (space != XR_NULL_HANDLE)
+        {
+            xrDestroySpace(space);
+            space = XR_NULL_HANDLE;
+        }
     if (m_actionSet != XR_NULL_HANDLE)
     {
         xrDestroyActionSet(m_actionSet);

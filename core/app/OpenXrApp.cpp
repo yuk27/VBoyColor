@@ -565,7 +565,7 @@ bool OpenXrApp::RenderScreenLayer(XrCompositionLayerQuad &leftQuadLayer, XrCompo
         return false;
     }
 
-    const bool useCylinder = m_settings.curvedScreen && m_cylinderExtAvailable;
+    const bool useCylinder = false; // (the curved screen option was dropped - always flat)
     outUsedCylinder = useCylinder;
 
     const float aspect = m_screenSwapchainLeft.height != 0
@@ -705,6 +705,23 @@ bool OpenXrApp::RenderMenuLayer(XrCompositionLayerQuad &quadLayer)
     XrSwapchainImageReleaseInfo releaseInfo{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
     CheckXr(xrReleaseSwapchainImage(m_menuSwapchain.handle, &releaseInfo), "xrReleaseSwapchainImage (menu)");
 
+    XrPosef pose{};
+    XrExtent2Df size{};
+    MenuQuadPose(pose, size);
+    quadLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT | XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
+    quadLayer.space = m_appSpace;
+    quadLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+    quadLayer.subImage.swapchain = m_menuSwapchain.handle;
+    quadLayer.subImage.imageRect.offset = {0, 0};
+    quadLayer.subImage.imageRect.extent = {m_menuSwapchain.width, m_menuSwapchain.height};
+    quadLayer.subImage.imageArrayIndex = 0;
+    quadLayer.pose = pose;
+    quadLayer.size = size;
+    return true;
+}
+
+void OpenXrApp::MenuQuadPose(XrPosef &pose, XrExtent2Df &size) const
+{
     // Same meters-per-pixel scale as the screen layer at its default 1.0x
     // size, so the menu doesn't appear to change size just for being on its
     // own swapchain now - deliberately NOT multiplied by the screen-scale
@@ -719,23 +736,74 @@ bool OpenXrApp::RenderMenuLayer(XrCompositionLayerQuad &quadLayer)
     const XrQuaternionf orientation = ComputeScreenOrientation(m_settings, followHeadActive, followOrientation);
     const XrVector3f forward = QuatRotateVector(orientation, XrVector3f{0.0f, 0.0f, -1.0f});
 
-    quadLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT | XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
-    quadLayer.space = m_appSpace;
-    quadLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-    quadLayer.subImage.swapchain = m_menuSwapchain.handle;
-    quadLayer.subImage.imageRect.offset = {0, 0};
-    quadLayer.subImage.imageRect.extent = {m_menuSwapchain.width, m_menuSwapchain.height};
-    quadLayer.subImage.imageArrayIndex = 0;
-    quadLayer.pose.orientation = orientation;
+    pose.orientation = orientation;
     // Same direction as the screen layer (both centered on the view axis)
     // but at its own fixed distance - see kMenuDistanceMeters.
-    quadLayer.pose.position = {forward.x * kMenuDistanceMeters, forward.y * kMenuDistanceMeters,
-                               forward.z * kMenuDistanceMeters};
+    pose.position = {forward.x * kMenuDistanceMeters, forward.y * kMenuDistanceMeters, forward.z * kMenuDistanceMeters};
     // Resolution is PPD-driven, but physical size deliberately remains the
     // original scale-2 size. Otherwise selecting a sharper tier would also
     // make the panel larger in the headset.
-    quadLayer.size = {kMenuWidth * kMenuScale * metersPerPixel, kMenuHeight * kMenuScale * metersPerPixel};
-    return true;
+    size = {kMenuWidth * kMenuScale * metersPerPixel, kMenuHeight * kMenuScale * metersPerPixel};
+}
+
+void OpenXrApp::UpdateMenuPointer(XrTime time)
+{
+    if (!m_appMenu.IsOpen())
+    {
+        m_appMenu.SetPointer(false, 0.0f, 0.0f, false);
+        return;
+    }
+    XrPosef menuPose{};
+    XrExtent2Df menuSize{};
+    MenuQuadPose(menuPose, menuSize);
+    const XrVector3f normal = QuatRotateVector(menuPose.orientation, XrVector3f{0.0f, 0.0f, 1.0f});
+    const XrVector3f right = QuatRotateVector(menuPose.orientation, XrVector3f{1.0f, 0.0f, 0.0f});
+    const XrVector3f up = QuatRotateVector(menuPose.orientation, XrVector3f{0.0f, 1.0f, 0.0f});
+    auto dot = [](const XrVector3f &a, const XrVector3f &b) { return a.x * b.x + a.y * b.y + a.z * b.z; };
+
+    // Each laser where it meets the panel, in the menu's units.
+    struct Hit
+    {
+        bool onMenu = false;
+        float x = 0, y = 0;
+    } hits[2];
+    for (int hand = 0; hand < 2; ++hand)
+    {
+        XrPosef aim{};
+        if (!m_input.LocateAim(m_appSpace, time, hand == 1, aim))
+            continue;
+        const XrVector3f direction = QuatRotateVector(aim.orientation, XrVector3f{0.0f, 0.0f, -1.0f});
+        const float facing = dot(direction, normal);
+        if (facing > -1e-4f)
+            continue; // (pointing away from it, or along it)
+        const XrVector3f toCenter{menuPose.position.x - aim.position.x, menuPose.position.y - aim.position.y,
+                                  menuPose.position.z - aim.position.z};
+        const float t = dot(toCenter, normal) / facing;
+        if (t <= 0.0f)
+            continue;
+        const XrVector3f fromCenter{aim.position.x + direction.x * t - menuPose.position.x,
+                                    aim.position.y + direction.y * t - menuPose.position.y,
+                                    aim.position.z + direction.z * t - menuPose.position.z};
+        const float u = dot(fromCenter, right) / menuSize.width + 0.5f;
+        const float v = 0.5f - dot(fromCenter, up) / menuSize.height;
+        if (u < 0.0f || u > 1.0f || v < 0.0f || v > 1.0f)
+            continue;
+        hits[hand] = {true, u * kMenuWidth, v * kMenuHeight};
+    }
+
+    // The hand that pulls its trigger on the menu takes the pointer; with
+    // only one pointing at it, that one.
+    const bool triggers[2] = {m_input.IsLeftTriggerPressed(), m_input.IsRightTriggerPressed()};
+    for (int hand = 0; hand < 2; ++hand)
+        if (hits[hand].onMenu && triggers[hand] && !m_lastTriggers[hand])
+            m_pointerHand = hand;
+    if (!hits[m_pointerHand].onMenu && hits[1 - m_pointerHand].onMenu)
+        m_pointerHand = 1 - m_pointerHand;
+    m_lastTriggers[0] = triggers[0];
+    m_lastTriggers[1] = triggers[1];
+
+    const Hit &hit = hits[m_pointerHand];
+    m_appMenu.SetPointer(hit.onMenu, hit.x, hit.y, triggers[m_pointerHand], 0.0f, true);
 }
 
 void OpenXrApp::UpdateBatteryPercent(float deltaSeconds)
@@ -773,6 +841,7 @@ void OpenXrApp::RenderFrame()
         m_appMenu.ToggleOpen();
     m_lastMenuButtonPressed = menuButtonPressed;
 
+    UpdateMenuPointer(frameState.predictedDisplayTime);
     m_appMenu.Update(m_buttonStates, m_lastButtonStates, deltaSeconds);
     UpdateBatteryPercent(deltaSeconds);
 

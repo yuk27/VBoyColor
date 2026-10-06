@@ -49,6 +49,14 @@ public:
     // 0-100 device battery level, -1 if unavailable.
     virtual int GetBatteryPercent() const = 0;
 
+    // Fetches an https URL in the background (the library's optional box
+    // art) - one download at a time. False if this platform can't, or one
+    // is still running.
+    virtual bool StartDownload(const std::string & /*url*/) { return false; }
+    // The download started last: 0 still running, 1 done (bytes filled -
+    // reported once), -1 failed or none.
+    virtual int PollDownload(std::vector<uint8_t> & /*bytes*/) { return -1; }
+
     // Loads a bundled app asset (font/icon/image) - APK assets on Android,
     // a file next to the running executable on desktop. Empty if not found.
     virtual std::vector<uint8_t> LoadAssetBytes(const std::string &name) = 0;

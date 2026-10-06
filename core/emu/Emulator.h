@@ -10,6 +10,7 @@
 #include "io/Platform.h"
 
 #include <array>
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
@@ -117,6 +118,8 @@ public:
     // texture exists (showing black) from app start, and DrawScreen doesn't
     // need special-casing for the "no ROM loaded yet" state.
     bool HasScreen() const { return m_screenTexture.IsValid(); }
+    // A game is loaded (playing, paused, or set aside for a thumbnail).
+    bool HasGame() const { return m_romLoaded; }
     uint32_t GetScreenWidth() const { return kSideBySideWidth; }
     uint32_t GetScreenHeight() const { return kSideBySideHeight; }
 
@@ -281,6 +284,44 @@ public:
     // is applied at load time (LoadStatePreview), not baked in.
     bool LoadStatePreview(int uiSlot, std::vector<uint8_t> &outRgba) const;
 
+    // --- Library thumbnails ------------------------------------------------
+    //
+    // A thumbnail is a game's title screen - the left picture, in the colors
+    // the game starts with - made by running the game here (see
+    // ThumbnailRecipes.h for how it gets there). Meanwhile the game being
+    // played, if any, is set aside (its state kept in memory, its battery
+    // save written first) and comes back where it was the moment anything
+    // needs it: the emulation resuming, a save state, another game loading.
+    // The emulation thread runs a thumbnail a few frames at a time while
+    // allowed (the menu open), so the menu stays smooth; file reading and
+    // writing stays with the caller (the render thread - Android's file
+    // access needs it).
+    struct ThumbnailInput
+    {
+        std::string name;               // RomEntry::name - what the thumbnail is filed under
+        std::vector<uint8_t> rom;       // the ROM file's bytes
+        std::vector<uint8_t> pack;      // its color pack (.vbcp bytes), or empty - see FindPackBytes
+        int shadePalette = -1;          // the game's colors (AppSettings::EffectiveShadePalette for it - kAutoColors: Auto) ...
+        int pattern = -1;               // ... and with no shade palette, its gradient (kScreenPatterns) ...
+        float tint[3] = {1.0f, 0.0f, 0.0f}; // ... or its tint
+    };
+    // Called once per app frame: while false (the game playing), no
+    // thumbnail work happens.
+    void SetThumbnailsAllowed(bool allowed);
+    // True when the thumbnail worker has nothing to do and is allowed to:
+    // give it the next game.
+    bool WantsThumbnailInput();
+    void GiveThumbnailInput(ThumbnailInput input);
+    // A finished thumbnail: its name and picture (kPreviewWidth x
+    // kPreviewHeight, RGB). False when none is waiting.
+    bool TakeThumbnail(std::string &name, std::vector<uint8_t> &rgb);
+    // Drops the thumbnail being made and puts the game back (quick).
+    void StopThumbnails();
+    // A color pack for a ROM, as LoadRom would find it (but without importing
+    // paintings): <name>.vbcp in the ROMs folder, one built into the app, or
+    // one made for this ROM (by its CRC) under another name. Empty if none.
+    static std::vector<uint8_t> FindPackBytes(Platform &platform, const std::string &name, uint32_t crc, uint32_t size);
+
     // Flushes cart SRAM for the currently-loaded ROM, if any, and stops
     // audio playback - call once on app exit (LoadRom already flushes SRAM
     // on every ROM switch).
@@ -419,6 +460,37 @@ private:
     std::vector<uint64_t> m_records; // one eye's tile records, for the debug view / F7 collector
     UncoloredCollector m_collector; // see SetCollectingUncolored
     FrameRecorder m_recorder;       // see ToggleRecording
+
+    // Thumbnails (see GiveThumbnailInput). The worker's step: runs the one
+    // being made a few frames on (m_emuMutex held), setting the game aside
+    // first; done, it's left in m_thumbDone.
+    void ThumbnailStep();
+    // The game being played out of the core (its state and ROM kept) / back
+    // in it, where it was. Both with m_emuMutex held.
+    void SetGameAside();
+    void BringGameBack();
+    // Colors the thumbnail's frame (m_thumbRaw) into m_thumbRgba, like
+    // ColorFrame does the screen's.
+    void ColorThumbnailFrame();
+    // Hands a finished (or failed: empty) thumbnail over and takes the next input.
+    void FinishThumbnail(std::vector<uint8_t> rgb);
+    std::atomic<bool> m_thumbAllowed{false};
+    bool m_thumbHasInput = false;   // (m_workMutex) an input given, not yet finished
+    ThumbnailInput m_thumbInput;    // (m_workMutex until taken up, then the worker's)
+    bool m_thumbRunning = false;    // the worker: a thumbnail's game is loaded in the core
+    int m_thumbFrame = 0;
+    uint32_t m_thumbCrc = 0;
+    TileColorPack m_thumbPack;
+    ColorPackRenderer m_thumbRenderer;
+    ShadeColorizer m_thumbColorizer;
+    ShadeRgb m_thumbBackground{0.0f, 0.0f, 0.0f};
+    std::vector<uint8_t> m_thumbRaw, m_thumbRgba;
+    bool m_thumbColored = false;
+    std::mutex m_thumbDoneMutex;
+    std::vector<std::pair<std::string, std::vector<uint8_t>>> m_thumbDone;
+    // The game set aside: its ROM's bytes (kept from LoadRom) and state.
+    bool m_gameAside = false;
+    std::vector<uint8_t> m_romBytes, m_asideState;
     bool m_collecting = false;
     ShadeRgb m_shadeBackground{0.0f, 0.0f, 0.0f}; // active Multicolor palette's background - painted tiles fade toward it
 

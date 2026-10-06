@@ -3,54 +3,75 @@
 
 #include <memory>
 #include <string>
+#include <vector>
+
+namespace
+{
+    // Lines of text on rounded cards, top to bottom.
+    class TextCards : public MenuItem
+    {
+    public:
+        struct Line
+        {
+            std::string text;
+            UiFontHandle font;
+            XrColor4f color;
+        };
+        // An empty line ends a card (the next starts after a gap).
+        std::vector<Line> lines;
+
+        void Draw(UiRenderer &ui, float offsetX, float offsetY, float alpha) override
+        {
+            constexpr float kLineHeight = 12.5f, kPad = 6.0f;
+            float y = kContentTop + offsetY;
+            size_t i = 0;
+            while (i < lines.size())
+            {
+                size_t end = i;
+                while (end < lines.size() && !lines[end].text.empty())
+                    ++end;
+                const float height = (end - i) * kLineHeight + kPad * 2.0f;
+                XrColor4f card = kMenuCardColor;
+                card.a *= alpha;
+                ui.DrawQuadRounded(kContentX + offsetX, y, kContentWidth, height, card, kCardRadius);
+                float lineY = y + kPad;
+                for (; i < end; ++i)
+                {
+                    const Line &line = lines[i];
+                    XrColor4f c = line.color;
+                    c.a *= alpha;
+                    const float textY = lineY + kLineHeight / 2.0f - ui.GetFontPHeight(line.font) / 2.0f -
+                                        ui.GetFontPStart(line.font);
+                    ui.DrawText(line.font, line.text, kContentX + 10.0f + offsetX, textY, 1.0f, c);
+                    lineY += kLineHeight;
+                }
+                y += height + kGroupGap;
+                ++i; // (the empty line)
+            }
+        }
+    };
+} // namespace
 
 void AboutPage::Init(UiRenderer &ui, const UiMenuResources &resources)
 {
-    // The one selectable row (Back), first: the menu starts on item 0.
-    constexpr float kBackHeight = kMenuItemSize;
-    auto list = std::make_shared<MenuList>(ui, resources.menuFont, kMenuContentX, kMenuContentY + kListHeight - kBackHeight,
-                                           kListWidth, kBackHeight, kMenuItemSize, resources.icons);
-    list->Color = kMenuTextColor;
-    list->SelectionColor = kMenuSelectionColor;
-    list->HighlightColor = kMenuHighlightColor;
-    auto back = list->AddEntry("Back", [this](MenuItem *)
-                               { if (settingsPage) Navigate(settingsPage, -1); });
-    back->centered = true;
-    m_menu.MenuItems.push_back(list);
-
-    struct Line
-    {
-        const char *text;
-        bool small;
-        XrColor4f color;
+    kVersion = std::string("VBoy Color ") + kVersionString;
+    const UiFontHandle body = resources.bodyFont, bold = resources.bodyBoldFont, small = resources.captionFont;
+    auto cards = std::make_shared<TextCards>();
+    cards->lines = {
+        {"A free, open-source Virtual Boy emulator", bold, kMenuTextColor},
+        {"for Meta Quest and PC - GPL-3.0", body, kMenuTextColor},
+        {"", body, kMenuTextColor},
+        {"Started from VirtualBoyGo by CidVonHighwind", body, kMenuTextColor},
+        {"Emulation: Beetle VB (Mednafen, libretro)", body, kMenuTextColor},
+        {"Shade colors: an idea from Red Viper", body, kMenuTextColor},
+        {"", body, kMenuTextColor},
+        {"Not affiliated with Nintendo or Meta.", small, kMenuDimTextColor},
+        {"github.com/yuk27/VBoyColor", small, kMenuDimTextColor},
+        {"Help paint the next game: github.com/sponsors/yuk27", small, kMenuSelectionColor},
     };
-    const std::string title = std::string("VBoy Color ") + kVersionString;
-    const XrColor4f dim = kMenuVersionColor;
-    const Line lines[] = {
-        {title.c_str(), false, kMenuSelectionColor},
-        {"A free, open-source Virtual Boy emulator", false, kMenuTextColor},
-        {"for Meta Quest and PC - GPL-3.0", false, kMenuTextColor},
-        {"", true, dim},
-        {"Started from VirtualBoyGo by CidVonHighwind", false, kMenuTextColor},
-        {"Emulation: Beetle VB (Mednafen, libretro)", false, kMenuTextColor},
-        {"Shade colors: an idea from Red Viper", false, kMenuTextColor},
-        {"", true, dim},
-        {"Not affiliated with Nintendo or Meta.", true, dim},
-        {"github.com/yuk27/VBoyColor", true, dim},
-        {"Help paint the next game: github.com/sponsors/yuk27", true, dim},
-    };
-    float y = kMenuContentY + 4.0f;
-    for (const Line &line : lines)
-    {
-        const UiFontHandle font = line.small ? resources.smallFont : resources.menuFont;
-        const float height = line.small ? 11.0f : line.color.r == kMenuSelectionColor.r && line.color.g == kMenuSelectionColor.g ? 17.0f : 13.5f;
-        if (line.text[0])
-            m_menu.MenuItems.push_back(
-                std::make_shared<MenuLabel>(ui, font, line.text, kMenuContentX, y, kListWidth, height, line.color));
-        y += line.text[0] ? height : 5.0f;
-    }
-
-    m_menu.BackPress = [this]()
-    { if (settingsPage) Navigate(settingsPage, -1); };
+    for (const auto &line : cards->lines)
+        ui.EnsureGlyphsForText(line.font, line.text);
+    ui.EnsureGlyphsForText(resources.cardFont, kVersion);
+    m_menu.MenuItems.push_back(cards);
     m_menu.Init();
 }

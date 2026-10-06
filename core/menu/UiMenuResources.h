@@ -7,6 +7,7 @@ class Emulator;
 class AppMenu;
 struct AppSettings;
 class Platform;
+class ThumbnailLibrary;
 
 enum class ButtonMappingProfile
 {
@@ -20,12 +21,18 @@ enum class ButtonMappingProfile
 // another shared font/atlas.
 struct UiMenuResources
 {
-    UiFontHandle menuFont;
-    UiFontHandle smallFont;
+    // See AppMenuLayout.h's font sizes. Regular unless *Bold.
+    UiFontHandle titleFont;   // bold
+    UiFontHandle bodyFont;
+    UiFontHandle bodyBoldFont;
+    UiFontHandle cardFont;
+    UiFontHandle cardBoldFont;
+    UiFontHandle captionFont;
+    UiFontHandle captionBoldFont;
+    UiFontHandle smallFont;   // bold, kSmallFontSize
     const UiIconSet *icons = nullptr;
-    // Not const - RomSelectPage's press callback calls LoadRom on it, and
-    // MainPage/RomSelectPage call Hide() on the AppMenu below to resume
-    // gameplay.
+    // Not const - LibraryPage's press callback calls LoadRom on it, and
+    // pages call Hide() on the AppMenu below to resume gameplay.
     Emulator *emulator = nullptr;
     AppMenu *appMenu = nullptr;
     // Not const - SettingsPage/MoveScreenPage/the button-map pages all write
@@ -36,4 +43,6 @@ struct UiMenuResources
     Platform *platform = nullptr;
     // The headset can show the room around the screen (AppSettings::passthrough).
     bool passthroughSupported = false;
+    // The library's games and their thumbnails (owned by AppMenu).
+    ThumbnailLibrary *thumbnails = nullptr;
 };

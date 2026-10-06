@@ -62,10 +62,12 @@ void UiRenderer::Initialize(VkDevice device, VkPhysicalDevice physicalDevice, Vk
     vkUnmapMemory(m_device, m_unitQuadVertexBufferMemory);
 
     // Shared descriptor pool + layout for fonts and images (both are one
-    // combined-image-sampler at binding 0).
-    VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16};
+    // combined-image-sampler at binding 0). Room for the menu's fonts and
+    // images plus a thumbnail per game in the library (see ThumbnailLibrary).
+    constexpr uint32_t kMaxDescriptorSets = 512;
+    VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxDescriptorSets};
     VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    poolInfo.maxSets = 16;
+    poolInfo.maxSets = kMaxDescriptorSets;
     poolInfo.poolSizeCount = 1;
     poolInfo.pPoolSizes = &poolSize;
     CheckVk(vkCreateDescriptorPool(m_device, &poolInfo, nullptr, &m_descriptorPool), "vkCreateDescriptorPool (ui)");
@@ -534,6 +536,8 @@ void UiRenderer::BeginFrame(VkImage image, VkFormat format, uint32_t width, uint
     m_frameWidth = static_cast<float>(width);
     m_frameHeight = static_cast<float>(height);
     m_pixelScale = 1.0f;
+    m_targetWidth = width;
+    m_targetHeight = height;
 
     vkResetCommandBuffer(m_commandBuffer, 0);
     VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -577,6 +581,8 @@ void UiRenderer::BeginOffscreenFrame(UiImageHandle target, const XrColor4f &clea
     m_frameWidth = logicalWidth > 0.0f ? logicalWidth : static_cast<float>(img.width);
     m_frameHeight = logicalHeight > 0.0f ? logicalHeight : static_cast<float>(img.height);
     m_pixelScale = static_cast<float>(img.width) / m_frameWidth;
+    m_targetWidth = img.width;
+    m_targetHeight = img.height;
 
     vkResetCommandBuffer(m_commandBuffer, 0);
     VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -601,6 +607,24 @@ void UiRenderer::BeginOffscreenFrame(UiImageHandle target, const XrColor4f &clea
 
     VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(m_commandBuffer, 0, 1, &m_unitQuadVertexBuffer, &offset);
+}
+
+void UiRenderer::SetClipRect(float x, float y, float w, float h)
+{
+    const float sx = static_cast<float>(m_targetWidth) / m_frameWidth;
+    const float sy = static_cast<float>(m_targetHeight) / m_frameHeight;
+    const int32_t x0 = std::clamp(static_cast<int32_t>(std::lround(x * sx)), 0, static_cast<int32_t>(m_targetWidth));
+    const int32_t y0 = std::clamp(static_cast<int32_t>(std::lround(y * sy)), 0, static_cast<int32_t>(m_targetHeight));
+    const int32_t x1 = std::clamp(static_cast<int32_t>(std::lround((x + w) * sx)), x0, static_cast<int32_t>(m_targetWidth));
+    const int32_t y1 = std::clamp(static_cast<int32_t>(std::lround((y + h) * sy)), y0, static_cast<int32_t>(m_targetHeight));
+    VkRect2D scissor{{x0, y0}, {static_cast<uint32_t>(x1 - x0), static_cast<uint32_t>(y1 - y0)}};
+    vkCmdSetScissor(m_commandBuffer, 0, 1, &scissor);
+}
+
+void UiRenderer::ResetClipRect()
+{
+    VkRect2D scissor{{0, 0}, {m_targetWidth, m_targetHeight}};
+    vkCmdSetScissor(m_commandBuffer, 0, 1, &scissor);
 }
 
 void UiRenderer::EndFrame()

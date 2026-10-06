@@ -2,10 +2,12 @@
 
 #include "io/Platform.h"
 
+#include <memory>
+
 // Platform implementation for Windows/desktop (both platform/pc/'s OpenXR
 // build and platform/pc2d's flat debug window) - a fixed relative ROMs
 // folder on disk instead of Android's SAF grant, so no per-instance JNI
-// state to hold; stateless/copyable.
+// state to hold.
 class DesktopPlatform : public Platform
 {
 public:
@@ -28,5 +30,13 @@ public:
 
     int GetBatteryPercent() const override { return -1; } // no real battery to read off Android
 
+    // On a thread of its own: WinHTTP on Windows, curl elsewhere.
+    bool StartDownload(const std::string &url) override;
+    int PollDownload(std::vector<uint8_t> &bytes) override;
+
     std::vector<uint8_t> LoadAssetBytes(const std::string &name) override;
+
+private:
+    struct Download;
+    std::shared_ptr<Download> m_download; // (shared with its thread)
 };

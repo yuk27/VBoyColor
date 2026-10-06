@@ -56,6 +56,12 @@ namespace
         menuKey(GLFW_KEY_RIGHT, EmuButton_Right);
         menuKey(GLFW_KEY_S, EmuButton_A);
         menuKey(GLFW_KEY_A, EmuButton_B);
+        if (glfwGetKey(window, GLFW_KEY_LEFT_ALT) != GLFW_PRESS && glfwGetKey(window, GLFW_KEY_RIGHT_ALT) != GLFW_PRESS)
+            menuKey(GLFW_KEY_ENTER, EmuButton_A); // (Alt+Enter: fullscreen)
+        menuKey(GLFW_KEY_ESCAPE, EmuButton_B);
+        menuKey(GLFW_KEY_BACKSPACE, EmuButton_B);
+        menuKey(GLFW_KEY_W, EmuButton_Y); // (the library's list/cards switch)
+        menuKey(GLFW_KEY_D, EmuButton_X);
 
         GLFWgamepadstate pad{};
         if (glfwJoystickIsGamepad(GLFW_JOYSTICK_1) && glfwGetGamepadState(GLFW_JOYSTICK_1, &pad))
@@ -121,8 +127,9 @@ namespace
         // same as the bitmask suppression above does for the other devices.
         auto suppressedKey = [&](int key)
         {
-            return (key == GLFW_KEY_S && appMenu.SuppressesDesktopKey(EmuButton_A)) ||
-                   (key == GLFW_KEY_A && appMenu.SuppressesDesktopKey(EmuButton_B));
+            return ((key == GLFW_KEY_S || key == GLFW_KEY_ENTER) && appMenu.SuppressesDesktopKey(EmuButton_A)) ||
+                   ((key == GLFW_KEY_A || key == GLFW_KEY_ESCAPE || key == GLFW_KEY_BACKSPACE) &&
+                    appMenu.SuppressesDesktopKey(EmuButton_B));
         };
         for (uint32_t vbBit = 0; vbBit < 16; ++vbBit)
             for (const MappedButton &binding : settings.vbButtons[vbBit].Buttons)
@@ -186,6 +193,10 @@ namespace
 
     // A ROM dropped on the window (GLFW hands over UTF-8 paths), loaded by
     // the render loop.
+    // Mouse wheel since last frame (the menu scrolls with it).
+    double g_scrollY = 0.0;
+    void OnScroll(GLFWwindow *, double, double yoffset) { g_scrollY += yoffset; }
+
     std::string g_droppedRom;
     void OnDrop(GLFWwindow *, int count, const char **paths)
     {
@@ -296,6 +307,9 @@ int main(int argc, char **argv)
         return 1;
     }
     glfwSetDropCallback(window, OnDrop);
+    glfwSetScrollCallback(window, OnScroll);
+    // (a click shorter than a frame still reads as pressed once)
+    glfwSetInputMode(window, GLFW_STICKY_MOUSE_BUTTONS, GLFW_TRUE);
 #if !defined(_WIN32) // (Windows: the exe's GLFW_ICON resource)
     {
         const std::vector<uint8_t> png = platform.LoadAssetBytes("icon.png");
@@ -544,6 +558,33 @@ int main(int argc, char **argv)
             }
             f12WasPressed = f12Pressed;
 
+            // The menu renders at the largest integer logical-to-physical
+            // scale (see AppMenuLayout.h's kMenuScale) that still fits the
+            // current window, so it's always as big as possible without
+            // ever needing to upscale (and blur) its offscreen texture.
+            const int scaleX = static_cast<int>(fbWidth / kMenuWidth);
+            const int scaleY = static_cast<int>(fbHeight / kMenuHeight);
+            const float menuScale = static_cast<float>(std::max(1, std::min(scaleX, scaleY)));
+            appMenu.SetMenuScale(uiRenderer, menuScale);
+            const float menuX = (static_cast<float>(fbWidth) - kMenuWidth * menuScale) / 2.0f;
+            const float menuY = (static_cast<float>(fbHeight) - kMenuHeight * menuScale) / 2.0f;
+
+            // The mouse, in the menu's own units: hover, click, wheel.
+            {
+                double cursorX = 0, cursorY = 0;
+                int windowW = 1, windowH = 1;
+                glfwGetCursorPos(window, &cursorX, &cursorY);
+                glfwGetWindowSize(window, &windowW, &windowH);
+                const float px = static_cast<float>(cursorX) * fbWidth / std::max(1, windowW);
+                const float py = static_cast<float>(cursorY) * fbHeight / std::max(1, windowH);
+                const float mx = (px - menuX) / menuScale, my = (py - menuY) / menuScale;
+                const bool inside = glfwGetWindowAttrib(window, GLFW_HOVERED) && mx >= 0 && my >= 0 && mx < kMenuWidth &&
+                                    my < kMenuHeight;
+                appMenu.SetPointer(inside, mx, my, glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS,
+                                   static_cast<float>(-g_scrollY));
+                g_scrollY = 0.0;
+            }
+
             std::memcpy(lastButtonStates, buttonStates, sizeof(buttonStates));
             PollDesktopButtonState(window, buttonStates);
             appMenu.Update(buttonStates, lastButtonStates, deltaSeconds);
@@ -580,17 +621,6 @@ int main(int argc, char **argv)
                 emulator.SetGameplayInput(altDown ? 0 : PollGameplayInput(window, settings, appMenu));
                 emulator.RunFrame(deltaSeconds);
             }
-
-            // The menu renders at the largest integer logical-to-physical
-            // scale (see AppMenuLayout.h's kMenuScale) that still fits the
-            // current window, so it's always as big as possible without
-            // ever needing to upscale (and blur) its offscreen texture.
-            const int scaleX = static_cast<int>(fbWidth / kMenuWidth);
-            const int scaleY = static_cast<int>(fbHeight / kMenuHeight);
-            const float menuScale = static_cast<float>(std::max(1, std::min(scaleX, scaleY)));
-            appMenu.SetMenuScale(uiRenderer, menuScale);
-            const float menuX = (static_cast<float>(fbWidth) - kMenuWidth * menuScale) / 2.0f;
-            const float menuY = (static_cast<float>(fbHeight) - kMenuHeight * menuScale) / 2.0f;
 
             if (appMenu.IsVisible())
                 appMenu.RenderToBuffer(uiRenderer);

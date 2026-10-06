@@ -240,10 +240,13 @@ add_library(vbgo_app STATIC
     core/gfx/UiVulkanUtils.cpp
     core/gfx/UiIconSet.cpp
     core/menu/AppMenu.cpp
+    core/menu/MenuPage.cpp
     core/menu/MenuWidgets.cpp
-    core/menu/pages/MainPage.cpp
+    core/menu/ThumbnailLibrary.cpp
+    core/menu/pages/LibraryGrid.cpp
+    core/menu/pages/LibraryPage.cpp
+    core/menu/pages/SaveStatesPage.cpp
     core/menu/pages/SettingsPage.cpp
-    core/menu/pages/RomSelectPage.cpp
     core/menu/pages/AboutPage.cpp
     core/menu/pages/EmulatorButtonMapPage.cpp
     core/menu/pages/MoveScreenPage.cpp
@@ -289,6 +292,9 @@ if(ANDROID)
     target_sources(vbgo_app PRIVATE platform/android/AndroidPlatform.cpp)
 else()
     target_sources(vbgo_app PRIVATE platform/desktop/DesktopPlatform.cpp)
+    if(WIN32)
+        target_link_libraries(vbgo_app PUBLIC winhttp) # (DesktopPlatform's downloads)
+    endif()
 endif()
 
 if(ANDROID)

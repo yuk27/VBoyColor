@@ -3,6 +3,7 @@
 #include "menu/pages/AppMenuLayout.h"
 
 #include <algorithm>
+#include <cmath>
 
 // ---- MenuItem ----
 
@@ -140,7 +141,7 @@ void MenuButton::Draw(UiRenderer &ui, float offsetX, float offsetY, float alpha)
 
 namespace
 {
-    const std::string kMenuImageEmptyText = "Empty Slot";
+    const std::string kMenuImageEmptyText = "Empty slot";
 }
 
 MenuImage::MenuImage(UiRenderer &ui, UiFontHandle font, uint32_t textureWidth, uint32_t textureHeight, float posX,
@@ -178,10 +179,10 @@ void MenuImage::Draw(UiRenderer &ui, float offsetX, float offsetY, float alpha)
     // Rounded frame, matching the header/bottom bars - hollow, not filled:
     // the body-colored quad punches the middle back out so the frame only
     // ever shows as a border, whatever's drawn on top of it.
-    constexpr float kFrameThickness = 3.0f;
-    constexpr float kFrameRadius = 3.0f;
-    XrColor4f frameColor = kMenuOverlayColor;
-    frameColor.a = 0.45f * alpha;
+    constexpr float kFrameThickness = 2.5f;
+    constexpr float kFrameRadius = 6.0f;
+    XrColor4f frameColor = kMenuCardColor;
+    frameColor.a *= alpha;
     ui.DrawQuadRounded(x - kFrameThickness, y - kFrameThickness, m_width + kFrameThickness * 2,
                        m_height + kFrameThickness * 2, frameColor, kFrameRadius);
 
@@ -205,13 +206,21 @@ void MenuImage::Draw(UiRenderer &ui, float offsetX, float offsetY, float alpha)
     const float textWidth = ui.GetTextWidth(m_font, kMenuImageEmptyText);
     const float textX = x + (m_width - textWidth) / 2.0f;
     const float textY = y + m_height / 2.0f - ui.GetFontPHeight(m_font) / 2.0f - ui.GetFontPStart(m_font);
-    const XrColor4f textColor{0.7f, 0.7f, 0.7f, alpha};
+    const XrColor4f textColor{kMenuDimTextColor.r, kMenuDimTextColor.g, kMenuDimTextColor.b, alpha};
     ui.DrawText(m_font, kMenuImageEmptyText, textX, textY, 1.0f, textColor);
 }
 
 // ---- Menu ----
 
 void Menu::Init() { MenuItems[CurrentSelection]->Select(); }
+
+bool Menu::HasSelectable() const
+{
+    for (const auto &item : MenuItems)
+        if (item->Selectable)
+            return true;
+    return false;
+}
 
 void Menu::ResetSelection()
 {
@@ -236,7 +245,8 @@ bool Menu::ButtonPressed(uint32_t *buttonState, uint32_t *lastButtonState, uint3
 
 void Menu::MoveSelection(int dir, bool onSelect)
 {
-    // Will not terminate if nothing in the list is selectable.
+    if (!HasSelectable())
+        return;
     do
     {
         CurrentSelection += dir;
@@ -248,6 +258,23 @@ void Menu::MoveSelection(int dir, bool onSelect)
 
     if (onSelect)
         MenuItems[CurrentSelection]->OnSelect(dir);
+}
+
+void Menu::HandlePointer(const MenuPointer &pointer)
+{
+    for (int i = 0; i < static_cast<int>(MenuItems.size()); ++i)
+    {
+        MenuItem &item = *MenuItems[i];
+        if (!item.Visible || !item.HandlePointer(pointer))
+            continue;
+        if (item.Selectable && i != CurrentSelection)
+        {
+            MenuItems[CurrentSelection]->Unselect();
+            CurrentSelection = i;
+            item.Select();
+        }
+        return;
+    }
 }
 
 void Menu::Update(uint32_t *buttonState, uint32_t *lastButtonState, float deltaSeconds)
@@ -277,7 +304,9 @@ void Menu::Update(uint32_t *buttonState, uint32_t *lastButtonState, float deltaS
         (buttonState[DeviceRightTouch] &
          (ButtonMapping[EmuButton_Up] | ButtonMapping[EmuButton_Down] | ButtonMapping[EmuButton_Left] | ButtonMapping[EmuButton_Right])))
     {
-        buttonDownCount += deltaSeconds;
+        // (capped: one long frame - a hitch - mustn't count as holding the
+        // button long enough to repeat)
+        buttonDownCount += std::min(deltaSeconds, 0.05f);
     }
     else
     {
@@ -289,6 +318,15 @@ void Menu::Update(uint32_t *buttonState, uint32_t *lastButtonState, float deltaS
         item->Update(buttonState, lastButtonState, deltaSeconds);
     }
 
+    // A fresh press (not a held repeat) of a button on any of these devices.
+    auto freshPress = [&](std::initializer_list<std::pair<uint32_t, uint32_t>> buttons)
+    {
+        for (const auto &[device, button] : buttons)
+            if ((buttonState[device] & ButtonMapping[button]) && !(lastButtonState[device] & ButtonMapping[button]))
+                return true;
+        return false;
+    };
+
     // Left/Right adjust the selected item's own value (e.g. save slot +/-).
     // No ClearButtonState - clearing would make the held key look freshly
     // pressed every frame, breaking the ScrollDelay repeat throttle.
@@ -298,7 +336,13 @@ void Menu::Update(uint32_t *buttonState, uint32_t *lastButtonState, float deltaS
         ButtonPressed(buttonState, lastButtonState, DeviceRightTouch, EmuButton_Left))
     {
         buttonDownCount -= MenuItems[CurrentSelection]->ScrollTimeH;
-        MenuItems[CurrentSelection]->PressedLeft();
+        if (MenuItems[CurrentSelection]->PressedLeft() == 0 && LeftEdge &&
+            freshPress({{DeviceGamepad, EmuButton_Left}, {DeviceGamepad, EmuButton_LeftStickLeft},
+                        {DeviceLeftTouch, EmuButton_Left}, {DeviceRightTouch, EmuButton_Left}}))
+        {
+            const auto leftEdge = LeftEdge;
+            leftEdge();
+        }
     }
 
     if (ButtonPressed(buttonState, lastButtonState, DeviceGamepad, EmuButton_Right) ||
@@ -322,7 +366,21 @@ void Menu::Update(uint32_t *buttonState, uint32_t *lastButtonState, float deltaS
              ButtonPressed(buttonState, lastButtonState, DeviceRightTouch, EmuButton_B))
     {
         if (BackPress != nullptr)
-            BackPress();
+        {
+            const auto backPress = BackPress;
+            backPress();
+        }
+    }
+
+    if (YPress && freshPress({{DeviceGamepad, EmuButton_Y}, {DeviceLeftTouch, EmuButton_Y}, {DeviceRightTouch, EmuButton_Y}}))
+    {
+        const auto yPress = YPress;
+        yPress();
+    }
+    if (XPress && freshPress({{DeviceGamepad, EmuButton_X}, {DeviceLeftTouch, EmuButton_X}, {DeviceRightTouch, EmuButton_X}}))
+    {
+        const auto xPress = XPress;
+        xPress();
     }
 
     if (ButtonPressed(buttonState, lastButtonState, DeviceGamepad, EmuButton_Up) ||
@@ -362,14 +420,53 @@ void Menu::Draw(UiRenderer &ui, int transitionDirX, int transitionDirY, float mo
 
 // ---- MenuList ----
 
+namespace
+{
+    XrColor4f WithAlpha(XrColor4f c, float alpha)
+    {
+        c.a *= alpha;
+        return c;
+    }
+
+    // An amber-outlined, faintly filled rounded rect - the selected row/card.
+    void DrawSelectionFrame(UiRenderer &ui, float x, float y, float w, float h, float radius, float alpha,
+                            const XrColor4f &fillUnder)
+    {
+        ui.DrawQuadRounded(x - 1.5f, y - 1.5f, w + 3.0f, h + 3.0f, WithAlpha({1.0f, 0.79f, 0.34f, 0.12f}, alpha), radius + 1.5f);
+        ui.DrawQuadRounded(x, y, w, h, WithAlpha(kMenuSelectionColor, alpha), radius);
+        ui.DrawQuadRounded(x + 1.1f, y + 1.1f, w - 2.2f, h - 2.2f, WithAlpha(fillUnder, alpha), radius - 1.1f);
+        ui.DrawQuadRounded(x + 1.1f, y + 1.1f, w - 2.2f, h - 2.2f, WithAlpha(kMenuSelectionFillColor, alpha), radius - 1.1f);
+    }
+
+    float TextY(UiRenderer &ui, UiFontHandle font, float centerY)
+    {
+        return centerY - ui.GetFontPHeight(font) / 2.0f - ui.GetFontPStart(font);
+    }
+} // namespace
+
 MenuList::MenuList(UiRenderer &ui, UiFontHandle font, float posX, float posY, float width, float height, float itemHeight,
                    const UiIconSet *icons)
-    : m_ui(&ui), m_font(font), m_icons(icons), m_posX(posX), m_posY(posY), m_width(width), m_height(height)
+    : m_ui(&ui), m_font(font), m_boldFont(font), m_headerFont(font), m_icons(icons), m_posX(posX), m_posY(posY),
+      m_width(width), m_height(height)
 {
     m_itemHeight = itemHeight;
-    // Bake the per-row baseline offset so text sits centred within its slot.
-    m_textRowOffset = m_itemHeight / 2.0f - ui.GetFontPHeight(font) / 2.0f - ui.GetFontPStart(font);
     Selectable = true;
+    Color = kMenuTextColor;
+    SelectionColor = kMenuSelectionColor;
+    ui.EnsureGlyphsForText(font, "\xE2\x80\xB9\xE2\x80\xBA\xE2\x80\xA6\xC2\xB0\xC2\xB7"); // the chevrons (and ellipsis, degree, dot)
+}
+
+void MenuList::SetFonts(UiFontHandle boldFont, UiFontHandle headerFont)
+{
+    m_boldFont = boldFont;
+    m_headerFont = headerFont;
+    m_ui->EnsureGlyphsForText(m_boldFont, "\xE2\x80\xB9\xE2\x80\xBA\xE2\x80\xA6\xC2\xB0\xC2\xB7");
+    for (const auto &entry : m_entries)
+    {
+        m_ui->EnsureGlyphsForText(m_boldFont, entry->twoColumn ? entry->caption : entry->text);
+        if (entry->isHeader)
+            m_ui->EnsureGlyphsForText(m_headerFont, entry->text);
+    }
 }
 
 void MenuList::Entry::SetText(const std::string &newText)
@@ -378,14 +475,37 @@ void MenuList::Entry::SetText(const std::string &newText)
     // Bake any glyphs the new label needs (a no-op for pure ASCII, which is
     // always pre-baked). See UiFontManager::EnsureGlyphsForText.
     if (m_owner)
+    {
         m_owner->m_ui->EnsureGlyphsForText(m_owner->m_font, newText);
+        m_owner->m_ui->EnsureGlyphsForText(m_owner->m_boldFont, newText);
+    }
+}
+
+void MenuList::Entry::SetValue(const std::string &newValue)
+{
+    value = newValue;
+    if (m_owner)
+        m_owner->m_ui->EnsureGlyphsForText(m_owner->m_font, newValue);
+}
+
+void MenuList::Entry::SetCaption(const std::string &newCaption)
+{
+    caption = newCaption;
+    if (m_owner)
+    {
+        m_owner->m_ui->EnsureGlyphsForText(m_owner->m_font, newCaption);
+        m_owner->m_ui->EnsureGlyphsForText(m_owner->m_boldFont, newCaption);
+    }
 }
 
 void MenuList::Entry::SetSecondaryText(const std::string &newText)
 {
     textSecondary = newText;
     if (m_owner)
+    {
         m_owner->m_ui->EnsureGlyphsForText(m_owner->m_font, newText);
+        m_owner->m_ui->EnsureGlyphsForText(m_owner->m_boldFont, newText);
+    }
 }
 
 void MenuList::Entry::Select()
@@ -412,6 +532,7 @@ std::shared_ptr<MenuList::Entry> MenuList::AddEntry(const std::string &text,
     // Row text isn't known upfront (ROM file names, etc.) - bake whatever
     // glyphs it needs now, not while drawing. See UiFontManager::EnsureGlyphsForText.
     m_ui->EnsureGlyphsForText(m_font, text);
+    m_ui->EnsureGlyphsForText(m_boldFont, text);
     auto entry = std::make_shared<Entry>();
     entry->text = text;
     entry->pressFunction = std::move(press);
@@ -421,6 +542,9 @@ std::shared_ptr<MenuList::Entry> MenuList::AddEntry(const std::string &text,
     entry->accessoryDraw = std::move(accessoryDraw);
     entry->m_owner = this;
     m_entries.push_back(entry);
+    // (the selection starts on the first row, not a header above it)
+    if (!IsRow(m_selectedIndex))
+        m_selectedIndex = static_cast<int>(m_entries.size()) - 1;
     return entry;
 }
 
@@ -434,52 +558,122 @@ std::shared_ptr<MenuList::Entry> MenuList::AddSpacer(float height)
     return entry;
 }
 
-float MenuList::rowHeight(int index) const
+std::shared_ptr<MenuList::Entry> MenuList::AddHeader(const std::string &text)
 {
-    if (m_entries[index]->isSpacer)
-        return m_entries[index]->height;
-    return m_entries[index]->Visible ? m_itemHeight : 0.0f;
+    auto entry = std::make_shared<Entry>();
+    entry->isHeader = true;
+    // Small caps, as the headers are drawn.
+    entry->text = text;
+    for (char &c : entry->text)
+        if (c >= 'a' && c <= 'z')
+            c = static_cast<char>(c - 'a' + 'A');
+    m_ui->EnsureGlyphsForText(m_headerFont, entry->text);
+    entry->m_owner = this;
+    m_entries.push_back(entry);
+    return entry;
 }
 
-// How many entries starting at `first` fit within the list's height, packing
-// by each row's own height rather than assuming a uniform m_itemHeight.
-int MenuList::maxVisibleFrom(int first) const
+bool MenuList::IsRow(int index) const
 {
-    float used = 0;
-    int count = 0;
-    for (int i = first; i < (int)m_entries.size(); ++i)
+    const Entry &entry = *m_entries[index];
+    return !entry.isSpacer && !entry.isHeader && entry.Visible;
+}
+
+void MenuList::Layout() const
+{
+    // Headers and spacers start a new card; a gap between cards.
+    m_top.assign(m_entries.size(), 0.0f);
+    float y = 0;
+    bool any = false, gap = false;
+    for (size_t i = 0; i < m_entries.size(); ++i)
     {
-        const float h = rowHeight(i);
-        if (count > 0 && used + h > m_height)
-            break;
-        used += h;
-        ++count;
+        const Entry &entry = *m_entries[i];
+        if (entry.isHeader)
+        {
+            if (any)
+                y += kGroupGap;
+            gap = false;
+            m_top[i] = y;
+            y += kGroupHeaderHeight;
+            continue;
+        }
+        if (entry.isSpacer)
+        {
+            gap = any;
+            m_top[i] = y;
+            continue;
+        }
+        if (!entry.Visible)
+        {
+            m_top[i] = y;
+            continue;
+        }
+        if (gap)
+            y += kGroupGap;
+        gap = false;
+        m_top[i] = y;
+        y += m_itemHeight;
+        any = true;
     }
-    return count;
+    m_contentHeight = y;
 }
 
-bool MenuList::needsScrollbar() const { return maxVisibleFrom(0) < (int)m_entries.size(); }
+float MenuList::ContentHeight() const
+{
+    Layout();
+    return m_contentHeight;
+}
+
+void MenuList::ScrollToSelection(bool instant)
+{
+    if (m_entries.empty())
+        return;
+    Layout();
+    float top = m_top[m_selectedIndex];
+    const float bottom = top + m_itemHeight;
+    // The first row of a group brings its header into view too.
+    for (int j = m_selectedIndex - 1; j >= 0; --j)
+    {
+        const Entry &entry = *m_entries[j];
+        if (entry.isHeader)
+            top = m_top[j];
+        if (entry.isHeader || IsRow(j))
+            break;
+    }
+    constexpr float kMargin = 3.0f;
+    if (top - kMargin < m_scrollTarget)
+        m_scrollTarget = top - kMargin;
+    if (bottom + kMargin > m_scrollTarget + m_height)
+        m_scrollTarget = bottom + kMargin - m_height;
+    m_scrollTarget = std::clamp(m_scrollTarget, 0.0f, std::max(0.0f, m_contentHeight - m_height));
+    if (instant)
+        m_scroll = m_scrollTarget;
+}
+
+void MenuList::Update(uint32_t *buttonState, uint32_t *lastButtonState, float deltaSeconds)
+{
+    MenuItem::Update(buttonState, lastButtonState, deltaSeconds);
+    const float t = std::min(1.0f, deltaSeconds * 14.0f);
+    m_scroll += (m_scrollTarget - m_scroll) * t;
+    if (std::abs(m_scrollTarget - m_scroll) < 0.05f)
+        m_scroll = m_scrollTarget;
+}
 
 void MenuList::ResetSelection()
 {
     m_selectedIndex = 0;
     m_activeColumn = 0;
-    while (m_selectedIndex < (int)m_entries.size() - 1 &&
-           (m_entries[m_selectedIndex]->isSpacer || !m_entries[m_selectedIndex]->Visible))
+    while (m_selectedIndex < (int)m_entries.size() - 1 && !IsRow(m_selectedIndex))
         ++m_selectedIndex;
-    m_firstVisible = 0;
+    m_scroll = m_scrollTarget = 0;
 }
 
 void MenuList::SelectIndex(int index)
 {
-    if (index < 0 || index >= (int)m_entries.size() || m_entries[index]->isSpacer || !m_entries[index]->Visible)
+    if (index < 0 || index >= (int)m_entries.size() || !IsRow(index))
         return;
-
     m_selectedIndex = index;
-    if (m_selectedIndex < m_firstVisible)
-        m_firstVisible = m_selectedIndex;
-    else if (m_selectedIndex >= m_firstVisible + maxVisibleFrom(m_firstVisible))
-        m_firstVisible = m_selectedIndex - maxVisibleFrom(m_firstVisible) + 1;
+    ScrollToSelection(true);
 }
 
 int MenuList::PressedUp()
@@ -493,12 +687,8 @@ int MenuList::PressedUp()
             --m_selectedIndex;
         else
             m_selectedIndex = (int)m_entries.size() - 1; // wrap to bottom
-    } while ((m_entries[m_selectedIndex]->isSpacer || !m_entries[m_selectedIndex]->Visible) && m_selectedIndex != start);
-
-    if (m_selectedIndex < m_firstVisible)
-        m_firstVisible = m_selectedIndex;
-    else if (m_selectedIndex >= m_firstVisible + maxVisibleFrom(m_firstVisible))
-        m_firstVisible = m_selectedIndex - maxVisibleFrom(m_firstVisible) + 1;
+    } while (!IsRow(m_selectedIndex) && m_selectedIndex != start);
+    ScrollToSelection(false);
     return 1;
 }
 
@@ -513,12 +703,8 @@ int MenuList::PressedDown()
             ++m_selectedIndex;
         else
             m_selectedIndex = 0; // wrap to top
-    } while ((m_entries[m_selectedIndex]->isSpacer || !m_entries[m_selectedIndex]->Visible) && m_selectedIndex != start);
-
-    if (m_selectedIndex < m_firstVisible)
-        m_firstVisible = m_selectedIndex;
-    else if (m_selectedIndex >= m_firstVisible + maxVisibleFrom(m_firstVisible))
-        m_firstVisible = m_selectedIndex - maxVisibleFrom(m_firstVisible) + 1;
+    } while (!IsRow(m_selectedIndex) && m_selectedIndex != start);
+    ScrollToSelection(false);
     return 1;
 }
 
@@ -529,7 +715,9 @@ int MenuList::PressedLeft()
     const Entry &entry = *m_entries[m_selectedIndex];
     if (entry.twoColumn)
     {
-        m_activeColumn = 0; // move highlight to the first binding column
+        if (m_activeColumn == 0)
+            return 0; // (on to the sidebar)
+        m_activeColumn = 0;
         return 1;
     }
     if (entry.leftFunction)
@@ -555,6 +743,11 @@ int MenuList::PressedRight()
         entry.rightFunction(this);
         return 1;
     }
+    if (entry.opensPage && entry.pressFunction)
+    {
+        entry.pressFunction(this);
+        return 1;
+    }
     return 0;
 }
 
@@ -575,130 +768,220 @@ void MenuList::Draw(UiRenderer &ui, float offsetX, float offsetY, float alpha)
 {
     if (!Visible || m_entries.empty())
         return;
+    Layout();
 
-    const int visible = maxVisibleFrom(m_firstVisible);
+    const bool scrollbar = m_contentHeight > m_height + 0.5f;
+    const float x = m_posX + offsetX;
+    const float w = m_width - (scrollbar ? 4.0f : 0.0f);
+    const float top = m_posY + offsetY - m_scroll;
+    const bool focused = Selected;
+    auto rowY = [&](int i) { return top + m_top[i]; };
+    auto shown = [&](float y, float h) { return y + h > m_posY + offsetY - 4.0f && y < m_posY + offsetY + m_height + 4.0f; };
 
-    // Centre the item block vertically around however many rows are
-    // actually showing (not the list's full capacity) - a 1-entry list
-    // centers that entry in the middle, not pinned to the top.
-    float usedHeight = 0;
-    for (int i = m_firstVisible; i < m_firstVisible + visible && i < (int)m_entries.size(); ++i)
-        usedHeight += rowHeight(i);
-    const float verticalPad = (m_height - usedHeight) / 2.0f;
-    const float baseY = m_posY + offsetY + verticalPad;
+    ui.SetClipRect(m_posX + offsetX - 4.0f, m_posY + offsetY - 3.0f, m_width + 8.0f, m_height + 6.0f);
 
-    float rowY = baseY;
-    for (int i = 0; i < visible && (m_firstVisible + i) < (int)m_entries.size(); ++i)
+    // Cards: one behind each run of rows, a hairline between rows.
+    for (size_t i = 0; i < m_entries.size();)
     {
-        const int idx = m_firstVisible + i;
-        const Entry &entry = *m_entries[idx];
-        const float h = rowHeight(idx);
-
-        if (!entry.isSpacer && entry.Visible)
+        if (!IsRow(static_cast<int>(i)))
         {
-            const bool sel = (idx == m_selectedIndex);
-            if (sel && HighlightColor.a > 0.0f)
+            ++i;
+            continue;
+        }
+        size_t last = i;
+        for (size_t j = i + 1; j < m_entries.size(); ++j)
+        {
+            if (m_entries[j]->isHeader || m_entries[j]->isSpacer)
+                break;
+            if (IsRow(static_cast<int>(j)))
+                last = j;
+        }
+        const float cardTop = rowY(static_cast<int>(i));
+        const float cardBottom = rowY(static_cast<int>(last)) + m_itemHeight;
+        const bool action = m_entries[i]->centered && i == last;
+        if (shown(cardTop, cardBottom - cardTop))
+        {
+            ui.DrawQuadRounded(x, cardTop, w, cardBottom - cardTop,
+                               WithAlpha(action ? XrColor4f{0.16f, 0.17f, 0.23f, 1.0f} : kMenuCardColor, alpha), kCardRadius);
+            for (size_t j = i + 1; j <= last; ++j)
             {
-                const float rightPad = needsScrollbar() ? (kScrollbarWidth + kScrollbarGap) : 0.0f;
-                XrColor4f bar = HighlightColor;
-                bar.a *= alpha;
-                ui.DrawQuadRounded(m_posX + offsetX - 3.0f, rowY + 0.5f, m_width - rightPad + 4.0f, h - 1.0f, bar, 3.0f);
-                XrColor4f edge = SelectionColor;
-                edge.a *= alpha;
-                ui.DrawQuadRounded(m_posX + offsetX - 3.0f, rowY + 2.5f, 1.5f, h - 5.0f, edge, 0.75f);
+                if (!IsRow(static_cast<int>(j)))
+                    continue;
+                const bool nextToSelection = focused && (static_cast<int>(j) == m_selectedIndex ||
+                                                         static_cast<int>(j) - 1 == m_selectedIndex);
+                if (!nextToSelection)
+                    ui.DrawQuad(x + kRowPad, rowY(static_cast<int>(j)) - 0.3f, w - kRowPad * 2, 0.6f, WithAlpha(kMenuLineColor, alpha));
             }
-            const float x = m_posX + offsetX + (sel ? 2.5f : 0.0f);
-            const float y = rowY + m_textRowOffset;
-            const bool hasIconSpace = entry.reserveIconSpace || (m_icons && entry.icon != UiIconId::None);
-            const float textX = hasIconSpace ? x + kIconSize + kIconTextGap : x;
+        }
+        i = last + 1;
+    }
 
-            const XrColor4f shadow = {0.0f, 0.0f, 0.0f, 0.45f * alpha};
-            auto drawLabel = [&](const std::string &txt, float lx, bool highlight)
-            {
-                XrColor4f c = highlight ? SelectionColor : Color;
-                c.a *= alpha;
-                ui.DrawText(m_font, txt, lx + 0.5f, y + 0.5f, 1.0f, shadow);
-                ui.DrawText(m_font, txt, lx, y, 1.0f, c);
-            };
-            float singleLabelX = textX;
+    for (int i = 0; i < (int)m_entries.size(); ++i)
+    {
+        const Entry &entry = *m_entries[i];
+        const float y = rowY(i);
+        if (entry.isHeader)
+        {
+            if (shown(y, kGroupHeaderHeight))
+                ui.DrawText(m_headerFont, entry.text, x + 2.0f, TextY(ui, m_headerFont, y + kGroupHeaderHeight / 2.0f - 0.5f),
+                            1.0f, WithAlpha(kMenuDimTextColor, alpha));
+            continue;
+        }
+        if (!IsRow(i) || !shown(y, m_itemHeight))
+            continue;
 
-            if (entry.twoColumn)
-            {
-                // Narrow icon gutter, then two evenly-sized binding columns.
-                const float rightPad = needsScrollbar() ? (kScrollbarWidth + kScrollbarGap) : 0.0f;
-                const float rowX = m_posX + offsetX;
-                const float iconColumnWidth = kIconSize + kIconTextGap;
-                const float colWidth = (m_width - rightPad - iconColumnWidth) / 2.0f;
-                auto centeredTextX = [&](const std::string &txt, int column)
-                {
-                    return rowX + iconColumnWidth + colWidth * column +
-                           (colWidth - ui.GetTextWidth(m_font, txt)) / 2.0f;
-                };
-                drawLabel(entry.text, centeredTextX(entry.text, 0) + (sel && m_activeColumn == 0 ? 2.5f : 0.0f),
-                          sel && m_activeColumn == 0);
-                drawLabel(entry.textSecondary,
-                          centeredTextX(entry.textSecondary, 1) + (sel && m_activeColumn == 1 ? 2.5f : 0.0f),
-                          sel && m_activeColumn == 1);
+        const float h = m_itemHeight;
+        const bool sel = focused && i == m_selectedIndex;
+        if (sel)
+            DrawSelectionFrame(ui, x, y, w, h, 5.0f, alpha, kMenuCardColor);
 
-                if (m_icons && entry.icon != UiIconId::None)
-                {
-                    const float iconX = rowX + (iconColumnWidth - kIconSize) / 2.0f;
-                    const float iconY = rowY + (h - kIconSize) / 2.0f;
-                    const XrColor4f iconTint = sel ? SelectionColor : XrColor4f{1.0f, 1.0f, 1.0f, 1.0f};
-                    m_icons->Draw(ui, entry.icon, iconX, iconY, kIconSize, alpha, iconTint);
-                }
-            }
-            else
-            {
-                if (entry.centered)
-                {
-                    const float iconWidth = (m_icons && entry.icon != UiIconId::None) ? kIconSize + kIconTextGap : 0.0f;
-                    const float rightPad = needsScrollbar() ? (kScrollbarWidth + kScrollbarGap) : 0.0f;
-                    const float groupWidth = iconWidth + ui.GetTextWidth(m_font, entry.text);
-                    singleLabelX = m_posX + offsetX + (m_width - rightPad - groupWidth) / 2.0f + iconWidth;
-                    if (sel) singleLabelX += 2.5f;
-                }
-                drawLabel(entry.text, singleLabelX, sel);
-            }
+        const UiFontHandle labelFont = sel ? m_boldFont : m_font;
+        const XrColor4f textColor = WithAlpha(sel ? SelectionColor : Color, alpha);
+        const XrColor4f dimColor = WithAlpha(sel ? XrColor4f{1.0f, 0.79f, 0.34f, 0.7f} : kMenuDimTextColor, alpha);
+        const float centerY = y + h / 2.0f;
+        const bool hasIcon = m_icons && entry.icon != UiIconId::None;
+        const bool hasIconSpace = entry.reserveIconSpace || hasIcon;
+        const XrColor4f iconTint = (sel && (TintIconOnSelect || entry.tintIconOnSelect)) ? SelectionColor : Color;
+        const std::string &label = entry.twoColumn ? entry.caption : entry.text;
 
-            if (!entry.twoColumn && m_icons && entry.icon != UiIconId::None)
-            {
-                const float iconY = rowY + (h - kIconSize) / 2.0f;
-                const XrColor4f iconTint = (sel && (TintIconOnSelect || entry.tintIconOnSelect))
-                                                ? SelectionColor
-                                                : XrColor4f{1.0f, 1.0f, 1.0f, 1.0f};
-                const float iconX = entry.centered ? singleLabelX - kIconTextGap - kIconSize : x;
-                m_icons->Draw(ui, entry.icon, iconX, iconY, kIconSize, alpha, iconTint);
-            }
-
-            if (entry.accessoryDraw)
-                entry.accessoryDraw(ui, m_posX + offsetX, rowY, m_width, h, alpha);
+        if (entry.centered)
+        {
+            const float iconWidth = hasIcon ? kIconSize + kIconTextGap : 0.0f;
+            const float groupX = x + (w - iconWidth - ui.GetTextWidth(labelFont, label)) / 2.0f;
+            if (hasIcon)
+                m_icons->Draw(ui, entry.icon, groupX, centerY - kIconSize / 2.0f, kIconSize, alpha, iconTint);
+            ui.DrawText(labelFont, label, groupX + iconWidth, TextY(ui, labelFont, centerY), 1.0f, textColor);
+            continue;
         }
 
-        rowY += h;
+        const float iconX = x + kRowPad;
+        if (hasIcon)
+            m_icons->Draw(ui, entry.icon, iconX, centerY - kIconSize / 2.0f, kIconSize, alpha, iconTint);
+        const float labelX = iconX + (hasIconSpace ? kIconSize + kIconTextGap : 0.0f);
+        ui.DrawText(labelFont, label, labelX, TextY(ui, labelFont, centerY), 1.0f, textColor);
+
+        const float right = x + w - kRowPad;
+        if (entry.twoColumn)
+        {
+            // Two chips on the right: the primary and secondary binding.
+            const float chipW = std::min(80.0f, (w - 96.0f) / 2.0f);
+            const float chipH = h - 5.0f;
+            for (int column = 0; column < 2; ++column)
+            {
+                const float chipX = right - chipW - (1 - column) * (chipW + 5.0f);
+                const float chipY = y + 2.5f;
+                const bool active = sel && m_activeColumn == column;
+                const std::string &txt = column == 0 ? entry.text : entry.textSecondary;
+                if (active)
+                    DrawSelectionFrame(ui, chipX, chipY, chipW, chipH, 3.5f, alpha, kMenuCardColor);
+                else
+                    ui.DrawQuadRounded(chipX, chipY, chipW, chipH, WithAlpha({0.2f, 0.215f, 0.28f, 0.6f}, alpha), 3.5f);
+                const UiFontHandle chipFont = active ? m_boldFont : m_font;
+                const float tw = ui.GetTextWidth(chipFont, txt);
+                ui.DrawText(chipFont, txt, chipX + (chipW - tw) / 2.0f, TextY(ui, chipFont, centerY), 1.0f,
+                            active ? textColor : WithAlpha(txt == "-" ? kMenuDimTextColor : Color, alpha));
+            }
+            continue;
+        }
+
+        if (entry.toggle)
+        {
+            const bool on = entry.toggle();
+            constexpr float kTrackW = 18.0f, kTrackH = 9.0f, kKnob = 6.5f;
+            const float trackX = right - kTrackW, trackY = centerY - kTrackH / 2.0f;
+            ui.DrawQuadRounded(trackX, trackY, kTrackW, kTrackH,
+                               WithAlpha(on ? kMenuSelectionColor : kMenuLineColor, alpha), kTrackH / 2.0f);
+            const float knobX = on ? trackX + kTrackW - kKnob - 1.25f : trackX + 1.25f;
+            ui.DrawQuadRounded(knobX, centerY - kKnob / 2.0f, kKnob, kKnob,
+                               WithAlpha(on ? XrColor4f{1.0f, 1.0f, 1.0f, 1.0f} : kMenuDimTextColor, alpha), kKnob / 2.0f);
+            continue;
+        }
+
+        const bool adjustable = entry.leftFunction || entry.rightFunction;
+        if (adjustable || entry.opensPage)
+        {
+            const float chevronX = right - kChevronWidth / 2.0f - ui.GetTextWidth(m_font, "\xE2\x80\xBA") / 2.0f;
+            ui.DrawText(m_font, "\xE2\x80\xBA", chevronX, TextY(ui, m_font, centerY), 1.0f, dimColor);
+        }
+        const float valueRight = (adjustable || entry.opensPage) ? right - kChevronWidth : right;
+        if (!entry.value.empty())
+        {
+            const float vw = ui.GetTextWidth(m_font, entry.value);
+            ui.DrawText(m_font, entry.value, valueRight - vw, TextY(ui, m_font, centerY), 1.0f, textColor);
+            if (sel && adjustable)
+            {
+                const float lw = ui.GetTextWidth(m_font, "\xE2\x80\xB9");
+                ui.DrawText(m_font, "\xE2\x80\xB9", valueRight - vw - kChevronWidth / 2.0f - lw / 2.0f - 1.0f,
+                            TextY(ui, m_font, centerY), 1.0f, dimColor);
+            }
+        }
+        if (entry.accessoryDraw)
+            entry.accessoryDraw(ui, x, y, w, h, alpha);
     }
 
-    if (needsScrollbar())
+    ui.ResetClipRect();
+
+    if (scrollbar)
     {
-        const float trackX = m_posX + m_width - kScrollbarWidth;
-        const int totalEntries = (int)m_entries.size();
-        const float trackPad = 1.5f; // gap at top/bottom so thumb never overflows
-        const float trackY = m_posY + offsetY + trackPad;
-        const float trackH = m_height - trackPad * 2;
-        const float radius = kScrollbarWidth / 2.0f;
-
-        // Track
-        XrColor4f trackColor{0.3f, 0.3f, 0.3f, 0.5f * alpha};
-        ui.DrawQuadRounded(trackX + offsetX, trackY, kScrollbarWidth, trackH, trackColor, radius);
-
-        // Thumb - proportional height, clamped so it never leaves the track
-        const float thumbH = std::max(4.0f, trackH * visible / totalEntries);
-        const float maxThumbY = trackY + trackH - thumbH;
-        const float thumbY = std::min(maxThumbY,
-                                      trackY + trackH * m_firstVisible / totalEntries);
-        XrColor4f thumbColor{0.75f, 0.75f, 0.75f, 0.9f * alpha};
-        XrColor4f shadow = {0.0f, 0.0f, 0.0f, 0.45f * alpha};
-        ui.DrawQuadRounded(trackX + offsetX + 0.5f, thumbY + 0.5f, kScrollbarWidth, thumbH, shadow, radius);
-        ui.DrawQuadRounded(trackX + offsetX, thumbY, kScrollbarWidth, thumbH, thumbColor, radius);
+        const float trackX = m_posX + offsetX + m_width - kScrollbarWidth;
+        const float trackY = m_posY + offsetY;
+        ui.DrawQuadRounded(trackX, trackY, kScrollbarWidth, m_height, WithAlpha(kMenuLineColor, alpha), kScrollbarWidth / 2.0f);
+        const float thumbH = std::max(8.0f, m_height * m_height / m_contentHeight);
+        const float thumbY = trackY + (m_height - thumbH) * (m_scroll / std::max(1.0f, m_contentHeight - m_height));
+        ui.DrawQuadRounded(trackX, thumbY, kScrollbarWidth, thumbH, WithAlpha(kMenuDimTextColor, alpha), kScrollbarWidth / 2.0f);
     }
+}
+
+bool MenuList::HandlePointer(const MenuPointer &pointer)
+{
+    if (!Visible || m_entries.empty() || pointer.x < m_posX - 2.0f || pointer.x > m_posX + m_width + 4.0f ||
+        pointer.y < m_posY || pointer.y > m_posY + m_height)
+        return false;
+    Layout();
+    if (pointer.scroll != 0.0f)
+    {
+        m_scrollTarget = std::clamp(m_scrollTarget + pointer.scroll * m_itemHeight, 0.0f,
+                                    std::max(0.0f, m_contentHeight - m_height));
+    }
+    int hit = -1;
+    for (int i = 0; i < (int)m_entries.size(); ++i)
+    {
+        const float y = m_posY - m_scroll + m_top[i];
+        if (IsRow(i) && pointer.y >= y && pointer.y < y + m_itemHeight)
+            hit = i;
+    }
+    if (hit < 0 || (!pointer.moved && !pointer.clicked))
+        return true;
+
+    const Entry &entry = *m_entries[hit];
+    m_selectedIndex = hit;
+    const bool scrollbar = m_contentHeight > m_height + 0.5f;
+    const float right = m_posX + m_width - (scrollbar ? 4.0f : 0.0f) - kRowPad;
+    if (entry.twoColumn)
+    {
+        const float chipW = std::min(80.0f, (m_width - (scrollbar ? 4.0f : 0.0f) - 96.0f) / 2.0f);
+        m_activeColumn = pointer.x >= right - chipW - 2.5f ? 1 : 0;
+    }
+    if (!pointer.clicked)
+        return true;
+
+    const bool adjustable = entry.leftFunction || entry.rightFunction;
+    if (adjustable && !entry.twoColumn)
+    {
+        // The value's left half (and its "<") steps down, the rest up.
+        const float valueRight = right - kChevronWidth;
+        const float vw = entry.value.empty() ? 30.0f : m_ui->GetTextWidth(m_font, entry.value);
+        const float mid = valueRight - vw / 2.0f;
+        const float leftEdge = valueRight - vw - kChevronWidth - 4.0f;
+        if (pointer.x < mid && pointer.x >= leftEdge && entry.leftFunction)
+            entry.leftFunction(this);
+        else if (entry.rightFunction)
+            entry.rightFunction(this);
+        else if (entry.pressFunction)
+            entry.pressFunction(this);
+        return true;
+    }
+    if (entry.pressFunction)
+        entry.pressFunction(this);
+    return true;
 }

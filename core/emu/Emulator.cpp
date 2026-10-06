@@ -1,4 +1,5 @@
 #include "emu/Emulator.h"
+#include "emu/ThumbnailRecipes.h"
 #include "emu/vbgo_tiletrack.h"
 #include "io/Settings.h"
 
@@ -45,6 +46,10 @@ namespace
     // back by RetroInputState (emulation thread) - see VBButtonBit in
     // Emulator.h for what each bit means.
     std::atomic<uint32_t> g_joypadBitmask{0};
+    // While a thumbnail is made (see Emulator::ThumbnailStep): its game's
+    // input (-1: none - the player's above) and no sound from it.
+    std::atomic<int32_t> g_inputOverride{-1};
+    std::atomic<bool> g_audioMuted{false};
 
     // Set by Emulator::Initialize to &m_audioOutput - same "necessarily global"
     // reasoning as the rest of this block; RetroAudioSampleBatch forwards the
@@ -157,6 +162,8 @@ namespace
 
     size_t RetroAudioSampleBatch(const int16_t *data, size_t frames)
     {
+        if (g_audioMuted.load(std::memory_order_relaxed))
+            return frames;
         if (g_audioOutput)
             g_audioOutput->PushSamples(data, frames);
         if (g_recorder)
@@ -173,7 +180,9 @@ namespace
     {
         if (port != 0 || device != RETRO_DEVICE_JOYPAD || id > 31)
             return 0;
-        return (g_joypadBitmask.load(std::memory_order_relaxed) & (1u << id)) ? 1 : 0;
+        const int32_t forced = g_inputOverride.load(std::memory_order_relaxed);
+        const uint32_t bits = forced >= 0 ? static_cast<uint32_t>(forced) : g_joypadBitmask.load(std::memory_order_relaxed);
+        return (bits & (1u << id)) ? 1 : 0;
     }
 } // namespace
 
@@ -232,16 +241,23 @@ void Emulator::WorkerLoop()
     for (;;)
     {
         int runs = 0;
+        bool thumbnail = false;
         {
             std::unique_lock<std::mutex> lock(m_workMutex);
-            m_workCv.wait(lock, [this] { return m_stopWorker || m_pendingRuns > 0; });
+            m_workCv.wait(lock, [this] {
+                return m_stopWorker || m_pendingRuns > 0 || (m_thumbHasInput && m_thumbAllowed.load());
+            });
             if (m_stopWorker)
                 return;
             runs = m_pendingRuns;
             m_pendingRuns = 0;
+            thumbnail = runs == 0;
         }
         std::lock_guard<std::recursive_mutex> emu(m_emuMutex);
-        RunCoreFrames(runs);
+        if (thumbnail)
+            ThumbnailStep();
+        else
+            RunCoreFrames(runs);
     }
 }
 
@@ -251,9 +267,10 @@ bool Emulator::LoadRom(const std::string &romPath, const std::string &displayNam
     if (!m_coreInitialized)
         return false;
 
-    const std::vector<uint8_t> romBytes = m_platform->ReadRomFile(romPath);
+    std::vector<uint8_t> romBytes = m_platform->ReadRomFile(romPath);
     if (romBytes.empty())
         return false;
+    BringGameBack(); // (a thumbnail's game in the core: the outgoing game first, to save it)
 
     if (m_romLoaded)
     {
@@ -285,13 +302,14 @@ bool Emulator::LoadRom(const std::string &romPath, const std::string &displayNam
         m_pendingRuns = 0;
     }
     std::fprintf(stderr, "[Emulator] LoadRom(\"%s\"): %zu bytes read, retro_load_game -> %s\n", romPath.c_str(),
-                 romBytes.size(), m_romLoaded ? "success" : "FAILED");
+                 info.size, m_romLoaded ? "success" : "FAILED");
 
     if (m_romLoaded)
     {
         m_romBaseName = displayName.empty() ? "rom" : displayName;
         m_romCrc = TileColorPack::Crc32(romBytes.data(), romBytes.size());
         m_romSize = static_cast<uint32_t>(romBytes.size());
+        m_romBytes = std::move(romBytes); // (kept to bring the game back after a thumbnail - see SetGameAside)
         LoadRam();
         m_ramCheckSeconds = 0.0f;
         std::fprintf(stderr, "[Emulator] %s\n", ReloadColorPack().c_str());
@@ -307,6 +325,7 @@ bool Emulator::ResetGame()
     std::lock_guard<std::recursive_mutex> emu(m_emuMutex);
     if (!m_romLoaded)
         return false;
+    BringGameBack();
     g_joypadBitmask = 0;
     m_frameAccumulator = 0.0f;
     g_frameReady = false;
@@ -364,6 +383,7 @@ void Emulator::RunCoreFrames(int runs)
 {
     if (!m_romLoaded)
         return;
+    BringGameBack();
 
     for (int i = 0; i < runs; ++i)
     {
@@ -453,7 +473,9 @@ void Emulator::UploadDisplay()
 
 void Emulator::RecolorShown()
 {
-    if (!m_hasFrame || !m_ui)
+    // (the game set aside: the tile tracker has a thumbnail's frame - the
+    // screen keeps its colors until the game runs again)
+    if (!m_hasFrame || !m_ui || m_gameAside)
         return;
     ColorFrame();
     PublishFrame();
@@ -521,6 +543,46 @@ void Emulator::RecordFrame()
         std::fprintf(stderr, "[Emulator] %s\n", ToggleRecordingLocked().c_str());
 }
 
+namespace
+{
+    // Sets a ShadeColorizer up for a shade palette (see
+    // Emulator::SetShadePalette): Auto's base palette - its colors are
+    // painted from the tile tracker's tags (see ColorPackRenderer), the base
+    // only shows where nothing tracked is drawn and is what they fade
+    // toward - or a Multicolor palette: 4 colors, or a gradient's 5 stops,
+    // each shade where the game's brightness for it falls on the gradient
+    // (see ShadeColorizer::SetGradient), relative to referenceLevel.
+    void ConfigureColorizer(ShadeColorizer &colorizer, int paletteIndex, int referenceLevel)
+    {
+        std::array<ShadeRgb, 4> palette;
+        if (paletteIndex == kAutoColors)
+        {
+            for (int i = 0; i < 4; ++i)
+                palette[i] = ShadeRgb{AutoColors::kBase[i][0] / 255.0f, AutoColors::kBase[i][1] / 255.0f, AutoColors::kBase[i][2] / 255.0f};
+            colorizer.SetPalette(palette);
+            return;
+        }
+        const int pattern = GradientOfShadePalette(paletteIndex);
+        if (pattern >= 0)
+        {
+            std::array<ShadeRgb, 5> stops;
+            for (int i = 0; i < 5; ++i)
+            {
+                const XrColor4f &c = kScreenPatterns[pattern][i];
+                stops[i] = ShadeRgb{c.r, c.g, c.b};
+            }
+            colorizer.SetGradient(stops, referenceLevel);
+            return;
+        }
+        for (int i = 0; i < 4; ++i)
+        {
+            const XrColor4f &c = kShadePalettes[paletteIndex][i];
+            palette[i] = ShadeRgb{c.r, c.g, c.b};
+        }
+        colorizer.SetPalette(palette);
+    }
+} // namespace
+
 void Emulator::SetShadePalette(int paletteIndex)
 {
     if (paletteIndex != kAutoColors && (paletteIndex < 0 || paletteIndex >= kShadePaletteCount))
@@ -531,47 +593,14 @@ void Emulator::SetShadePalette(int paletteIndex)
     std::lock_guard<std::recursive_mutex> emu(m_emuMutex);
     m_shadePaletteIndex = paletteIndex;
     m_packRenderer.SetAutoColors(paletteIndex == kAutoColors);
-    if (paletteIndex == kAutoColors)
+    if (paletteIndex >= 0)
     {
-        // Automatic colors are painted from the tile tracker's tags (see
-        // ColorPackRenderer); the base palette only shows where nothing
-        // tracked is drawn, and is what they fade toward.
-        std::array<ShadeRgb, 4> palette;
-        for (int i = 0; i < 4; ++i)
-            palette[i] = ShadeRgb{AutoColors::kBase[i][0] / 255.0f, AutoColors::kBase[i][1] / 255.0f, AutoColors::kBase[i][2] / 255.0f};
-        m_shadeColorizer.SetPalette(palette);
-        m_shadeBackground = m_shadeColorizer.Palette()[0];
-    }
-    else if (paletteIndex >= 0)
-    {
-        const int pattern = GradientOfShadePalette(paletteIndex);
-        if (pattern >= 0)
-        {
-            // All 5 stops, each shade where the game's brightness for it
-            // falls on the gradient (see ShadeColorizer::SetGradient) -
-            // relative to the color pack's reference brightness if there's
-            // one, else the brightest the game has shown.
-            std::array<ShadeRgb, 5> stops;
-            for (int i = 0; i < 5; ++i)
-            {
-                const XrColor4f &c = kScreenPatterns[pattern][i];
-                stops[i] = ShadeRgb{c.r, c.g, c.b};
-            }
-            m_shadeColorizer.SetGradient(stops, m_colorPack.Empty() ? -1 : m_colorPack.ReferenceLevel());
-            if (m_hasFrame)
-                m_shadeColorizer.Observe(m_rawFrame.data(), std::min<uint32_t>(m_lastFrameWidth, kFbWidth),
-                                         std::min<uint32_t>(m_lastFrameHeight, kFbHeight), static_cast<size_t>(kFbWidth) * 4);
-        }
-        else
-        {
-            std::array<ShadeRgb, 4> palette;
-            for (int i = 0; i < 4; ++i)
-            {
-                const XrColor4f &c = kShadePalettes[paletteIndex][i];
-                palette[i] = ShadeRgb{c.r, c.g, c.b};
-            }
-            m_shadeColorizer.SetPalette(palette);
-        }
+        // (a gradient: relative to the color pack's reference brightness if
+        // there's one, else the brightest the game has shown)
+        ConfigureColorizer(m_shadeColorizer, paletteIndex, m_colorPack.Empty() ? -1 : m_colorPack.ReferenceLevel());
+        if (m_shadeColorizer.IsGradient() && m_hasFrame)
+            m_shadeColorizer.Observe(m_rawFrame.data(), std::min<uint32_t>(m_lastFrameWidth, kFbWidth),
+                                     std::min<uint32_t>(m_lastFrameHeight, kFbHeight), static_cast<size_t>(kFbWidth) * 4);
         m_shadeBackground = m_shadeColorizer.Palette()[0];
     }
     UpdateTileTracking();
@@ -974,6 +1003,7 @@ std::array<std::array<uint8_t, 3>, 4> Emulator::CapturePalette() const
 std::string Emulator::CaptureTileReference(bool rightEye)
 {
     std::lock_guard<std::recursive_mutex> emu(m_emuMutex);
+    BringGameBack();
     if (!m_romLoaded || !m_hasFrame || !vbgo_tiletrack_is_enabled())
         return "";
     // The right eye: a right-eye painting, for what games draw for that eye
@@ -1061,6 +1091,7 @@ std::string Emulator::CaptureTileReference(bool rightEye)
 std::string Emulator::CaptureTileSheet()
 {
     std::lock_guard<std::recursive_mutex> emu(m_emuMutex);
+    BringGameBack();
     const uint16_t *chr = vbgo_tiletrack_chr_ram();
     if (!m_romLoaded || !m_hasFrame || !vbgo_tiletrack_is_enabled() || !chr)
         return "";
@@ -1210,6 +1241,7 @@ void Emulator::CaptureScreenshotGrayscale(std::vector<uint8_t> &outGray) const
 bool Emulator::SaveState(int uiSlot)
 {
     std::lock_guard<std::recursive_mutex> emu(m_emuMutex);
+    BringGameBack();
     if (!m_romLoaded)
         return false;
 
@@ -1259,6 +1291,7 @@ bool Emulator::SaveState(int uiSlot)
 bool Emulator::LoadState(int uiSlot)
 {
     std::lock_guard<std::recursive_mutex> emu(m_emuMutex);
+    BringGameBack();
     if (!m_romLoaded)
         return false;
 
@@ -1325,7 +1358,7 @@ bool Emulator::LoadStatePreview(int uiSlot, std::vector<uint8_t> &outRgba) const
 
 void Emulator::SaveRam()
 {
-    if (!m_romLoaded)
+    if (!m_romLoaded || m_gameAside) // (aside: saved when it was set aside - the core holds another game now)
         return;
 
     const size_t size = retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
@@ -1339,7 +1372,7 @@ void Emulator::SaveRam()
 
 void Emulator::FlushRamIfChanged()
 {
-    if (!m_romLoaded)
+    if (!m_romLoaded || m_gameAside)
         return;
     const size_t size = retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
     const auto *data = static_cast<const uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
@@ -1372,10 +1405,311 @@ void Emulator::LoadRam()
     m_savedRam = bytes;
 }
 
+// ---------------------------------------------------------------------------
+// Library thumbnails
+
+void Emulator::SetThumbnailsAllowed(bool allowed)
+{
+    if (m_thumbAllowed.exchange(allowed) != allowed && allowed)
+        m_workCv.notify_one();
+}
+
+bool Emulator::WantsThumbnailInput()
+{
+    if (!m_coreInitialized || !m_thumbAllowed.load())
+        return false;
+    std::lock_guard<std::mutex> lock(m_workMutex);
+    return !m_thumbHasInput;
+}
+
+void Emulator::GiveThumbnailInput(ThumbnailInput input)
+{
+    {
+        std::lock_guard<std::mutex> lock(m_workMutex);
+        if (m_thumbHasInput)
+            return;
+        m_thumbInput = std::move(input);
+        m_thumbHasInput = true;
+    }
+    m_workCv.notify_one();
+}
+
+bool Emulator::TakeThumbnail(std::string &name, std::vector<uint8_t> &rgb)
+{
+    std::lock_guard<std::mutex> lock(m_thumbDoneMutex);
+    if (m_thumbDone.empty())
+        return false;
+    name = std::move(m_thumbDone.front().first);
+    rgb = std::move(m_thumbDone.front().second);
+    m_thumbDone.erase(m_thumbDone.begin());
+    return true;
+}
+
+void Emulator::StopThumbnails()
+{
+    std::lock_guard<std::recursive_mutex> emu(m_emuMutex);
+    BringGameBack();
+    std::lock_guard<std::mutex> lock(m_workMutex);
+    m_thumbHasInput = false;
+    m_thumbInput = ThumbnailInput{};
+}
+
+void Emulator::SetGameAside()
+{
+    if (m_gameAside)
+        return;
+    if (m_romLoaded)
+    {
+        SaveRam();
+        const size_t size = retro_serialize_size();
+        m_asideState.resize(size);
+        if (size == 0 || !retro_serialize(m_asideState.data(), size))
+            m_asideState.clear();
+        retro_unload_game();
+    }
+    m_gameAside = true;
+}
+
+void Emulator::BringGameBack()
+{
+    if (!m_gameAside)
+        return;
+    if (m_thumbRunning)
+    {
+        // (the thumbnail being made starts over next time - its input stays)
+        retro_unload_game();
+        m_thumbRunning = false;
+    }
+    g_inputOverride = -1;
+    g_audioMuted = false;
+    g_frameReady = false;
+    m_gameAside = false;
+    if (m_romLoaded)
+    {
+        retro_game_info info{};
+        info.path = m_romBaseName.c_str();
+        info.data = m_romBytes.data();
+        info.size = m_romBytes.size();
+        m_romLoaded = retro_load_game(&info);
+        if (m_romLoaded)
+        {
+            LoadRam();
+            if (!m_asideState.empty() && !retro_unserialize(m_asideState.data(), m_asideState.size()))
+                LogLine("[Emulator] The game came back from power-on - its state didn't restore");
+        }
+        else
+            LogLine("[Emulator] The game couldn't be brought back");
+    }
+    m_asideState.clear();
+    vbgo_tiletrack_reset();
+    UpdateTileTracking();
+    UpdateFillTracking();
+}
+
+void Emulator::FinishThumbnail(std::vector<uint8_t> rgb)
+{
+    std::string name;
+    {
+        std::lock_guard<std::mutex> lock(m_workMutex);
+        name = std::move(m_thumbInput.name);
+        m_thumbInput = ThumbnailInput{};
+        m_thumbHasInput = false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_thumbDoneMutex);
+        m_thumbDone.emplace_back(std::move(name), std::move(rgb));
+    }
+}
+
+void Emulator::ThumbnailStep()
+{
+    {
+        std::lock_guard<std::mutex> lock(m_workMutex);
+        if (!m_thumbHasInput || !m_thumbAllowed.load())
+            return;
+    }
+    // A few frames a step, so the render thread never waits long for
+    // m_emuMutex; the tile tracker only for the last frames (the core runs
+    // faster without it), and only those are colored.
+    constexpr int kStepFrames = 6, kTrackedFrames = 24, kColoredFrames = 12;
+    const ThumbnailInput &in = m_thumbInput;
+    if (!m_thumbRunning)
+    {
+        SetGameAside();
+        retro_game_info info{};
+        info.path = in.name.c_str();
+        info.data = in.rom.data();
+        info.size = in.rom.size();
+        if (in.rom.empty() || !retro_load_game(&info))
+        {
+            LogLine("[Emulator] Thumbnail: \"%s\" didn't load", in.name.c_str());
+            FinishThumbnail({});
+            return;
+        }
+        m_thumbRunning = true;
+        m_thumbFrame = 0;
+        m_thumbColored = false;
+        m_thumbCrc = TileColorPack::Crc32(in.rom.data(), in.rom.size());
+        m_thumbPack.Clear();
+        if (!in.pack.empty())
+            m_thumbPack.Deserialize(in.pack);
+        m_thumbRenderer.SetPack(&m_thumbPack);
+        m_thumbRenderer.SetAutoColors(in.shadePalette == kAutoColors);
+        if (in.shadePalette >= 0)
+        {
+            ConfigureColorizer(m_thumbColorizer, in.shadePalette, m_thumbPack.Empty() ? -1 : m_thumbPack.ReferenceLevel());
+            m_thumbBackground = m_thumbColorizer.Palette()[0];
+        }
+        if (m_thumbRaw.empty())
+        {
+            m_thumbRaw.resize(static_cast<size_t>(kFbWidth) * kFbHeight * 4);
+            m_thumbRgba.resize(m_thumbRaw.size());
+        }
+        vbgo_tiletrack_reset();
+        vbgo_tiletrack_set_enabled(false);
+    }
+
+    const ThumbnailRecipe &recipe = ThumbnailRecipeFor(m_thumbCrc);
+    const bool colors = in.shadePalette >= 0 && (!m_thumbPack.Empty() || in.shadePalette == kAutoColors);
+    g_audioMuted = true;
+    for (int k = 0; k < kStepFrames && m_thumbFrame < recipe.frame; ++k)
+    {
+        const int i = m_thumbFrame;
+        const bool track = colors && i >= recipe.frame - kTrackedFrames;
+        if (track != vbgo_tiletrack_is_enabled())
+        {
+            vbgo_tiletrack_set_enabled(track);
+            const std::vector<uint8_t> &cells = m_thumbRenderer.FillCells();
+            vbgo_tiletrack_set_fill_cells(cells.empty() ? nullptr : cells.data());
+            vbgo_tiletrack_set_fill_mode(cells.empty() ? VBGO_TT_FILLS_NONE : VBGO_TT_FILLS_PACK);
+        }
+        // Start, 4 frames every 120, up to the recipe's last press.
+        g_inputOverride = i > 0 && i <= recipe.lastPress && i % 120 < 4 ? static_cast<int32_t>(1u << VBButtonBit::Start) : 0;
+        g_frameReady = false;
+        retro_run();
+        ++m_thumbFrame;
+        if (g_frameReady && m_thumbFrame > recipe.frame - kColoredFrames)
+        {
+            std::memcpy(m_thumbRaw.data(), g_pendingFrame, m_thumbRaw.size());
+            ColorThumbnailFrame();
+        }
+        g_frameReady = false;
+    }
+    g_inputOverride = -1;
+    g_audioMuted = false;
+    if (m_thumbFrame < recipe.frame)
+        return;
+
+    // The left picture, as RGB: the colored frame (B, G, R, A), or with no
+    // shade palette the gray one, in the game's gradient or tint.
+    std::vector<uint8_t> rgb;
+    if (m_thumbColored)
+    {
+        rgb.resize(static_cast<size_t>(kPreviewWidth) * kPreviewHeight * 3);
+        for (uint32_t y = 0; y < kPreviewHeight; ++y)
+            for (uint32_t x = 0; x < kPreviewWidth; ++x)
+            {
+                const size_t at = (static_cast<size_t>(y) * kFbWidth + x) * 4;
+                uint8_t *dst = &rgb[(static_cast<size_t>(y) * kPreviewWidth + x) * 3];
+                if (in.shadePalette >= 0)
+                {
+                    dst[0] = m_thumbRgba[at + 2];
+                    dst[1] = m_thumbRgba[at + 1];
+                    dst[2] = m_thumbRgba[at + 0];
+                    continue;
+                }
+                const float luma = m_thumbRaw[at + 1] / 255.0f;
+                float c[3];
+                if (in.pattern >= 0 && in.pattern < kScreenPatternCount)
+                {
+                    // (as screen_pattern.frag: 5 stops over the brightness)
+                    const float scaled = std::clamp(luma, 0.0f, 1.0f) * 4.0f;
+                    const int seg = std::clamp(static_cast<int>(scaled), 0, 3);
+                    const float f = scaled - static_cast<float>(seg);
+                    const XrColor4f &a = kScreenPatterns[in.pattern][seg], &b = kScreenPatterns[in.pattern][seg + 1];
+                    c[0] = a.r + (b.r - a.r) * f, c[1] = a.g + (b.g - a.g) * f, c[2] = a.b + (b.b - a.b) * f;
+                }
+                else
+                    c[0] = luma * in.tint[0], c[1] = luma * in.tint[1], c[2] = luma * in.tint[2];
+                for (int k = 0; k < 3; ++k)
+                    dst[k] = static_cast<uint8_t>(std::clamp(c[k], 0.0f, 1.0f) * 255.0f + 0.5f);
+            }
+    }
+    retro_unload_game();
+    m_thumbRunning = false;
+    vbgo_tiletrack_set_enabled(false);
+    FinishThumbnail(std::move(rgb));
+}
+
+void Emulator::ColorThumbnailFrame()
+{
+    const ThumbnailInput &in = m_thumbInput;
+    const uint32_t width = std::min<uint32_t>(g_pendingWidth ? g_pendingWidth : kSideBySideWidth, kFbWidth);
+    const uint32_t height = std::min<uint32_t>(g_pendingHeight ? g_pendingHeight : kSideBySideHeight, kFbHeight);
+    const size_t stride = static_cast<size_t>(kFbWidth) * 4;
+    if (in.shadePalette >= 0)
+    {
+        if (m_thumbColorizer.IsGradient())
+            m_thumbColorizer.Observe(m_thumbRaw.data(), width, height, stride);
+        for (uint32_t y = 0; y < height; ++y)
+            m_thumbColorizer.Colorize(&m_thumbRaw[y * stride], &m_thumbRgba[y * stride], width);
+        if ((!m_thumbPack.Empty() || in.shadePalette == kAutoColors) && vbgo_tiletrack_is_enabled())
+        {
+            const uint32_t eyeOffset[2] = {0, width - VBGO_TT_WIDTH};
+            m_thumbRenderer.SetPackShown(!m_thumbPack.Empty());
+            m_thumbRenderer.Paint(m_thumbRgba.data(), m_thumbRaw.data(), kFbWidth, eyeOffset, m_thumbBackground);
+        }
+    }
+    m_thumbColored = true;
+}
+
+std::vector<uint8_t> Emulator::FindPackBytes(Platform &platform, const std::string &name, uint32_t crc, uint32_t size)
+{
+    TileColorPack probe;
+    // As ReloadColorPack looks: the ROMs folder's, then one built in under
+    // the ROM's name, then one made for this ROM (by CRC) under any name.
+    if (std::vector<uint8_t> bytes = platform.ReadRomsFile(name + ".vbcp", false); probe.Deserialize(bytes))
+        return bytes;
+    if (std::vector<uint8_t> bytes = platform.LoadAssetBytes("colorpacks/" + name + ".vbcp"); probe.Deserialize(bytes))
+        return bytes;
+    const std::vector<uint8_t> index = platform.LoadAssetBytes("colorpacks/index.txt");
+    const std::string text(index.begin(), index.end());
+    for (size_t start = 0; start < text.size();)
+    {
+        size_t end = text.find('\n', start);
+        if (end == std::string::npos)
+            end = text.size();
+        const std::string line = text.substr(start, end - start);
+        start = end + 1;
+        unsigned lineCrc = 0, lineSize = 0;
+        int nameAt = 0;
+        if (std::sscanf(line.c_str(), "%x %u %n", &lineCrc, &lineSize, &nameAt) < 2 || nameAt <= 0 || lineCrc != crc ||
+            (lineSize && lineSize != size))
+            continue;
+        std::string file = line.substr(static_cast<size_t>(nameAt));
+        while (!file.empty() && (file.back() == '\r' || file.back() == ' '))
+            file.pop_back();
+        if (std::vector<uint8_t> bytes = platform.LoadAssetBytes("colorpacks/" + file); probe.Deserialize(bytes))
+            return bytes;
+    }
+    for (const std::string &file : platform.ListRomsSubfolder(""))
+    {
+        if (file.size() < 6 || file.compare(file.size() - 5, 5, ".vbcp") != 0)
+            continue;
+        std::vector<uint8_t> bytes = platform.ReadRomsFile(file, false);
+        uint32_t packCrc = 0, packSize = 0;
+        if (TileColorPack::RomOf(bytes, packCrc, packSize) && packCrc == crc && (!packSize || packSize == size) &&
+            probe.Deserialize(bytes))
+            return bytes;
+    }
+    return {};
+}
+
 void Emulator::Shutdown()
 {
     StopWorker();
     std::lock_guard<std::recursive_mutex> emu(m_emuMutex);
+    BringGameBack();
     if (m_recorder.Active())
         std::fprintf(stderr, "[Emulator] %s\n", ToggleRecordingLocked().c_str());
     if (m_romLoaded && m_collecting) // don't lose what was collected

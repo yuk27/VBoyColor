@@ -1,30 +1,37 @@
 #pragma once
 
 #include "menu/MenuPage.h"
+#include "menu/ThumbnailLibrary.h"
 #include "menu/pages/AppMenuLayout.h"
-#include "menu/pages/MainPage.h"
+#include "menu/pages/LibraryPage.h"
+#include "menu/pages/SaveStatesPage.h"
 #include "menu/pages/SettingsPage.h"
-#include "menu/pages/RomSelectPage.h"
 #include "menu/pages/EmulatorButtonMapPage.h"
 #include "menu/pages/MoveScreenPage.h"
 #include "menu/pages/AboutPage.h"
 #include "gfx/UiRenderer.h"
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 class Emulator;
 struct AppSettings;
 class Platform;
 
-// Top-level menu system. Owns all menu pages and drives the slide transition
-// between them. Renders the active page into an offscreen buffer each frame,
-// then composites it onto the real target with rounded corners.
+// Top-level menu system: a sidebar on the left (the VBoy Color logo, the
+// pages - Library, Resume, Save states, Settings, About - and the clock)
+// and the current page right of it, with the button hints along the bottom.
+// The focus is either in the sidebar (Up/Down pick a page, which shows
+// right away; A/Right go into it) or in the page (Left at its edge, or B,
+// come back out - B resumes the game when one is loaded). Renders into an
+// offscreen buffer each frame, then composites it onto the real target with
+// rounded corners.
 //
 // Transition model (ported from FrontendGo's MenuGo):
 //   StartTransition(target, dir)  ->  m_transitionState slides 1->0 over
 //   kTransitionSpeed seconds using a sine-eased progress value.
-//   dir: +1 = target slides in from right, -1 = from left.
+//   dir: +1 = target slides in from right (or below), -1 = from left (above).
 class AppMenu
 {
 public:
@@ -32,6 +39,16 @@ public:
     static constexpr float kPanelCornerRadiusPx = 8.0f;
     static constexpr float kTransitionSpeed = 0.15f;
     static constexpr float kOpenCloseSpeed = 0.15f;
+
+    enum SidebarItem
+    {
+        SidebarLibrary,
+        SidebarResume,
+        SidebarSaveStates,
+        SidebarSettings,
+        SidebarAbout,
+        SidebarCount
+    };
 
     void Initialize(UiRenderer &ui, VkFormat targetFormat, Emulator &emulator, AppSettings &settings,
                     Platform &platform, ButtonMappingProfile mappingProfile = ButtonMappingProfile::Vr,
@@ -43,6 +60,14 @@ public:
 
     XrColor4f GetBackgroundColor() const;
 
+    // The mouse (desktop) or a controller's laser (Quest) - call before
+    // Update each frame. present: it's over the menu, at x, y in the menu's
+    // logical units (kMenuWidth x kMenuHeight); down: its button (mouse
+    // button, trigger) is held; scroll: wheel/stick scroll this frame, in
+    // rows (+ = down). drawDot: draw where it points (the laser's end -
+    // a mouse has its own cursor).
+    void SetPointer(bool present, float x, float y, bool down, float scroll = 0.0f, bool drawDot = false);
+
     // Changes the logical-to-physical scale (see AppMenuLayout.h's
     // kMenuScale doc comment) at runtime - e.g. a resizable window
     // recomputing the largest integer scale that still fits every frame.
@@ -52,15 +77,13 @@ public:
     void SetMenuScale(UiRenderer &ui, float scale);
     float GetMenuScale() const { return m_menuScale; }
 
-    // Battery indicator drawn top-right of the header, ported from
-    // FrontendGo's MenuGo::DrawMenu (the coloured fill block + "N%" text).
-    // percent: 0-100 shows it: any value outside that range (default -1)
-    // hides it entirely, so callers opt in explicitly instead of the
-    // indicator silently showing a stale/fake reading. OpenXrApp polls the
-    // real device battery via Platform::GetBatteryPercent (see
+    // Battery level shown at the bottom of the sidebar. percent: 0-100
+    // shows it: any value outside that range (default -1) hides it
+    // entirely, so callers opt in explicitly instead of the indicator
+    // silently showing a stale/fake reading. OpenXrApp polls the real device
+    // battery via Platform::GetBatteryPercent (see
     // OpenXrApp::UpdateBatteryPercent); it stays hidden on both desktop
-    // builds, which have no battery worth reading - the header clock drops
-    // into the freed lower row when it is.
+    // builds, which have no battery worth reading.
     void SetBatteryPercent(int percent) { m_batteryPercent = percent; }
 
     // Menu open/closed - closing lets the emulator screen show unobstructed
@@ -102,39 +125,88 @@ public:
     // Composite callers multiply this into the panel's draw alpha.
     float GetVisibility() const { return m_visibility; }
 
-private:
-    void InitPages(UiRenderer &ui);
-    void StartTransition(MenuPage *target, int dir);
-    void RenderContent(UiRenderer &ui);
+    ThumbnailLibrary &Thumbnails() { return m_thumbnails; }
 
-    MainPage m_mainPage;
+private:
+    class Sidebar;
+    struct Logo
+    {
+        // The source image (RGBA), and a texture holding it resampled for
+        // the current menu scale (see RebuildLogo).
+        std::vector<uint8_t> pixels;
+        uint32_t width = 0, height = 0;
+        UiImageHandle texture;
+        uint32_t texWidth = 0, texHeight = 0;
+        uint32_t drawWidth = 0, drawHeight = 0;
+    };
+
+    void InitPages(UiRenderer &ui);
+    void LoadFonts(UiRenderer &ui, bool rebake);
+    void StartTransition(MenuPage *target, int dir, bool vertical = false);
+    void GoTo(MenuPage *target, int dir);
+    MenuPage *TargetPage() const { return m_nextPage ? m_nextPage : m_currentPage; }
+    MenuPage *PageFor(int item);
+    bool SidebarEnabled(int item) const;
+    void MoveSidebar(int dir);
+    void ActivateSidebar(bool pressedA);
+    void FocusSidebar();
+    void FocusContent();
+    void BackFromPage();
+    void HandlePointer();
+    float SidebarItemY(int item) const;
+    float SidebarItemHeight(int item) const;
+    std::vector<MenuHint> CurrentHints() const;
+
+    void RenderContent(UiRenderer &ui);
+    void DrawSidebar(UiRenderer &ui);
+    void DrawHints(UiRenderer &ui);
+    void RebuildLogo(UiRenderer &ui);
+
+    LibraryPage m_libraryPage;
+    SaveStatesPage m_saveStatesPage;
     SettingsPage m_settingsPage;
-    RomSelectPage m_romSelectPage;
     EmulatorButtonMapPage m_emulatorButtonMapPage;
     MoveScreenPage m_moveScreenPage;
     AboutPage m_aboutPage;
+
+    ThumbnailLibrary m_thumbnails;
 
     MenuPage *m_currentPage = nullptr;
     MenuPage *m_nextPage = nullptr;
     float m_transitionState = 0.0f;
     int m_transitionDir = 1;
+    bool m_transitionVertical = false;
     // A page switch requested while closed, applied on reopen instead of
     // immediately - see StartTransition/Update.
     MenuPage *m_pendingPage = nullptr;
 
-    UiFontHandle m_titleFont;
-    // The header logo (see RebuildLogo): the source image (RGBA), and a
-    // texture holding it resampled for the current menu scale.
-    void RebuildLogo(UiRenderer &ui);
-    std::vector<uint8_t> m_logoPixels;
-    uint32_t m_logoWidth = 0, m_logoHeight = 0;
-    UiImageHandle m_logoTexture;
-    uint32_t m_logoTexWidth = 0, m_logoTexHeight = 0;
-    uint32_t m_logoDrawWidth = 0, m_logoDrawHeight = 0;
+    // The sidebar: has the focus (else the page has), and its cursor.
+    Menu m_sidebarMenu;
+    bool m_sidebarFocus = false;
+    int m_sidebarCursor = SidebarLibrary;
+
+    // The pointer (see SetPointer).
+    struct Pointer
+    {
+        bool present = false, down = false, wasDown = false, drawDot = false;
+        float x = 0, y = 0, lastX = -1, lastY = -1, scroll = 0;
+    } m_pointer;
+    int m_sidebarHover = -1;
+    // The hints row's hints, where they were last drawn (clickable).
+    struct HintRect
+    {
+        UiIconId icon;
+        float x0, x1;
+    };
+    std::vector<HintRect> m_hintRects;
+
+    UiRenderer *m_ui = nullptr;
+    Logo m_logo;
     UiIconSet m_icons;
-    UiMenuResources m_resources; // menuFont/smallFont/&m_icons - see UiMenuResources.h
+    UiMenuResources m_resources; // fonts/&m_icons - see UiMenuResources.h
     UiImageHandle m_offscreenTexture;
     float m_menuScale = kMenuScale; // see SetMenuScale
+    std::string m_versionLine1, m_versionLine2;
 
     int m_batteryPercent = -1;
     bool m_open = true;

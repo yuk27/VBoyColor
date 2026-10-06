@@ -51,6 +51,10 @@ public:
     bool IsLeftTriggerPressed() const { return m_leftTriggerPressed; }
     bool IsRightTriggerPressed() const { return m_rightTriggerPressed; }
 
+    // Where a controller points (its aim pose: the laser's origin, pointing
+    // down its -Z) in baseSpace at time - false while it isn't tracked.
+    bool LocateAim(XrSpace baseSpace, XrTime time, bool rightHand, XrPosef &pose) const;
+
 private:
     XrInstance m_instance{XR_NULL_HANDLE};
     XrActionSet m_actionSet{XR_NULL_HANDLE};
@@ -62,6 +66,8 @@ private:
     XrAction m_triggerAction{XR_NULL_HANDLE};
     XrAction m_menuClickAction{XR_NULL_HANDLE};
     XrAction m_thumbstickClickAction{XR_NULL_HANDLE};
+    XrAction m_aimAction{XR_NULL_HANDLE};
+    XrSpace m_aimSpaces[2]{XR_NULL_HANDLE, XR_NULL_HANDLE}; // left, right
     XrPath m_leftHandPath{XR_NULL_PATH};
     XrPath m_rightHandPath{XR_NULL_PATH};
 

@@ -1,4 +1,5 @@
 #include "menu/AppMenu.h"
+#include "emu/Emulator.h"
 #include "io/Platform.h"
 #include "io/Settings.h"
 
@@ -12,17 +13,9 @@
 namespace
 {
     constexpr XrColor4f kClearColor = {0.0f, 0.0f, 0.0f, 1.0f};
-    constexpr XrColor4f kHeaderTextBackColor = {0.0f, 0.0f, 0.0f, 0.45f};
-    // Font pixel sizes are inherently integer (FreeType rasterizes whole
-    // pixels only) - 65/2 doesn't land on a whole number like the other
-    // logical-space constants do, so this one is just rounded. Still
-    // rasterizes crisp: this is a font *size* fed to FreeType, unrelated to
-    // kMenuScale's physical-vs-logical pixel mapping.
-    constexpr int kHeaderFontSize = 16;
 
     // The logo's colors (Juan's VBoy Color logo): "VBOY" red, then "COLOR"
-    // a letter at a time.
-    constexpr XrColor4f kLogoRed = {1.0f, 30 / 255.0f, 18 / 255.0f, 1.0f};
+    // a letter at a time - also the stripe under the sidebar's logo.
     XrColor4f TitleLetterColor(int i)
     {
         static constexpr uint8_t kLetters[5][3] = {{205, 37, 57}, {88, 81, 166}, {163, 198, 24}, {215, 179, 1}, {0, 155, 166}};
@@ -30,55 +23,47 @@ namespace
         return XrColor4f{c[0] / 255.0f, c[1] / 255.0f, c[2] / 255.0f, 1.0f};
     }
 
-    // The header logo: assets/runtime/logo/vboycolor_header.png ("VBOY" and
-    // "COLOR" from Juan's logo, side by side), this tall in menu units -
+    // The sidebar's logo: assets/runtime/logo/vboycolor_icon.png (Juan's
+    // stacked "VBOY / COLOR" logo, transparent), this tall in menu units -
     // resampled for each menu scale up to kLogoMaxScale (the desktop window
     // fullscreen at 4K), so it's drawn 1:1 and stays sharp.
-    constexpr float kLogoHeight = 22.0f;
+    constexpr float kLogoHeight = 18.0f;
+    constexpr float kLogoX = 8.0f, kLogoY = 11.0f;
     constexpr int kLogoMaxScale = 12;
 
-    // Clock + battery indicator, ported from FrontendGo's Menu.cpp
-    // (SetTimeString/BatteryColors/DrawMenu's battery block) - two rows
-    // stacked in the header's top-right corner, both right-aligned to the
-    // same margin. The clock needs no platform hook (std::time works
-    // everywhere); the battery does (see AppMenu::SetBatteryPercent).
-    constexpr float kHeaderRightMargin = 7.5f;
-    constexpr float kTimeRowCenterY = kHeaderHeight / 2.0f - 5.5f;
-    constexpr float kBatteryRowCenterY = kHeaderHeight / 2.0f + 5.5f;
-    // Gap under the clock when it sits alone (no battery row below it).
-    constexpr float kHeaderBottomMargin = 3.0f;
+    // The sidebar's pages.
+    constexpr float kNavTop = 46.0f;
+    constexpr float kNavPitch = 20.0f;
+    constexpr float kNavSubtitleExtra = 7.0f; // (Resume shows the game under it)
+    constexpr float kNavIconSize = 10.0f;
 
-    constexpr float kBatteryBlockWidth = 5.0f;
-    constexpr float kBatteryBlockHeight = 8.0f;
-    constexpr float kBatteryPadding = 1.0f;
-    constexpr float kBatteryCornerRadiusPx = 1.5f;
-    constexpr float kBatteryCornerInsideRadiusPx = 1.0f;
-    constexpr XrColor4f kBatteryBackgroundColor = {0.22f, 0.23f, 0.29f, 1.0f};
-    // The gradient walks red -> orange -> yellow -> green as the level
-    // rises; two flat plateaus (indices 3-4 and 5-6) are intentional,
-    // matching the original.
-    constexpr int kBatteryColorCount = 5;
-    constexpr XrColor4f kBatteryColors[] = {
-        {0.745f, 0.114f, 0.176f, 1.0f},
-        {0.92f, 0.361f, 0.176f, 1.0f},
-        {0.976f, 0.69f, 0.255f, 1.0f},
-        {0.545f, 0.769f, 0.247f, 1.0f},
-        {0.545f, 0.769f, 0.247f, 1.0f},
-        {0.0f, 0.78f, 0.078f, 1.0f},
-        {0.0f, 0.78f, 0.078f, 1.0f},
+    // The fonts (see AppMenuLayout.h): which resource, bold, size.
+    struct FontSpec
+    {
+        UiFontHandle UiMenuResources::*field;
+        bool bold;
+        float size;
+    };
+    constexpr FontSpec kFonts[] = {
+        {&UiMenuResources::titleFont, true, kTitleFontSize},
+        {&UiMenuResources::bodyFont, false, kBodyFontSize},
+        {&UiMenuResources::bodyBoldFont, true, kBodyFontSize},
+        {&UiMenuResources::cardFont, false, kCardFontSize},
+        {&UiMenuResources::cardBoldFont, true, kCardFontSize},
+        {&UiMenuResources::captionFont, false, kCaptionFontSize},
+        {&UiMenuResources::captionBoldFont, true, kCaptionFontSize},
+        {&UiMenuResources::smallFont, true, static_cast<float>(kSmallFontSize)},
     };
 
-    XrColor4f Lerp(const XrColor4f &a, const XrColor4f &b, float t)
+    XrColor4f WithAlpha(XrColor4f c, float alpha)
     {
-        return {a.r * (1 - t) + b.r * t, a.g * (1 - t) + b.g * t, a.b * (1 - t) + b.b * t, a.a * (1 - t) + b.a * t};
+        c.a *= alpha;
+        return c;
     }
 
-    XrColor4f BatteryColorForPercent(int percent)
+    float TextY(UiRenderer &ui, UiFontHandle font, float centerY)
     {
-        const float step = 100.0f / kBatteryColorCount;
-        const float colorState = std::fmod(static_cast<float>(percent), step) / step;
-        const int currentColor = static_cast<int>(percent / step);
-        return Lerp(kBatteryColors[currentColor], kBatteryColors[currentColor + 1], colorState);
+        return centerY - ui.GetFontPHeight(font) / 2.0f - ui.GetFontPStart(font);
     }
 
     std::string CurrentTimeString()
@@ -94,49 +79,116 @@ namespace
         std::snprintf(buf, sizeof(buf), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
         return buf;
     }
+
+    std::string WithoutRegion(const std::string &name) { return name.substr(0, name.find(" (")); }
 } // namespace
+
+// The sidebar's one menu item: Up/Down move between its pages, A/Right go in.
+class AppMenu::Sidebar : public MenuItem
+{
+public:
+    explicit Sidebar(AppMenu &menu) : m_menu(menu)
+    {
+        Selectable = true;
+        ScrollTimeV = 0.12f;
+    }
+    int PressedUp() override
+    {
+        m_menu.MoveSidebar(-1);
+        return 1;
+    }
+    int PressedDown() override
+    {
+        m_menu.MoveSidebar(1);
+        return 1;
+    }
+    int PressedRight() override
+    {
+        m_menu.ActivateSidebar(false);
+        return 1;
+    }
+    int PressedEnter() override
+    {
+        m_menu.ActivateSidebar(true);
+        return 1;
+    }
+
+private:
+    AppMenu &m_menu;
+};
 
 // -----------------------------------------------------------------------
 // Initialise
 
+void AppMenu::LoadFonts(UiRenderer &ui, bool rebake)
+{
+    const std::vector<uint8_t> regular = m_resources.platform->LoadAssetBytes("fonts/Roboto-Regular.ttf");
+    const std::vector<uint8_t> bold = m_resources.platform->LoadAssetBytes("fonts/Roboto-Bold.ttf");
+    // Glyphs baked at physical resolution (the scale x the logical size) for
+    // crisp text - see UiFontManager::LoadFont's renderScale doc comment.
+    for (const FontSpec &spec : kFonts)
+    {
+        const int pixels = static_cast<int>(std::lround(spec.size * m_menuScale));
+        UiFontHandle &font = m_resources.*spec.field;
+        if (rebake)
+            ui.RebakeFont(font, spec.bold ? bold : regular, pixels, m_menuScale);
+        else
+            font = ui.LoadFont(spec.bold ? bold : regular, pixels, m_menuScale);
+    }
+}
+
 void AppMenu::Initialize(UiRenderer &ui, VkFormat targetFormat, Emulator &emulator, AppSettings &settings,
                          Platform &platform, ButtonMappingProfile mappingProfile, bool passthroughSupported)
 {
-    const std::vector<uint8_t> menuFontBytes = platform.LoadAssetBytes("fonts/Roboto-Regular.ttf");
-    const std::vector<uint8_t> smallFontBytes = platform.LoadAssetBytes("fonts/Roboto-Bold.ttf");
-
-    // Bake glyphs at physical resolution (kMenuScale x the logical size) for
-    // crisp text - see UiFontManager::LoadFont's renderScale doc comment.
-    // (The title font only shows if the logo image is missing.)
-    m_titleFont = ui.LoadFont(smallFontBytes, static_cast<int>(kHeaderFontSize * m_menuScale), m_menuScale);
-    m_resources.menuFont = ui.LoadFont(menuFontBytes, static_cast<int>(kMenuFontSize * m_menuScale), m_menuScale);
-    m_resources.smallFont = ui.LoadFont(smallFontBytes, static_cast<int>(kSmallFontSize * m_menuScale), m_menuScale);
+    m_ui = &ui;
+    m_resources.platform = &platform;
+    LoadFonts(ui, false);
+    ui.EnsureGlyphsForText(m_resources.captionFont, "\xC2\xB7\xE2\x80\xA6"); // (the clock line's dot, ellipses)
 
     m_icons.Load(ui, platform, m_menuScale);
     m_resources.icons = &m_icons;
 
     // The logo, decoded once (RGBA) and resampled per menu scale.
     {
-        const std::vector<uint8_t> png = platform.LoadAssetBytes("logo/vboycolor_header.png");
+        const std::vector<uint8_t> png = platform.LoadAssetBytes("logo/vboycolor_icon.png");
         int w = 0, h = 0, channels = 0;
         if (stbi_uc *pixels = png.empty() ? nullptr : stbi_load_from_memory(png.data(), static_cast<int>(png.size()), &w, &h, &channels, 4))
         {
-            m_logoPixels.assign(pixels, pixels + static_cast<size_t>(w) * h * 4);
-            m_logoWidth = static_cast<uint32_t>(w);
-            m_logoHeight = static_cast<uint32_t>(h);
+            m_logo.pixels.assign(pixels, pixels + static_cast<size_t>(w) * h * 4);
+            m_logo.width = static_cast<uint32_t>(w);
+            m_logo.height = static_cast<uint32_t>(h);
             stbi_image_free(pixels);
-            m_logoTexHeight = static_cast<uint32_t>(std::ceil(kLogoHeight * kLogoMaxScale));
-            m_logoTexWidth = static_cast<uint32_t>(std::ceil(m_logoTexHeight * static_cast<float>(w) / h)) + 1;
-            m_logoTexture = ui.CreateStreamingImage(m_logoTexWidth, m_logoTexHeight, VK_FORMAT_B8G8R8A8_SRGB);
+            m_logo.texHeight = static_cast<uint32_t>(std::ceil(kLogoHeight * kLogoMaxScale));
+            m_logo.texWidth = static_cast<uint32_t>(std::ceil(m_logo.texHeight * static_cast<float>(w) / h)) + 1;
+            m_logo.texture = ui.CreateStreamingImage(m_logo.texWidth, m_logo.texHeight, VK_FORMAT_B8G8R8A8_SRGB);
             RebuildLogo(ui);
         }
     }
+
+    // The version beside the logo: "dev.155" over "v1.0.0" (a dev build),
+    // "beta.2" over "v1.0.0", or just "v1.0.0".
+    {
+        const std::string version = kVersionString;
+        const size_t dash = version.find('-');
+        if (dash == std::string::npos)
+            m_versionLine1 = version;
+        else
+        {
+            m_versionLine1 = version.substr(dash + 1);
+            const size_t dirty = m_versionLine1.find("-dirty");
+            if (dirty != std::string::npos)
+                m_versionLine1.erase(dirty);
+            m_versionLine2 = version.substr(0, dash);
+        }
+    }
+
     m_resources.emulator = &emulator;
     m_resources.appMenu = this;
     m_resources.settings = &settings;
     m_resources.buttonMappingProfile = mappingProfile;
-    m_resources.platform = &platform;
     m_resources.passthroughSupported = passthroughSupported;
+    m_thumbnails.Init(ui, platform, emulator, settings);
+    m_resources.thumbnails = &m_thumbnails;
     // Physical pixel size - kMenuWidth/kMenuHeight are logical units (see
     // AppMenuLayout.h); RenderToBuffer maps them onto this full-resolution
     // texture via BeginOffscreenFrame's logicalWidth/logicalHeight, so the
@@ -146,13 +198,22 @@ void AppMenu::Initialize(UiRenderer &ui, VkFormat targetFormat, Emulator &emulat
                                                 static_cast<uint32_t>(kMenuHeight * m_menuScale), targetFormat);
 
     InitPages(ui);
-    // Start on ROM selection, not MainPage - nothing's loaded yet at boot,
-    // so Resume/Save/Load would just be dead buttons; picking a ROM already
-    // navigates back to MainPage afterward (see RomSelectPage::Init).
-    m_currentPage = &m_romSelectPage;
-    // Pre-select MainPage's "Load ROM" row so backing out of RomSelectPage
-    // lands there instead of row 0 - see SelectLoadRomEntry's doc comment.
-    m_mainPage.SelectLoadRomEntry();
+
+    m_sidebarMenu.MenuItems.push_back(std::make_shared<Sidebar>(*this));
+    m_sidebarMenu.BackPress = [this]()
+    {
+        if (m_resources.emulator->HasGame())
+            Hide();
+    };
+    m_sidebarMenu.Init();
+
+    // Start in the library - on its games, or (none yet) in the sidebar.
+    m_currentPage = &m_libraryPage;
+    m_currentPage->OnShow();
+    if (m_libraryPage.HasFocusable())
+        FocusContent();
+    else
+        FocusSidebar();
 }
 
 void AppMenu::SetMenuScale(UiRenderer &ui, float scale)
@@ -164,27 +225,23 @@ void AppMenu::SetMenuScale(UiRenderer &ui, float scale)
 
     ui.ResizeRenderTexture(m_offscreenTexture, static_cast<uint32_t>(kMenuWidth * m_menuScale),
                            static_cast<uint32_t>(kMenuHeight * m_menuScale));
-
-    const std::vector<uint8_t> menuFontBytes = m_resources.platform->LoadAssetBytes("fonts/Roboto-Regular.ttf");
-    const std::vector<uint8_t> smallFontBytes = m_resources.platform->LoadAssetBytes("fonts/Roboto-Bold.ttf");
-    ui.RebakeFont(m_titleFont, smallFontBytes, static_cast<int>(kHeaderFontSize * m_menuScale), m_menuScale);
-    ui.RebakeFont(m_resources.menuFont, menuFontBytes, static_cast<int>(kMenuFontSize * m_menuScale), m_menuScale);
-    ui.RebakeFont(m_resources.smallFont, smallFontBytes, static_cast<int>(kSmallFontSize * m_menuScale), m_menuScale);
+    LoadFonts(ui, true);
     RebuildLogo(ui);
 }
 
 void AppMenu::RebuildLogo(UiRenderer &ui)
 {
-    if (!m_logoTexture.IsValid() || m_logoPixels.empty())
+    Logo &logo = m_logo;
+    if (!logo.texture.IsValid() || logo.pixels.empty())
         return;
     // Exactly as many pixels as the logo covers at this scale (at most the
     // texture's), each the average of the source pixels under it - in
     // premultiplied alpha, so the edges don't darken.
     const float scale = std::min(m_menuScale, static_cast<float>(kLogoMaxScale));
-    const uint32_t h = std::max(1u, std::min(m_logoTexHeight, static_cast<uint32_t>(std::lround(kLogoHeight * scale))));
-    const uint32_t w = std::max(1u, std::min(m_logoTexWidth, static_cast<uint32_t>(std::lround(h * static_cast<float>(m_logoWidth) / m_logoHeight))));
-    std::vector<uint8_t> bgra(static_cast<size_t>(m_logoTexWidth) * m_logoTexHeight * 4, 0);
-    const float sx = static_cast<float>(m_logoWidth) / w, sy = static_cast<float>(m_logoHeight) / h;
+    const uint32_t h = std::max(1u, std::min(logo.texHeight, static_cast<uint32_t>(std::lround(kLogoHeight * scale))));
+    const uint32_t w = std::max(1u, std::min(logo.texWidth, static_cast<uint32_t>(std::lround(h * static_cast<float>(logo.width) / logo.height))));
+    std::vector<uint8_t> bgra(static_cast<size_t>(logo.texWidth) * logo.texHeight * 4, 0);
+    const float sx = static_cast<float>(logo.width) / w, sy = static_cast<float>(logo.height) / h;
     for (uint32_t y = 0; y < h; ++y)
     {
         const float y0 = y * sy, y1 = (y + 1) * sy;
@@ -192,13 +249,13 @@ void AppMenu::RebuildLogo(UiRenderer &ui)
         {
             const float x0 = x * sx, x1 = (x + 1) * sx;
             float sum[4] = {0, 0, 0, 0}, area = 0;
-            for (uint32_t iy = static_cast<uint32_t>(y0); iy < m_logoHeight && iy < y1; ++iy)
+            for (uint32_t iy = static_cast<uint32_t>(y0); iy < logo.height && iy < y1; ++iy)
             {
                 const float wy = std::min(y1, iy + 1.0f) - std::max(y0, static_cast<float>(iy));
-                for (uint32_t ix = static_cast<uint32_t>(x0); ix < m_logoWidth && ix < x1; ++ix)
+                for (uint32_t ix = static_cast<uint32_t>(x0); ix < logo.width && ix < x1; ++ix)
                 {
                     const float wgt = wy * (std::min(x1, ix + 1.0f) - std::max(x0, static_cast<float>(ix)));
-                    const uint8_t *p = &m_logoPixels[(static_cast<size_t>(iy) * m_logoWidth + ix) * 4];
+                    const uint8_t *p = &logo.pixels[(static_cast<size_t>(iy) * logo.width + ix) * 4];
                     const float a = p[3] / 255.0f * wgt;
                     sum[0] += p[0] * a;
                     sum[1] += p[1] * a;
@@ -207,7 +264,7 @@ void AppMenu::RebuildLogo(UiRenderer &ui)
                     area += wgt;
                 }
             }
-            uint8_t *out = &bgra[(static_cast<size_t>(y) * m_logoTexWidth + x) * 4];
+            uint8_t *out = &bgra[(static_cast<size_t>(y) * logo.texWidth + x) * 4];
             if (sum[3] > 0.0f && area > 0.0f)
             {
                 out[0] = static_cast<uint8_t>(std::lround(std::min(255.0f, sum[2] / sum[3])));
@@ -217,82 +274,265 @@ void AppMenu::RebuildLogo(UiRenderer &ui)
             }
         }
     }
-    ui.UpdateStreamingImage(m_logoTexture, bgra.data(), bgra.size());
-    m_logoDrawWidth = w;
-    m_logoDrawHeight = h;
+    ui.UpdateStreamingImage(logo.texture, bgra.data(), bgra.size());
+    logo.drawWidth = w;
+    logo.drawHeight = h;
 }
 
 void AppMenu::InitPages(UiRenderer &ui)
 {
-    // Wire Navigate callbacks for all pages before calling Init() on any.
-    auto wireNavigate = [&](MenuPage &page)
+    MenuPage *pages[] = {&m_libraryPage, &m_saveStatesPage, &m_settingsPage, &m_emulatorButtonMapPage, &m_moveScreenPage,
+                         &m_aboutPage};
+    for (MenuPage *page : pages)
     {
-        page.Navigate = [this](MenuPage *target, int dir)
-        {
-            StartTransition(target, dir);
-        };
-    };
+        page->Navigate = [this](MenuPage *target, int dir) { StartTransition(target, dir); };
+        page->Attach(m_resources);
+    }
 
-    wireNavigate(m_mainPage);
-    wireNavigate(m_settingsPage);
-    wireNavigate(m_romSelectPage);
-    wireNavigate(m_emulatorButtonMapPage);
-    wireNavigate(m_moveScreenPage);
-    wireNavigate(m_aboutPage);
+    m_libraryPage.sidebarItem = SidebarLibrary;
+    m_saveStatesPage.sidebarItem = SidebarSaveStates;
+    m_settingsPage.sidebarItem = SidebarSettings;
+    m_emulatorButtonMapPage.sidebarItem = SidebarSettings;
+    m_moveScreenPage.sidebarItem = SidebarSettings;
+    m_aboutPage.sidebarItem = SidebarAbout;
 
     // Cross-page links
-    m_mainPage.romSelectPage = &m_romSelectPage;
-    m_mainPage.settingsPage = &m_settingsPage;
-
-    m_settingsPage.mainPage = &m_mainPage;
     m_settingsPage.emulatorButtonMapPage = &m_emulatorButtonMapPage;
     m_settingsPage.moveScreenPage = &m_moveScreenPage;
-    m_settingsPage.aboutPage = &m_aboutPage;
-    m_aboutPage.settingsPage = &m_settingsPage;
-
-    m_romSelectPage.mainPage = &m_mainPage;
     m_emulatorButtonMapPage.settingsPage = &m_settingsPage;
     m_moveScreenPage.settingsPage = &m_settingsPage;
 
-    // Init all pages
-    m_mainPage.Init(ui, m_resources);
-    m_settingsPage.Init(ui, m_resources);
-    m_romSelectPage.Init(ui, m_resources);
-    m_emulatorButtonMapPage.Init(ui, m_resources);
-    m_moveScreenPage.Init(ui, m_resources);
-    m_aboutPage.Init(ui, m_resources);
+    for (MenuPage *page : pages)
+    {
+        page->Init(ui, m_resources);
+        page->SetLeftEdge([this]() { FocusSidebar(); });
+    }
+    // The sidebar's own pages: B goes back to the game (or the sidebar).
+    for (MenuPage *page : {static_cast<MenuPage *>(&m_libraryPage), static_cast<MenuPage *>(&m_saveStatesPage),
+                           static_cast<MenuPage *>(&m_settingsPage), static_cast<MenuPage *>(&m_aboutPage)})
+        page->SetBackPress([this]() { BackFromPage(); });
 }
 
 // -----------------------------------------------------------------------
 // Navigation
 
-void AppMenu::StartTransition(MenuPage *target, int dir)
+MenuPage *AppMenu::PageFor(int item)
 {
-    if (!target || m_nextPage)
-        return; // ignore if already transitioning
+    switch (item)
+    {
+    case SidebarLibrary:
+        return &m_libraryPage;
+    case SidebarSaveStates:
+        return &m_saveStatesPage;
+    case SidebarSettings:
+        return &m_settingsPage;
+    case SidebarAbout:
+        return &m_aboutPage;
+    default:
+        return nullptr;
+    }
+}
+
+bool AppMenu::SidebarEnabled(int item) const
+{
+    if (item == SidebarResume || item == SidebarSaveStates)
+        return m_resources.emulator && m_resources.emulator->HasGame();
+    return item >= 0 && item < SidebarCount;
+}
+
+void AppMenu::StartTransition(MenuPage *target, int dir, bool vertical)
+{
+    if (!target)
+        return;
 
     if (!m_open)
     {
-        // Closing (e.g. RomSelectPage hides the menu then navigates back to
-        // MainPage in the same callback) - the close animation still shows
-        // whatever m_currentPage is for the next ~kOpenCloseSpeed seconds
-        // (see IsVisible()), so switching pages right now would fade out
-        // MainPage instead of RomSelectPage - the wrong page flashing up
-        // right as the menu disappears. Defer the switch instead: keep
-        // showing the current page through the fade, and apply the pending
-        // one only once the menu actually reopens (see Update()).
+        // Closing (e.g. a page hides the menu then navigates in the same
+        // callback) - the close animation still shows whatever
+        // m_currentPage is for the next ~kOpenCloseSpeed seconds (see
+        // IsVisible()), so switching pages right now would flash the wrong
+        // page as the menu disappears. Defer the switch instead: apply it
+        // only once the menu actually reopens (see Update()).
         m_pendingPage = target;
         return;
     }
 
+    // (one already sliding in lands at once)
+    if (m_nextPage)
+    {
+        m_currentPage = m_nextPage;
+        m_nextPage = nullptr;
+        m_transitionState = 0.0f;
+    }
+    if (target == m_currentPage)
+        return;
     m_nextPage = target;
     m_transitionDir = dir;
+    m_transitionVertical = vertical;
     m_transitionState = 1.0f;
     target->OnShow();
+    target->SetFocused(!m_sidebarFocus);
+}
+
+void AppMenu::GoTo(MenuPage *target, int dir) { StartTransition(target, dir, true); }
+
+void AppMenu::MoveSidebar(int dir)
+{
+    int next = m_sidebarCursor;
+    do
+        next += dir;
+    while (next >= 0 && next < SidebarCount && !SidebarEnabled(next));
+    if (next < 0 || next >= SidebarCount)
+        return;
+    m_sidebarCursor = next;
+    // The page shows as soon as the cursor's on it.
+    MenuPage *page = PageFor(next);
+    if (page && TargetPage()->sidebarItem != next)
+        GoTo(page, next > TargetPage()->sidebarItem ? 1 : -1);
+}
+
+void AppMenu::ActivateSidebar(bool pressedA)
+{
+    if (m_sidebarCursor == SidebarResume)
+    {
+        if (pressedA && SidebarEnabled(SidebarResume))
+            Hide();
+        return;
+    }
+    MenuPage *page = PageFor(m_sidebarCursor);
+    if (!page)
+        return;
+    if (TargetPage()->sidebarItem != m_sidebarCursor)
+        GoTo(page, m_sidebarCursor > TargetPage()->sidebarItem ? 1 : -1);
+    if (TargetPage()->HasFocusable())
+        FocusContent();
+}
+
+void AppMenu::FocusSidebar()
+{
+    m_sidebarFocus = true;
+    m_sidebarCursor = TargetPage() ? TargetPage()->sidebarItem : SidebarLibrary;
+    if (TargetPage())
+        TargetPage()->SetFocused(false);
+}
+
+void AppMenu::FocusContent()
+{
+    m_sidebarFocus = false;
+    if (TargetPage())
+        TargetPage()->SetFocused(true);
+}
+
+void AppMenu::BackFromPage()
+{
+    if (m_resources.emulator && m_resources.emulator->HasGame())
+        Hide();
+    else
+        FocusSidebar();
 }
 
 // -----------------------------------------------------------------------
 // Update
+
+void AppMenu::SetPointer(bool present, float x, float y, bool down, float scroll, bool drawDot)
+{
+    m_pointer.present = present;
+    m_pointer.x = x;
+    m_pointer.y = y;
+    m_pointer.down = down;
+    m_pointer.scroll += scroll;
+    m_pointer.drawDot = drawDot;
+}
+
+float AppMenu::SidebarItemHeight(int item) const
+{
+    return kNavPitch + (item == SidebarResume && SidebarEnabled(SidebarResume) ? kNavSubtitleExtra : 0.0f);
+}
+
+float AppMenu::SidebarItemY(int item) const
+{
+    float y = kNavTop;
+    for (int i = 0; i < item; ++i)
+        y += SidebarItemHeight(i);
+    return y;
+}
+
+void AppMenu::HandlePointer()
+{
+    Pointer &p = m_pointer;
+    const bool clicked = p.present && p.down && !p.wasDown;
+    // (just arrived - e.g. the app starting under a resting mouse - isn't a move)
+    if (p.present && p.lastX < 0.0f)
+    {
+        p.lastX = p.x;
+        p.lastY = p.y;
+    }
+    const bool moved = p.present && (std::abs(p.x - p.lastX) > 0.01f || std::abs(p.y - p.lastY) > 0.01f);
+    const float scroll = p.scroll;
+    p.wasDown = p.down;
+    p.lastX = p.x;
+    p.lastY = p.y;
+    p.scroll = 0.0f;
+    m_sidebarHover = -1;
+    if (!p.present)
+    {
+        p.lastX = p.lastY = -1.0f;
+        return;
+    }
+
+    if (p.x < kSidebarWidth)
+    {
+        for (int i = 0; i < SidebarCount; ++i)
+        {
+            const float y = SidebarItemY(i) - 3.0f;
+            if (SidebarEnabled(i) && p.y >= y && p.y < y + SidebarItemHeight(i) - 2.0f)
+                m_sidebarHover = i;
+        }
+        if (clicked && m_sidebarHover >= 0)
+        {
+            FocusSidebar();
+            m_sidebarCursor = m_sidebarHover;
+            ActivateSidebar(true);
+        }
+        return;
+    }
+
+    if (p.y >= kMenuHeight - kHintsHeight)
+    {
+        // The hints are buttons too: B, and Y.
+        for (const HintRect &hint : m_hintRects)
+        {
+            if (!clicked || p.x < hint.x0 || p.x > hint.x1)
+                continue;
+            if (hint.icon == UiIconId::ButtonB)
+            {
+                if (m_sidebarFocus)
+                {
+                    if (m_sidebarMenu.BackPress)
+                        m_sidebarMenu.BackPress();
+                }
+                else if (TargetPage())
+                    TargetPage()->PressBack();
+            }
+            else if (hint.icon == UiIconId::ButtonY && !m_sidebarFocus && TargetPage())
+                TargetPage()->PressY();
+        }
+        return;
+    }
+
+    MenuPage *page = TargetPage();
+    if (!page || m_nextPage)
+        return;
+    if ((moved || clicked) && m_sidebarFocus && page->HasFocusable())
+        FocusContent();
+    MenuPointer pointer;
+    pointer.x = p.x;
+    pointer.y = p.y;
+    pointer.moved = moved;
+    pointer.clicked = clicked;
+    pointer.scroll = scroll;
+    page->HandlePointer(pointer);
+}
 
 void AppMenu::Update(uint32_t buttonStates[3], uint32_t lastButtonStates[3], float deltaSeconds)
 {
@@ -312,6 +552,9 @@ void AppMenu::Update(uint32_t buttonStates[3], uint32_t lastButtonStates[3], flo
                                                           : std::max(visibilityTarget, m_visibility - step);
     }
 
+    // Thumbnails are made while the menu is open (the game paused).
+    m_thumbnails.Update(m_open);
+
     if (m_open && m_pendingPage)
     {
         // Apply a page switch deferred by StartTransition while closed (see
@@ -322,10 +565,19 @@ void AppMenu::Update(uint32_t buttonStates[3], uint32_t lastButtonStates[3], flo
         m_pendingPage = nullptr;
         m_currentPage->ResetSelection();
         m_currentPage->OnShow();
+        m_currentPage->SetFocused(!m_sidebarFocus);
     }
 
     if (!m_open)
+    {
+        m_pointer.wasDown = m_pointer.down;
+        m_pointer.scroll = 0.0f;
         return; // closed - no page should react to input meant for gameplay
+    }
+
+    // (the sidebar's cursor stays on something there - e.g. no game: no Resume)
+    if (!SidebarEnabled(m_sidebarCursor))
+        m_sidebarCursor = TargetPage() ? TargetPage()->sidebarItem : SidebarLibrary;
 
     if (m_transitionState > 0.0f)
     {
@@ -336,21 +588,36 @@ void AppMenu::Update(uint32_t buttonStates[3], uint32_t lastButtonStates[3], flo
             m_currentPage = m_nextPage;
             m_nextPage = nullptr;
         }
-        return; // don't process input during transition
     }
 
+    HandlePointer();
+
     const bool wasOpen = m_open;
-    if (m_currentPage)
+    if (m_sidebarFocus)
+        m_sidebarMenu.Update(buttonStates, lastButtonStates, deltaSeconds);
+    else if (m_transitionState <= 0.0f && m_currentPage)
+    {
         m_currentPage->Update(buttonStates, lastButtonStates, deltaSeconds);
+        if (m_sidebarFocus) // (it moved to the sidebar meanwhile)
+            m_currentPage->SetFocused(false);
+    }
     if (wasOpen && !m_open)
     {
-        // Both the press that picked a menu entry (A) and the one that
-        // backed out of the menu (B) are still held as gameplay resumes.
+        // Both the press that picked a menu entry (A, or a pointer's
+        // trigger) and the one that backed out of the menu (B) are still
+        // held as gameplay resumes.
         const uint32_t closeMask = ButtonMapper::ButtonMapping[ButtonMapper::EmuButton_A] |
-                                   ButtonMapper::ButtonMapping[ButtonMapper::EmuButton_B];
-        m_suppressedMenuButtons[ButtonMapper::DeviceGamepad] = buttonStates[ButtonMapper::DeviceGamepad] & closeMask;
-        m_suppressedMenuButtons[ButtonMapper::DeviceRightTouch] = buttonStates[ButtonMapper::DeviceRightTouch] & closeMask;
+                                   ButtonMapper::ButtonMapping[ButtonMapper::EmuButton_B] |
+                                   ButtonMapper::ButtonMapping[ButtonMapper::EmuButton_Trigger];
+        for (int device = 0; device < 3; ++device)
+            m_suppressedMenuButtons[device] = buttonStates[device] & closeMask;
     }
+
+    // (the subtitle may name a game - its glyphs baked before drawing)
+    if (m_ui && TargetPage())
+        m_ui->EnsureGlyphsForText(m_resources.cardFont, TargetPage()->Subtitle());
+    if (m_ui && m_resources.emulator)
+        m_ui->EnsureGlyphsForText(m_resources.captionFont, m_resources.emulator->RomName() + "\xE2\x80\xA6");
 }
 
 void AppMenu::ApplyGameplayInputSuppression(uint32_t buttonStates[3]) const
@@ -361,7 +628,7 @@ void AppMenu::ApplyGameplayInputSuppression(uint32_t buttonStates[3]) const
 
 void AppMenu::SubmitRawMappingInput(const ButtonMapper::MappedButton &button)
 {
-    if (m_open && m_currentPage && m_transitionState <= 0.0f)
+    if (m_open && m_currentPage && m_transitionState <= 0.0f && !m_sidebarFocus)
         m_currentPage->SubmitRawCaptureInput(button);
 }
 
@@ -370,129 +637,148 @@ void AppMenu::SubmitRawMappingInput(const ButtonMapper::MappedButton &button)
 
 XrColor4f AppMenu::GetBackgroundColor() const { return kClearColor; }
 
-void AppMenu::RenderContent(UiRenderer &ui)
+std::vector<MenuHint> AppMenu::CurrentHints() const
 {
-    // Background regions
-    ui.DrawQuad(0, 0, kMenuWidth, kHeaderHeight, kMenuOverlayColor);
-    ui.DrawQuad(0, kHeaderHeight, kMenuWidth, kMenuHeight - kHeaderHeight - kBottomHeight, kMenuBodyColor);
-    ui.DrawQuad(0, kMenuHeight - kBottomHeight, kMenuWidth, kBottomHeight, kMenuOverlayColor);
-    // A thin stripe in the title's colors under the header.
+    const bool game = m_resources.emulator && m_resources.emulator->HasGame();
+    if (m_sidebarFocus)
     {
-        constexpr float kStripe = 1.5f;
-        const float segment = kMenuWidth / 5.0f;
-        for (int i = 0; i < 5; ++i)
-        {
-            XrColor4f c = TitleLetterColor(i);
-            c.a = 0.85f;
-            ui.DrawQuad(segment * i, kHeaderHeight - kStripe, segment + (i < 4 ? 0.5f : 0.0f), kStripe, c);
-        }
+        std::vector<MenuHint> hints;
+        if (m_sidebarCursor == SidebarResume)
+            hints.push_back({UiIconId::ButtonA, "Resume"});
+        else if (TargetPage() && TargetPage()->HasFocusable())
+            hints.push_back({UiIconId::ButtonA, "Open"});
+        if (game)
+            hints.push_back({UiIconId::ButtonB, "Resume"});
+        return hints;
     }
+    MenuPage *page = TargetPage();
+    if (!page)
+        return {};
+    std::vector<MenuHint> hints = page->Hints();
+    // On the sidebar's own pages B goes back to the game.
+    const bool topLevel = page == &m_libraryPage || page == &m_saveStatesPage || page == &m_settingsPage || page == &m_aboutPage;
+    for (MenuHint &hint : hints)
+        if (hint.icon == UiIconId::ButtonB && topLevel && game)
+            hint.label = "Resume";
+    return hints;
+}
 
-    // Bottom-bar button hints ("[A] Select" / "[B] Back") - helps players
-    // navigate without having to guess which button does what. "Back" only
-    // shows on pages that actually have somewhere to go (MainPage is the
-    // root). Right-anchored near the edge with both groups pulled close
-    // together - measured off the actual text width so the gap stays tight
-    // regardless of font metrics, rather than hand-picked fixed positions.
+void AppMenu::DrawHints(UiRenderer &ui)
+{
+    const float lineY = kMenuHeight - kHintsHeight;
+    ui.DrawQuad(kContentX - 2.0f, lineY, kContentRight - kContentX + 4.0f, 0.6f, kMenuLineColor);
+    constexpr float kIcon = 8.0f, kIconGap = 2.5f, kGroupGap = 9.0f;
+    const float centerY = lineY + kHintsHeight / 2.0f + 0.5f;
+    const UiFontHandle font = m_resources.cardFont;
+    float x = kContentX;
+    m_hintRects.clear();
+    for (const MenuHint &hint : CurrentHints())
     {
-        const UiIconId selectIcon = UiIconId::ButtonA;
-        const UiIconId backIcon = UiIconId::ButtonB;
-        const bool showBack = m_currentPage && m_currentPage->HasBackAction();
-
-        constexpr float kHintIconSize = 9.0f;
-        constexpr float kHintIconGap = 2.0f;
-        constexpr float kHintRightMargin = 8.0f;
-        constexpr float kHintGroupGap = 4.0f;
-
-        const float barCenterY = kMenuHeight - kBottomHeight / 2.0f;
-        const float iconY = barCenterY - kHintIconSize / 2.0f;
-        const float textY = barCenterY - ui.GetFontPHeight(m_resources.smallFont) / 2.0f - ui.GetFontPStart(m_resources.smallFont);
-
-        const float selectTextW = ui.GetTextWidth(m_resources.smallFont, "Select");
-        const float selectGroupW = kHintIconSize + kHintIconGap + selectTextW;
-        const float selectX = kMenuWidth - kHintRightMargin - selectGroupW;
-
-        if (showBack)
-        {
-            const float backTextW = ui.GetTextWidth(m_resources.smallFont, "Back");
-            const float backGroupW = kHintIconSize + kHintIconGap + backTextW;
-            const float backX = selectX - kHintGroupGap - backGroupW;
-            m_icons.Draw(ui, backIcon, backX, iconY, kHintIconSize);
-            ui.DrawText(m_resources.smallFont, "Back", backX + kHintIconSize + kHintIconGap, textY, 1.0f, kMenuTextColor);
-        }
-        m_icons.Draw(ui, selectIcon, selectX, iconY, kHintIconSize);
-        ui.DrawText(m_resources.smallFont, "Select", selectX + kHintIconSize + kHintIconGap, textY, 1.0f, kMenuTextColor);
+        const float x0 = x;
+        m_icons.Draw(ui, hint.icon, x, centerY - kIcon / 2.0f, kIcon, 1.0f, kMenuTextColor);
+        x += kIcon + kIconGap;
+        ui.DrawText(font, hint.label, x, TextY(ui, font, centerY), 1.0f, kMenuDimTextColor);
+        x += ui.GetTextWidth(font, hint.label);
+        m_hintRects.push_back({hint.icon, x0 - 2.0f, x + 2.0f});
+        x += kGroupGap;
     }
+}
 
-    // Centred header: the logo (or, without it, its words in its colors)
-    const float headerTextY = kHeaderHeight / 2.0f - ui.GetFontPHeight(m_titleFont) / 2.0f - ui.GetFontPStart(m_titleFont);
-    if (m_logoTexture.IsValid() && m_logoDrawHeight > 0)
+void AppMenu::DrawSidebar(UiRenderer &ui)
+{
+    ui.DrawQuad(0, 0, kSidebarWidth, kMenuHeight, kMenuSidebarColor);
+    ui.DrawQuad(kSidebarWidth - 0.6f, 0, 0.6f, kMenuHeight, kMenuLineColor);
+
+    // The logo, 1:1 with the texture's pixels, and the version beside it.
+    float textX = kLogoX;
+    if (m_logo.texture.IsValid() && m_logo.drawHeight > 0)
     {
-        // 1:1 with the texture's pixels: its size in menu units at this
-        // scale, on whole pixels.
-        const float w = m_logoDrawWidth / m_menuScale, h = m_logoDrawHeight / m_menuScale;
-        const float x = std::round((kMenuWidth - w) / 2.0f * m_menuScale) / m_menuScale;
-        const float y = std::round((kHeaderHeight - 1.5f - h) / 2.0f * m_menuScale) / m_menuScale;
-        ui.DrawImageRegion(m_logoTexture, x, y, w, h, 0.0f, 0.0f, static_cast<float>(m_logoDrawWidth) / m_logoTexWidth,
-                           static_cast<float>(m_logoDrawHeight) / m_logoTexHeight);
+        const float w = m_logo.drawWidth / m_menuScale, h = m_logo.drawHeight / m_menuScale;
+        const float x = std::round(kLogoX * m_menuScale) / m_menuScale;
+        const float y = std::round(kLogoY * m_menuScale) / m_menuScale;
+        ui.DrawImageRegion(m_logo.texture, x, y, w, h, 0.0f, 0.0f, static_cast<float>(m_logo.drawWidth) / m_logo.texWidth,
+                           static_cast<float>(m_logo.drawHeight) / m_logo.texHeight);
+        textX = kLogoX + w + 5.0f;
     }
     else
+        ui.DrawText(m_resources.bodyBoldFont, "VBoy Color", kLogoX, TextY(ui, m_resources.bodyBoldFont, kLogoY + 5.0f), 1.0f,
+                    kMenuTextColor);
+    const float logoCenter = kLogoY + kLogoHeight / 2.0f;
+    if (m_versionLine2.empty())
+        ui.DrawText(m_resources.cardBoldFont, m_versionLine1, textX, TextY(ui, m_resources.cardBoldFont, logoCenter), 1.0f,
+                    kMenuTextColor);
+    else
     {
-        const char *kFirst = "VBOY ";
-        const char *kSecond = "COLOR";
-        float x = (kMenuWidth - ui.GetTextWidth(m_titleFont, std::string(kFirst) + kSecond)) / 2.0f;
-        ui.DrawText(m_titleFont, kFirst, x + 0.5f, headerTextY + 0.5f, 1.0f, kHeaderTextBackColor);
-        ui.DrawText(m_titleFont, kFirst, x, headerTextY, 1.0f, kLogoRed);
-        x += ui.GetTextWidth(m_titleFont, kFirst);
-        for (int i = 0; kSecond[i]; ++i)
+        ui.DrawText(m_resources.cardBoldFont, m_versionLine1, textX, TextY(ui, m_resources.cardBoldFont, logoCenter - 4.5f),
+                    1.0f, kMenuTextColor);
+        ui.DrawText(m_resources.captionFont, m_versionLine2, textX, TextY(ui, m_resources.captionFont, logoCenter + 4.5f),
+                    1.0f, kMenuDimTextColor);
+    }
+    // A thin stripe in the logo's colors.
+    {
+        constexpr float kStripeY = 35.0f, kStripeH = 1.2f, kSegment = 14.0f;
+        for (int i = 0; i < 5; ++i)
+            ui.DrawQuad(kLogoX + kSegment * i, kStripeY, kSegment + (i < 4 ? 0.3f : 0.0f), kStripeH,
+                        WithAlpha(TitleLetterColor(i), 0.9f));
+    }
+
+    // The pages.
+    static constexpr const char *kNames[SidebarCount] = {"Library", "Resume", "Save states", "Settings", "About"};
+    static constexpr UiIconId kIcons[SidebarCount] = {UiIconId::RomList, UiIconId::Resume, UiIconId::SaveSlot,
+                                                      UiIconId::Settings, UiIconId::Header};
+    const int active = TargetPage() ? TargetPage()->sidebarItem : -1;
+    for (int i = 0; i < SidebarCount; ++i)
+    {
+        const float y = SidebarItemY(i);
+        const float h = SidebarItemHeight(i) - 4.0f;
+        const bool enabled = SidebarEnabled(i);
+        const bool cursor = m_sidebarFocus && i == m_sidebarCursor;
+        const bool on = i == active;
+        if (cursor)
         {
-            const std::string letter(1, kSecond[i]);
-            ui.DrawText(m_titleFont, letter, x + 0.5f, headerTextY + 0.5f, 1.0f, kHeaderTextBackColor);
-            ui.DrawText(m_titleFont, letter, x, headerTextY, 1.0f, TitleLetterColor(i));
-            x += ui.GetTextWidth(m_titleFont, letter);
+            ui.DrawQuadRounded(5.0f, y - 3.0f, 76.0f, h, kMenuSelectionColor, 5.0f);
+            ui.DrawQuadRounded(6.1f, y - 1.9f, 73.8f, h - 2.2f, kMenuSidebarColor, 3.9f);
+            ui.DrawQuadRounded(6.1f, y - 1.9f, 73.8f, h - 2.2f, {1.0f, 0.79f, 0.34f, 0.16f}, 3.9f);
+        }
+        else if (on)
+        {
+            ui.DrawQuadRounded(5.0f, y - 3.0f, 76.0f, h, kMenuSelectionFillColor, 5.0f);
+            ui.DrawQuadRounded(5.0f, y, 2.0f, 10.0f, kMenuSelectionColor, 1.0f);
+        }
+        else if (i == m_sidebarHover)
+            ui.DrawQuadRounded(5.0f, y - 3.0f, 76.0f, h, kMenuHighlightColor, 5.0f);
+        const XrColor4f color = (cursor || on) ? kMenuSelectionColor : enabled ? kMenuTextColor : WithAlpha(kMenuDimTextColor, 0.6f);
+        m_icons.Draw(ui, kIcons[i], 12.0f, y, kNavIconSize, 1.0f, color);
+        const UiFontHandle font = (cursor || on) ? m_resources.bodyBoldFont : m_resources.bodyFont;
+        ui.DrawText(font, kNames[i], 27.0f, TextY(ui, font, y + kNavIconSize / 2.0f), 1.0f, color);
+        if (i == SidebarResume && enabled)
+        {
+            // The game it goes back to.
+            const std::string game = WithoutRegion(m_resources.emulator->RomName());
+            std::string shown = game;
+            while (shown.size() > 1 && ui.GetTextWidth(m_resources.captionFont, shown) > 52.0f)
+                shown.pop_back();
+            if (shown != game)
+                shown += "\xE2\x80\xA6";
+            ui.DrawText(m_resources.captionFont, shown, 27.0f, TextY(ui, m_resources.captionFont, y + 15.0f), 1.0f,
+                        kMenuDimTextColor);
         }
     }
 
-    const bool showBattery = m_batteryPercent >= 0 && m_batteryPercent <= 100;
+    // The clock (and battery).
+    std::string status = CurrentTimeString();
+    if (m_batteryPercent >= 0 && m_batteryPercent <= 100)
+        status += "  \xC2\xB7  Battery " + std::to_string(m_batteryPercent) + "%";
+    ui.DrawText(m_resources.captionFont, status, kLogoX, TextY(ui, m_resources.captionFont, kMenuHeight - 10.0f), 1.0f,
+                kMenuDimTextColor);
+}
 
-    // Clock - always shown, needs no platform hook (std::time works
-    // everywhere, unlike battery level). Without a battery row under it it
-    // sits at the bottom of the header instead of on its own row.
-    {
-        const std::string timeText = CurrentTimeString();
-        const float timeWidth = ui.GetTextWidth(m_resources.smallFont, timeText);
-        const float timeTextY = showBattery
-                                    ? kTimeRowCenterY - ui.GetFontPHeight(m_resources.smallFont) / 2.0f -
-                                          ui.GetFontPStart(m_resources.smallFont)
-                                    : kHeaderHeight - kHeaderBottomMargin - ui.GetFontPHeight(m_resources.smallFont) -
-                                          ui.GetFontPStart(m_resources.smallFont);
-        ui.DrawText(m_resources.smallFont, timeText, kMenuWidth - kHeaderRightMargin - timeWidth + 0.5f, timeTextY + 0.5f, 1.0f, kHeaderTextBackColor);
-        ui.DrawText(m_resources.smallFont, timeText, kMenuWidth - kHeaderRightMargin - timeWidth, timeTextY, 1.0f, kMenuTextColor);
-    }
+void AppMenu::RenderContent(UiRenderer &ui)
+{
+    ui.DrawQuad(0, 0, kMenuWidth, kMenuHeight, kMenuBodyColor);
 
-    if (showBattery)
-    {
-        const float blockX = kMenuWidth - kHeaderRightMargin - kBatteryBlockWidth;
-        const float blockY = kBatteryRowCenterY - kBatteryBlockHeight / 2.0f;
-
-        ui.DrawQuadRounded(blockX - kBatteryPadding, blockY - kBatteryPadding,
-                           kBatteryBlockWidth + kBatteryPadding * 2, kBatteryBlockHeight + kBatteryPadding * 2,
-                           kBatteryBackgroundColor, kBatteryCornerRadiusPx);
-
-        const float fillHeight = m_batteryPercent / 100.0f * kBatteryBlockHeight;
-        ui.DrawQuadRounded(blockX, blockY + (kBatteryBlockHeight - fillHeight), kBatteryBlockWidth, fillHeight,
-                           BatteryColorForPercent(m_batteryPercent), kBatteryCornerInsideRadiusPx);
-
-        const std::string batteryText = std::to_string(m_batteryPercent) + "%";
-        const float textWidth = ui.GetTextWidth(m_resources.smallFont, batteryText);
-        const float textY = kBatteryRowCenterY - ui.GetFontPHeight(m_resources.smallFont) / 2.0f -
-                            ui.GetFontPStart(m_resources.smallFont);
-
-        ui.DrawText(m_resources.smallFont, batteryText, blockX - kBatteryPadding - 2.0f - textWidth + 0.5f, textY + 0.5f, 1.0f, kHeaderTextBackColor);
-        ui.DrawText(m_resources.smallFont, batteryText, blockX - kBatteryPadding - 2.0f - textWidth, textY, 1.0f, kMenuTextColor);
-    }
-
-    // Draw current page + next page (sliding in/out).
+    // Draw current page + next page (sliding in/out) - sideways when a page
+    // opens another, up/down when the sidebar switches pages.
     // Matches the reference (FrontendGo MenuGo::DrawMenu):
     //   - current page starts at its natural position (offset 0) and slides away
     //   - next page starts displaced by dist and slides in to offset 0
@@ -502,15 +788,24 @@ void AppMenu::RenderContent(UiRenderer &ui)
         const float rawProgress = m_transitionState; // 1.0 -> 0.0
         const float eased = std::sin(rawProgress * (3.14159265f / 2.0f));
         const float dist = kTransitionSlideDistance;
-
-        // Current page: offset ramps from 0 up to dist (slides away)
-        m_currentPage->Draw(ui, -m_transitionDir, 1.0f - eased, dist, rawProgress);
-        // Next page: offset ramps from dist down to 0 (slides in)
-        m_nextPage->Draw(ui, m_transitionDir, eased, dist, 1.0f - rawProgress);
+        const int dx = m_transitionVertical ? 0 : m_transitionDir;
+        const int dy = m_transitionVertical ? m_transitionDir : 0;
+        m_currentPage->Draw(ui, -dx, -dy, 1.0f - eased, dist, rawProgress);
+        m_nextPage->Draw(ui, dx, dy, eased, dist, 1.0f - rawProgress);
     }
     else if (m_currentPage)
     {
-        m_currentPage->Draw(ui, 0, 0.0f, 0, 1.0f);
+        m_currentPage->Draw(ui, 0, 0, 0.0f, 0, 1.0f);
+    }
+
+    DrawHints(ui);
+    DrawSidebar(ui);
+
+    // Where the laser points.
+    if (m_pointer.present && m_pointer.drawDot)
+    {
+        ui.DrawQuadRounded(m_pointer.x - 3.0f, m_pointer.y - 3.0f, 6.0f, 6.0f, {1.0f, 1.0f, 1.0f, 0.25f}, 3.0f);
+        ui.DrawQuadRounded(m_pointer.x - 1.6f, m_pointer.y - 1.6f, 3.2f, 3.2f, {1.0f, 1.0f, 1.0f, 1.0f}, 1.6f);
     }
 }
 
@@ -536,11 +831,9 @@ void AppMenu::Draw(UiRenderer &ui, float x, float y)
     // 1:1 at scale=1 - m_offscreenTexture is already the full kMenuWidth*
     // m_menuScale physical size, so no scaling happens at composite time
     // beyond the open/close animation above (see Initialize).
-    // kPanelCornerRadiusPx itself DOES need scaling here though, unlike the
-    // battery/scrollbar corner radii - this draw call composites onto the
-    // real (physical) target, not into the logical-space offscreen buffer,
-    // so nothing else scales it up automatically the way BeginOffscreenFrame's
-    // logicalWidth/logicalHeight trick does for everything drawn inside RenderContent.
+    // kPanelCornerRadiusPx itself DOES need scaling here though - this draw
+    // call composites onto the real (physical) target, not into the
+    // logical-space offscreen buffer.
     const float fullW = kMenuWidth * m_menuScale;
     const float fullH = kMenuHeight * m_menuScale;
     const float w = fullW * scale;

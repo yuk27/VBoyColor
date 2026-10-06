@@ -24,7 +24,7 @@ pack).*
 
 ## Features
 
-- **Color, four ways** (Settings → Color Mode):
+- **Color, four ways** (Settings → Color mode):
   - **Auto** (default) - every pixel is colored by what drew it: background
     layers by their depth (far to near: dusk violet, brick, amber, sand),
     characters by their palette, each with dark/light/lightest steps. What a
@@ -48,14 +48,20 @@ pack).*
   suits it best (picked game by game: Red Alarm's wireframes by depth,
   Golf's fairways green, Virtual Bowling's lanes in Sunset wood...),
   and remembers yours once you change it.
+- **A library of your games** - each one a card with its title screen in
+  its own colors, made on your device the first time (nothing of any game
+  ships with the app). Or a list (Y), or - Settings → Download box art, off
+  by default - the box art from libretro's thumbnail collection. Pick with
+  the sticks, a gamepad, the mouse, or by pointing a Quest controller and
+  pulling its trigger.
 - **Real 3D on Quest** - each eye gets its own picture, as on the hardware,
   and both eyes always show the same colors.
 - **Save states** - several slots per game, with thumbnails in color.
 - **Button mapping** - Quest controllers, gamepads and keyboard, all
   remappable.
 - **Screen placement** - size and distance of the screen in VR.
-- **Your room as the background** (Quest) - Settings → Adjust Screen →
-  Background: Your room shows the game floating in your room (passthrough)
+- **Your room as the background** (Quest) - Settings → Adjust screen →
+  Show your room around it: the game floats in your room (passthrough)
   instead of in the dark.
 - **Video recording** (PC) - F12 records the original red and the colored
   version side by side, frame for frame, for comparison videos.
@@ -92,7 +98,9 @@ Download `VBoyColor-linux-<version>.tar.gz`, unpack it, put your ROMs in
 **Menu:** left stick click (Quest controllers and gamepads), the left
 controller's Menu button, or **Tab** on PC (gamepad: Guide or left stick
 click). Some PC VR runtimes keep the Menu button for themselves - the stick
-click always works.
+click always works. In the menu: sticks / D-pad / arrow keys move, A (Enter)
+picks, B (Esc) goes back - out to the sidebar, or back to the game. The
+mouse and the Quest controllers' lasers (trigger) work too.
 
 | Virtual Boy | Quest controllers | Keyboard | Gamepad (PC) |
 |---|---|---|---|
@@ -102,7 +110,7 @@ click always works.
 | L / R | left / right trigger | Q / E | LB / RB |
 | Start / Select | Y / X | Enter / Backspace | Start / Back |
 
-Everything can be remapped in Settings → Button Mapping. On PC,
+Everything can be remapped in Settings → Button mapping. On PC,
 **Alt+Enter** toggles fullscreen.
 
 ## Building

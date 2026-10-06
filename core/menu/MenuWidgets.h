@@ -12,6 +12,16 @@
 #include <string>
 #include <vector>
 
+// A mouse (desktop) or controller laser (Quest) over the menu, in its
+// logical units - see AppMenu::SetPointer.
+struct MenuPointer
+{
+    float x = 0, y = 0;
+    bool moved = false;   // it moved since last frame: hovering selects
+    bool clicked = false; // pressed this frame
+    float scroll = 0;     // wheel/stick scroll this frame, in rows (+ = down)
+};
+
 // Ported from FrontendGo's MenuHelper.h/.cpp - the navigation/selection
 // state machine (Menu::Update/MoveSelection/ButtonPressed) is carried over
 // near-verbatim (it only ever touched the abstract uint[3] button-bitmask
@@ -64,6 +74,11 @@ public:
     virtual void ResetSelection() {}
 
     virtual void Draw(UiRenderer &ui, float offsetX, float offsetY, float alpha);
+
+    // The pointer over this item: hovering moves the item's own selection,
+    // a click acts on what it's over. True if it was over this item (the
+    // Menu then makes it the current item).
+    virtual bool HandlePointer(const MenuPointer & /*pointer*/) { return false; }
 };
 
 class Menu
@@ -75,6 +90,12 @@ public:
     float buttonDownCount = 0;
 
     std::function<void()> BackPress;
+    // Left pressed (freshly - not held) where the current item has nothing
+    // further left: AppMenu moves the focus to its sidebar.
+    std::function<void()> LeftEdge;
+    // The Y / X face buttons (a gamepad's, or the left Quest controller's).
+    std::function<void()> YPress;
+    std::function<void()> XPress;
 
     // If set, called each Update() instead of normal navigation. The entire
     // capture frame is consumed even when the hook completes, so a captured
@@ -97,6 +118,10 @@ public:
     void Update(uint32_t *buttonState, uint32_t *lastButtonState, float deltaSeconds);
 
     void Draw(UiRenderer &ui, int transitionDirX, int transitionDirY, float moveProgress, float moveDist, float fadeProgress);
+
+    // Hands the pointer to the items (see MenuItem::HandlePointer).
+    void HandlePointer(const MenuPointer &pointer);
+    bool HasSelectable() const;
 
     // Resets the top-level cursor to the first selectable item and resets
     // every item's own internal selection (e.g. MenuList's scroll cursor).
@@ -189,41 +214,51 @@ private:
     std::function<int()> m_patternIndexProvider;
 };
 
-// A vertically scrollable list that fills a fixed content rect. Handles its
-// own up/down selection and draws a scrollbar when entries don't fit.
-// Pages add entries via AddEntry() without managing Y positions at all.
+// A vertically scrollable list that fills a fixed content rect: rows on
+// rounded cards, grouped under small headers (AddHeader) or split by
+// spacers (AddSpacer), each row a label on the left and - optionally - a
+// value, a toggle switch or an accessory (e.g. color swatches) on the right.
+// Handles its own up/down selection, scrolls smoothly to keep it in view and
+// draws a scrollbar when entries don't fit. Pages add entries via AddEntry()
+// without managing Y positions at all.
 class MenuList : public MenuItem
 {
 public:
     // posX/posY/width/height define the bounding rect the list fills.
     // icons may be null for pages that don't pass any entries an icon.
+    // itemHeight: each row's height. font: the rows' labels and values.
     MenuList(UiRenderer &ui, UiFontHandle font, float posX, float posY, float width, float height, float itemHeight,
              const UiIconSet *icons = nullptr);
 
+    // The selected row's label (default: font) and the group headers'
+    // (default: font).
+    void SetFonts(UiFontHandle boldFont, UiFontHandle headerFont);
+
     // Whether a row's icon also tints to SelectionColor while selected (like
-    // its text already does). On by default; RomSelectPage turns this off -
-    // its icon is just the fixed cartridge glyph, not a status indicator.
+    // its text already does). On by default.
     bool TintIconOnSelect = true;
-    // Drawn behind the selected row (alpha 0 = none).
+    // Unused (kept for pages that still set it): the selected row is drawn
+    // amber-outlined instead.
     XrColor4f HighlightColor{0.0f, 0.0f, 0.0f, 0.0f};
 
-    // Draws an arbitrary accessory (e.g. color swatches) into a row's rect -
-    // rowX/rowY/rowW/rowH are the row's full content-space bounds, so the
-    // callback can right-align itself against rowX+rowW, or - using
-    // kIconSize/kIconTextGap below plus its own text measurement - sit
-    // directly after that row's icon+label instead.
+    // Draws an arbitrary accessory (e.g. color swatches) into a row's
+    // value area - rowX/rowY/rowW/rowH are the row's full content-space
+    // bounds; accessories right-align against rowX + rowW - kValueRightPad.
     using AccessoryDrawFn = std::function<void(UiRenderer &ui, float rowX, float rowY, float rowW, float rowH, float alpha)>;
 
-    // Icon size/gap every row uses ahead of its label - public so an
-    // AccessoryDrawFn can replicate the same icon+text starting offset.
+    // Icon size/gap every row uses ahead of its label, and the right
+    // margin of the value area.
     static constexpr float kIconSize = 10.0f;
-    static constexpr float kIconTextGap = 4.0f;
+    static constexpr float kIconTextGap = 5.0f;
+    static constexpr float kRowPad = 8.0f;
+    static constexpr float kChevronWidth = 9.0f;
+    static constexpr float kValueRightPad = kRowPad + kChevronWidth;
 
-    // One row of the list. AddEntry/AddSpacer hand it back as a shared_ptr so
-    // a page can keep it and change any property later: text via SetText
-    // (re-bakes glyphs, so a raw text = ... would miss new ones), everything
-    // else (icon, colors, callbacks, ...) by direct assignment. Read live
-    // every frame by Draw - no separate "apply" step.
+    // One row of the list. AddEntry/AddSpacer/AddHeader hand it back as a
+    // shared_ptr so a page can keep it and change any property later: text
+    // via SetText/SetValue (re-bakes glyphs, so a raw text = ... would miss
+    // new ones), everything else (icon, callbacks, ...) by direct
+    // assignment. Read live every frame by Draw - no separate "apply" step.
     class Entry
     {
     public:
@@ -234,23 +269,32 @@ public:
         UiIconId icon = UiIconId::None;
         AccessoryDrawFn accessoryDraw;
         bool isSpacer = false;
+        bool isHeader = false;
         float height = 0; // only used when isSpacer
         // Set false to collapse this row to zero height and skip it during
-        // Up/Down navigation - same treatment as isSpacer (see PressedUp/
-        // PressedDown/rowHeight), but toggleable at runtime instead of fixed
-        // at AddEntry time. Used by SettingsPage to hide the R/G/B rows
-        // while a screen pattern (as opposed to a flat tint) is selected.
+        // Up/Down navigation - toggleable at runtime. Used by SettingsPage
+        // to hide the R/G/B rows while a screen pattern (as opposed to a
+        // flat tint) is selected.
         bool Visible = true;
 
-        // Two-column rows (twoColumn == true) draw `text` and `textSecondary`
-        // side by side after the icon - Left/Right move the highlight between
-        // the two columns (see MenuList::GetActiveColumn) instead of calling
-        // left/rightFunction, and pressFunction fires for whichever column is
-        // active. Used by the button-mapping page's per-button primary +
-        // secondary bindings.
+        // Right-aligned value (e.g. "Auto"). With left/rightFunction the
+        // row shows it between chevrons (adjust with Left/Right).
+        std::string value;
+        // A toggle switch on the right instead of a value: its state.
+        std::function<bool()> toggle;
+        // A "›" on the right: pressing opens another page.
+        bool opensPage = false;
+
+        // Two-column rows (twoColumn == true) draw `caption` as the label and
+        // `text` / `textSecondary` as two side-by-side chips on the right -
+        // Left/Right move the highlight between the two (see
+        // MenuList::GetActiveColumn) instead of calling left/rightFunction,
+        // and pressFunction fires for whichever column is active. Used by
+        // the button-mapping page's per-button primary + secondary bindings.
         bool twoColumn = false;
+        std::string caption;
         std::string textSecondary;
-        bool centered = false;         // centers the icon+label group within the row
+        bool centered = false;         // an action row: its label centered (e.g. "Reset mapping")
         bool tintIconOnSelect = false; // per-entry override when the list disables tint
         bool reserveIconSpace = false; // align text with icon rows without drawing an icon
 
@@ -259,6 +303,8 @@ public:
         // pre-baked) - see UiFontManager::EnsureGlyphsForText. Call outside a
         // frame only (it may re-upload the font atlas).
         void SetText(const std::string &newText);
+        void SetValue(const std::string &newValue);
+        void SetCaption(const std::string &newCaption);
         // Second-column label for a twoColumn row (same baking rules).
         void SetSecondaryText(const std::string &newText);
 
@@ -280,9 +326,11 @@ public:
                                     UiIconId icon = UiIconId::None,
                                     AccessoryDrawFn accessoryDraw = nullptr);
 
-    // Adds (and returns) a non-selectable blank row of the given height, used
-    // to visually separate logical groups of entries.
+    // Adds (and returns) a gap between two cards of rows (height: kept for
+    // callers, the gap is always the same).
     std::shared_ptr<Entry> AddSpacer(float height);
+    // Adds a small header above the next card of rows.
+    std::shared_ptr<Entry> AddHeader(const std::string &text);
 
     // Which column (0 or 1) is highlighted on the current two-column row -
     // read by a twoColumn entry's pressFunction to know which slot to act on.
@@ -295,30 +343,31 @@ public:
     int PressedEnter() override;
 
     void ResetSelection() override;
-
+    void Update(uint32_t *buttonState, uint32_t *lastButtonState, float deltaSeconds) override;
     void Draw(UiRenderer &ui, float offsetX, float offsetY, float alpha) override;
+    bool HandlePointer(const MenuPointer &pointer) override;
 
 private:
-    // Moves the highlight straight to index (no animation), scrolling it into
-    // view. Backs Entry::Select; also used to pre-select a row - e.g. AppMenu
-    // landing on MainPage's "Load ROM" row when booting into RomSelectPage.
+    // Moves the highlight straight to index, scrolling it into view.
     void SelectIndex(int index);
-
-    float rowHeight(int index) const;
-    int maxVisibleFrom(int first) const;
-    bool needsScrollbar() const;
+    bool IsRow(int index) const;
+    // Lays the entries out (top of each, from the list's top) - cheap,
+    // done whenever needed.
+    void Layout() const;
+    void ScrollToSelection(bool instant);
+    float ContentHeight() const;
 
     UiRenderer *m_ui;
-    UiFontHandle m_font;
+    UiFontHandle m_font, m_boldFont, m_headerFont;
     const UiIconSet *m_icons;
     float m_posX, m_posY, m_width, m_height;
     float m_itemHeight;
     int m_selectedIndex = 0;
     int m_activeColumn = 0; // 0/1 highlight within a two-column row (see GetActiveColumn)
-    int m_firstVisible = 0;
-    float m_textRowOffset = 0; // baseline-centering offset within each slot, baked at init
+    float m_scroll = 0, m_scrollTarget = 0;
     std::vector<std::shared_ptr<Entry>> m_entries;
+    mutable std::vector<float> m_top; // see Layout
+    mutable float m_contentHeight = 0;
 
-    static constexpr float kScrollbarWidth = 2.0f;
-    static constexpr float kScrollbarGap = 2.0f;
+    static constexpr float kScrollbarWidth = 1.5f;
 };

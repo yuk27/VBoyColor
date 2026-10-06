@@ -31,6 +31,10 @@ public:
 
     int GetBatteryPercent() const override;
 
+    // MainActivity's download thread (startDownload/pollDownload/takeDownload).
+    bool StartDownload(const std::string &url) override;
+    int PollDownload(std::vector<uint8_t> &bytes) override;
+
     std::vector<uint8_t> LoadAssetBytes(const std::string &name) override;
 
 private:

@@ -14,6 +14,10 @@ import android.os.ParcelFileDescriptor;
 import android.provider.DocumentsContract;
 import android.util.Log;
 
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -310,5 +314,80 @@ public class MainActivity extends NativeActivity {
             return false;
         }
         return findChildDocumentId(treeUri, parentDocId, fileName) != null;
+    }
+
+    // ---- Downloads (the library's optional box art): one at a time, on a
+    // thread of its own; native code polls (AndroidPlatform::PollDownload). ----
+
+    private static final int MAX_DOWNLOAD_BYTES = 16 * 1024 * 1024;
+    private final Object downloadLock = new Object();
+    private int downloadState = -1; // 0 running, 1 done, -1 failed/none
+    private byte[] downloadBytes;
+
+    public boolean startDownload(final String url) {
+        synchronized (downloadLock) {
+            if (downloadState == 0) {
+                return false;
+            }
+            downloadState = 0;
+            downloadBytes = null;
+        }
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                runDownload(url);
+            }
+        }).start();
+        return true;
+    }
+
+    private void runDownload(String url) {
+        byte[] result = null;
+        HttpURLConnection connection = null;
+        try {
+            connection = (HttpURLConnection) new URL(url).openConnection();
+            connection.setConnectTimeout(10000);
+            connection.setReadTimeout(20000);
+            connection.setInstanceFollowRedirects(true);
+            if (connection.getResponseCode() == 200) {
+                try (InputStream in = connection.getInputStream()) {
+                    ByteArrayOutputStream out = new ByteArrayOutputStream();
+                    byte[] buffer = new byte[16384];
+                    int read;
+                    while ((read = in.read(buffer)) > 0 && out.size() <= MAX_DOWNLOAD_BYTES) {
+                        out.write(buffer, 0, read);
+                    }
+                    if (out.size() > 0 && out.size() <= MAX_DOWNLOAD_BYTES) {
+                        result = out.toByteArray();
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "download failed: " + url, e);
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
+        }
+        synchronized (downloadLock) {
+            downloadBytes = result;
+            downloadState = result != null ? 1 : -1;
+        }
+    }
+
+    // 0 running, 1 done (then takeDownload), -1 failed or none.
+    public int pollDownload() {
+        synchronized (downloadLock) {
+            return downloadState;
+        }
+    }
+
+    public byte[] takeDownload() {
+        synchronized (downloadLock) {
+            byte[] bytes = downloadBytes;
+            downloadBytes = null;
+            downloadState = -1;
+            return bytes;
+        }
     }
 }

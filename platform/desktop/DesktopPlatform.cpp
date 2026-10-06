@@ -8,13 +8,17 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <winhttp.h>
 #endif
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <mutex>
+#include <thread>
 
 namespace
 {
@@ -221,3 +225,132 @@ std::vector<uint8_t> DesktopPlatform::LoadAssetBytes(const std::string &name)
     return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 }
 #endif
+
+// ---------------------------------------------------------------------------
+// Downloads (the library's optional box art)
+
+namespace
+{
+    constexpr size_t kMaxDownloadBytes = 16 * 1024 * 1024;
+
+#if defined(_WIN32)
+    bool HttpGet(const std::string &url, std::vector<uint8_t> &out)
+    {
+        const std::wstring wideUrl(url.begin(), url.end()); // (ASCII - callers percent-encode)
+        wchar_t host[256] = {}, path[2048] = {};
+        URL_COMPONENTS parts{};
+        parts.dwStructSize = sizeof(parts);
+        parts.lpszHostName = host;
+        parts.dwHostNameLength = static_cast<DWORD>(sizeof(host) / sizeof(host[0]));
+        parts.lpszUrlPath = path;
+        parts.dwUrlPathLength = static_cast<DWORD>(sizeof(path) / sizeof(path[0]));
+        if (!WinHttpCrackUrl(wideUrl.c_str(), 0, 0, &parts))
+            return false;
+
+        HINTERNET session = WinHttpOpen(L"VBoyColor", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
+                                        WINHTTP_NO_PROXY_BYPASS, 0);
+        if (!session)
+            return false;
+        WinHttpSetTimeouts(session, 10000, 10000, 20000, 20000);
+        HINTERNET connection = WinHttpConnect(session, host, parts.nPort, 0);
+        HINTERNET request = connection ? WinHttpOpenRequest(connection, L"GET", path, nullptr, WINHTTP_NO_REFERER,
+                                                            WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                                            parts.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0)
+                                       : nullptr;
+        bool ok = request && WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+                  WinHttpReceiveResponse(request, nullptr);
+        if (ok)
+        {
+            DWORD status = 0, size = sizeof(status);
+            ok = WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
+                                     &status, &size, WINHTTP_NO_HEADER_INDEX) &&
+                 status == 200;
+        }
+        while (ok)
+        {
+            DWORD available = 0;
+            if (!WinHttpQueryDataAvailable(request, &available))
+                ok = false;
+            if (!ok || available == 0)
+                break;
+            const size_t at = out.size();
+            out.resize(at + available);
+            DWORD read = 0;
+            if (!WinHttpReadData(request, out.data() + at, available, &read))
+                ok = false;
+            out.resize(at + read);
+            if (out.size() > kMaxDownloadBytes)
+                ok = false;
+        }
+        if (request)
+            WinHttpCloseHandle(request);
+        if (connection)
+            WinHttpCloseHandle(connection);
+        WinHttpCloseHandle(session);
+        return ok && !out.empty();
+    }
+#else
+    // (desktop Linux/macOS are for development - curl does it)
+    bool HttpGet(const std::string &url, std::vector<uint8_t> &out)
+    {
+        if (url.find('\'') != std::string::npos)
+            return false;
+        const std::string command = "curl -sfL --max-time 30 '" + url + "'";
+        FILE *pipe = popen(command.c_str(), "r");
+        if (!pipe)
+            return false;
+        uint8_t buffer[16384];
+        size_t read = 0;
+        while ((read = std::fread(buffer, 1, sizeof(buffer), pipe)) > 0 && out.size() <= kMaxDownloadBytes)
+            out.insert(out.end(), buffer, buffer + read);
+        return pclose(pipe) == 0 && !out.empty() && out.size() <= kMaxDownloadBytes;
+    }
+#endif
+} // namespace
+
+struct DesktopPlatform::Download
+{
+    std::mutex mutex;
+    int state = -1; // see PollDownload
+    std::vector<uint8_t> bytes;
+};
+
+bool DesktopPlatform::StartDownload(const std::string &url)
+{
+    if (!m_download)
+        m_download = std::make_shared<Download>();
+    {
+        std::lock_guard<std::mutex> lock(m_download->mutex);
+        if (m_download->state == 0)
+            return false;
+        m_download->state = 0;
+        m_download->bytes.clear();
+    }
+    // Detached: it only touches its own shared Download, so the app can
+    // quit while one is still running.
+    std::thread([download = m_download, url]()
+                {
+                    std::vector<uint8_t> bytes;
+                    const bool ok = HttpGet(url, bytes);
+                    std::lock_guard<std::mutex> lock(download->mutex);
+                    download->bytes = std::move(bytes);
+                    download->state = ok ? 1 : -1;
+                })
+        .detach();
+    return true;
+}
+
+int DesktopPlatform::PollDownload(std::vector<uint8_t> &bytes)
+{
+    if (!m_download)
+        return -1;
+    std::lock_guard<std::mutex> lock(m_download->mutex);
+    const int state = m_download->state;
+    if (state == 1)
+    {
+        bytes = std::move(m_download->bytes);
+        m_download->bytes.clear();
+        m_download->state = -1; // (reported once)
+    }
+    return state;
+}

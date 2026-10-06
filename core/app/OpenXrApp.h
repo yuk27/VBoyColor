@@ -105,6 +105,12 @@ private:
     // little closer to the viewer than the screen layer so it visibly
     // floats in front of it instead of sitting flush on the same plane.
     bool RenderMenuLayer(XrCompositionLayerQuad &quadLayer);
+    // Where the menu panel is (its center and orientation) and its size, in
+    // m_appSpace.
+    void MenuQuadPose(XrPosef &pose, XrExtent2Df &size) const;
+    // The controllers' lasers on the menu: hover with either, click with
+    // its trigger (see AppMenu::SetPointer).
+    void UpdateMenuPointer(XrTime time);
 
     struct Swapchain
     {
@@ -192,6 +198,10 @@ private:
     // m_appMenu open/closed (see XrInput::IsMenuButtonPressed) - a held
     // button shouldn't toggle every frame.
     bool m_lastMenuButtonPressed{false};
+    // The hand whose laser drives the menu's pointer (0 left, 1 right) and
+    // last frame's triggers.
+    int m_pointerHand{1};
+    bool m_lastTriggers[2]{false, false};
     // Seconds since the last battery poll - see UpdateBatteryPercent.
     float m_batteryPollSeconds{0.0f};
     // Latest physical-gamepad bitmask from SetGamepadButtonState - merged

@@ -5,6 +5,7 @@
 #include "io/Settings.h"
 #include "menu/MenuPage.h"
 #include "menu/pages/AppMenuLayout.h"
+#include "menu/ThumbnailLibrary.h"
 
 #include <cstdio>
 
@@ -17,16 +18,13 @@ std::string FormatFloat(const char *prefix, float value, int precision = 3, cons
     return buf;
 }
 
-// Preview swatches drawn directly on the "Color Palette" row, immediately
-// after its icon+label (not right-aligned against the row edge), showing
-// the VB's 4 brightness levels (black up to the full tint) - stands in for
-// the selected-palette index (nobody reads "7/11"; the colors themselves
-// are what matters). Reads AppSettings live each frame, so it tracks
-// palette/R/G/B edits immediately.
-constexpr float kSwatchSize = 11.0f;
-constexpr float kSwatchGap = 2.0f;
-constexpr float kSwatchLeftGap = 6.0f;
-constexpr const char *kColorPaletteLabel = "Color Palette";
+// Preview swatches drawn on the "Palette" row's right, showing the VB's 4
+// brightness levels (black up to the full tint) or the palette's colors -
+// stands in for the selected-palette index (nobody reads "7/11"; the colors
+// themselves are what matters). Reads AppSettings live each frame, so it
+// tracks palette/R/G/B edits immediately.
+constexpr float kSwatchSize = 9.0f;
+constexpr float kSwatchGap = 2.5f;
 
 // The real hardware doesn't space its 4 brightness levels evenly (0, 1/3,
 // 2/3, 1) - it's levels 0x00/0x63/0x87 out of a 0xff full intensity (level 3
@@ -35,15 +33,24 @@ constexpr const char *kColorPaletteLabel = "Color Palette";
 // the actual game screen).
 constexpr float kBrightnessLevels[4] = {0.0f, 0x63 / 255.0f, 0x87 / 255.0f, 1.0f};
 
-void DrawColorPreview(UiRenderer &ui, UiFontHandle labelFont, AppSettings *settings, float rowX, float rowY, float rowW, float rowH, float alpha)
+// The palette's colors, right-aligned in the row's value area.
+void DrawSwatches(UiRenderer &ui, const XrColor4f *colors, int count, float rowX, float rowY, float rowW, float rowH, float alpha)
+{
+    float x = rowX + rowW - MenuList::kValueRightPad - count * (kSwatchSize + kSwatchGap) + kSwatchGap;
+    const float y = rowY + (rowH - kSwatchSize) / 2.0f;
+    for (int i = 0; i < count; ++i)
+    {
+        ui.DrawQuadRounded(x, y, kSwatchSize, kSwatchSize, XrColor4f{colors[i].r, colors[i].g, colors[i].b, alpha}, 2.5f);
+        x += kSwatchSize + kSwatchGap;
+    }
+}
+
+void DrawColorPreview(AppSettings *settings, UiRenderer &ui, float rowX, float rowY, float rowW, float rowH, float alpha)
 {
     if (!settings)
         return;
-
-    const float labelWidth = ui.GetTextWidth(labelFont, kColorPaletteLabel);
-    float x = rowX + MenuList::kIconSize + MenuList::kIconTextGap + labelWidth + kSwatchLeftGap;
-    const float y = rowY + (rowH - kSwatchSize) / 2.0f;
-
+    XrColor4f colors[5];
+    int count = 0;
     // Auto: its layers' colors, far to near, and its sprites' red - what the
     // screen mostly shows (see AutoColors.h).
     if (settings->selectedShadePalette == kAutoColors)
@@ -52,55 +59,37 @@ void DrawColorPreview(UiRenderer &ui, UiFontHandle labelFont, AppSettings *setti
                                              AutoColors::kLayerRamps[2][1], AutoColors::kLayerRamps[3][1],
                                              AutoColors::kSpriteRamps[0][1]};
         for (const AutoColors::Rgb &c : swatches)
-        {
-            ui.DrawQuadRounded(x, y, kSwatchSize, kSwatchSize, XrColor4f{c[0] / 255.0f, c[1] / 255.0f, c[2] / 255.0f, alpha}, 1.0f);
-            x += kSwatchSize + kSwatchGap;
-        }
-        return;
+            colors[count++] = XrColor4f{c[0] / 255.0f, c[1] / 255.0f, c[2] / 255.0f, 1.0f};
     }
-    // A per-shade palette's own 4 colors - exactly what each shade shows on
-    // screen at full brightness (see ShadeColorizer). One made from a
-    // gradient picks its shades' colors from all 5 stops, so those show.
-    if (settings->selectedShadePalette >= 0 && settings->selectedShadePalette < kShadePaletteCount &&
-        GradientOfShadePalette(settings->selectedShadePalette) >= 0)
+    // A per-shade palette made from a gradient picks its shades' colors from
+    // all 5 stops, so those show; otherwise its own 4 colors.
+    else if (settings->selectedShadePalette >= 0 && settings->selectedShadePalette < kShadePaletteCount &&
+             GradientOfShadePalette(settings->selectedShadePalette) >= 0)
     {
         for (const XrColor4f &stop : kScreenPatterns[GradientOfShadePalette(settings->selectedShadePalette)])
-        {
-            ui.DrawQuadRounded(x, y, kSwatchSize, kSwatchSize, XrColor4f{stop.r, stop.g, stop.b, alpha}, 1.0f);
-            x += kSwatchSize + kSwatchGap;
-        }
-        return;
+            colors[count++] = stop;
     }
-    if (settings->selectedShadePalette >= 0 && settings->selectedShadePalette < kShadePaletteCount)
+    else if (settings->selectedShadePalette >= 0 && settings->selectedShadePalette < kShadePaletteCount)
     {
         for (const XrColor4f &shade : kShadePalettes[settings->selectedShadePalette])
-        {
-            ui.DrawQuadRounded(x, y, kSwatchSize, kSwatchSize, XrColor4f{shade.r, shade.g, shade.b, alpha}, 1.0f);
-            x += kSwatchSize + kSwatchGap;
-        }
-        return;
+            colors[count++] = shade;
     }
-
-    // A pattern's 5 gradient stops stand in for the 4 tint brightness
-    // swatches below - same kScreenPatterns array the screen shader itself
-    // reads (see Settings.h), so this always matches what's actually drawn.
-    if (settings->selectedPattern >= 0 && settings->selectedPattern < kScreenPatternCount)
+    // A pattern's 5 gradient stops - the same kScreenPatterns the screen
+    // shader reads (see Settings.h).
+    else if (settings->selectedPattern >= 0 && settings->selectedPattern < kScreenPatternCount)
     {
         for (const XrColor4f &stop : kScreenPatterns[settings->selectedPattern])
-        {
-            ui.DrawQuadRounded(x, y, kSwatchSize, kSwatchSize, XrColor4f{stop.r, stop.g, stop.b, alpha}, 1.0f);
-            x += kSwatchSize + kSwatchGap;
-        }
-        return;
+            colors[count++] = stop;
     }
-
-    for (int i = 0; i < 4; ++i)
+    else
     {
-        const float level = kBrightnessLevels[i];
-        const XrColor4f c{settings->colorR * level, settings->colorG * level, settings->colorB * level, alpha};
-        ui.DrawQuadRounded(x, y, kSwatchSize, kSwatchSize, c, 1.0f);
-        x += kSwatchSize + kSwatchGap;
+        for (int i = 0; i < 4; ++i)
+        {
+            const float level = kBrightnessLevels[i];
+            colors[count++] = XrColor4f{settings->colorR * level, settings->colorG * level, settings->colorB * level, 1.0f};
+        }
     }
+    DrawSwatches(ui, colors, count, rowX, rowY, rowW, rowH, alpha);
 }
 } // namespace
 
@@ -109,78 +98,89 @@ void SettingsPage::Init(UiRenderer &ui, const UiMenuResources &resources)
     m_settings = resources.settings;
     m_platform = resources.platform;
     m_emulator = resources.emulator;
+    m_library = resources.thumbnails;
 
-    auto list = std::make_shared<MenuList>(ui, resources.menuFont, kMenuContentX, kMenuContentY, kListWidth, kListHeight,
-                                           kMenuItemSize, resources.icons);
-    list->Color = kMenuTextColor;
-    list->SelectionColor = kMenuSelectionColor;
-    list->HighlightColor = kMenuHighlightColor;
+    auto list = MakeList(ui, resources);
 
-    list->AddEntry("Button Mapping", [this](MenuItem *)
-                   { if (emulatorButtonMapPage) Navigate(emulatorButtonMapPage, 1); }, nullptr, nullptr, UiIconId::Mapping);
-    list->AddEntry("Adjust Screen", [this](MenuItem *)
-                   { if (moveScreenPage) Navigate(moveScreenPage, 1); }, nullptr, nullptr, UiIconId::Move);
+    list->AddHeader("Controls");
+    list->AddEntry("Button mapping", [this](MenuItem *)
+                   { if (emulatorButtonMapPage) Navigate(emulatorButtonMapPage, 1); }, nullptr, nullptr, UiIconId::Mapping)
+        ->opensPage = true;
+    // (the flat desktop window has no screen to place)
+    if (resources.buttonMappingProfile != ButtonMappingProfile::Desktop)
+        list->AddEntry("Adjust screen", [this](MenuItem *)
+                       { if (moveScreenPage) Navigate(moveScreenPage, 1); }, nullptr, nullptr, UiIconId::Move)
+            ->opensPage = true;
 
-    list->AddSpacer(kMenuSpacerSize);
-
-    UiFontHandle menuFont = resources.menuFont;
-    // Color Mode picks the kind of coloring (see ColorMode in
-    // SettingsPage.h); Color Palette then only cycles that mode's presets,
-    // so each list stays short and the modes are discoverable by name.
-    m_colorModeEntry = list->AddEntry("Color Mode: Tint", [this](MenuItem *) { ChangeColorMode(1); }, // Select acts like Right
+    // Color mode picks the kind of coloring (see ColorMode in
+    // SettingsPage.h); Palette then only cycles that mode's presets, so each
+    // list stays short and the modes are discoverable by name.
+    list->AddHeader("Colors");
+    m_colorModeEntry = list->AddEntry("Color mode", [this](MenuItem *) { ChangeColorMode(1); }, // Select acts like Right
         [this](MenuItem *) { ChangeColorMode(-1); }, [this](MenuItem *) { ChangeColorMode(1); }, UiIconId::Palette);
-    auto paletteEntry = list->AddEntry(kColorPaletteLabel, [this](MenuItem *) { ChangePalette(1); }, // Select acts like Right - advance the palette
+    m_paletteEntry = list->AddEntry("Palette", [this](MenuItem *) { ChangePalette(1); }, // Select acts like Right - advance the palette
         [this](MenuItem *) { ChangePalette(-1); }, [this](MenuItem *) { ChangePalette(1); }, UiIconId::None,
-        [this, menuFont](UiRenderer &ui, float x, float y, float w, float h, float a) { DrawColorPreview(ui, menuFont, m_settings, x, y, w, h, a); });
-    paletteEntry->reserveIconSpace = true; // indented under Color Mode, like the R/G/B rows
-    m_colorREntry = list->AddEntry("Red: 1.00", [this](MenuItem *) { ChangeColorChannel(&AppSettings::colorR, kColorStep); },
+        [this](UiRenderer &ui, float x, float y, float w, float h, float a) { DrawColorPreview(m_settings, ui, x, y, w, h, a); });
+    m_paletteEntry->reserveIconSpace = true; // indented under Color mode, like the R/G/B rows
+    m_colorREntry = list->AddEntry("Red", [this](MenuItem *) { ChangeColorChannel(&AppSettings::colorR, kColorStep); },
         [this](MenuItem *) { ChangeColorChannel(&AppSettings::colorR, -kColorStep); },
         [this](MenuItem *) { ChangeColorChannel(&AppSettings::colorR, kColorStep); });
-    m_colorGEntry = list->AddEntry("Green: 1.00", [this](MenuItem *) { ChangeColorChannel(&AppSettings::colorG, kColorStep); },
+    m_colorGEntry = list->AddEntry("Green", [this](MenuItem *) { ChangeColorChannel(&AppSettings::colorG, kColorStep); },
         [this](MenuItem *) { ChangeColorChannel(&AppSettings::colorG, -kColorStep); },
         [this](MenuItem *) { ChangeColorChannel(&AppSettings::colorG, kColorStep); });
-    m_colorBEntry = list->AddEntry("Blue: 1.00", [this](MenuItem *) { ChangeColorChannel(&AppSettings::colorB, kColorStep); },
+    m_colorBEntry = list->AddEntry("Blue", [this](MenuItem *) { ChangeColorChannel(&AppSettings::colorB, kColorStep); },
         [this](MenuItem *) { ChangeColorChannel(&AppSettings::colorB, -kColorStep); },
         [this](MenuItem *) { ChangeColorChannel(&AppSettings::colorB, kColorStep); });
     m_colorREntry->reserveIconSpace = true;
     m_colorGEntry->reserveIconSpace = true;
     m_colorBEntry->reserveIconSpace = true;
 
+    list->AddHeader("Library");
+    // Box art from libretro's thumbnail collection instead of title screens
+    // (off by default - it downloads them).
+    auto boxArt = list->AddEntry("Download box art", [this](MenuItem *)
+                                 {
+                                     m_settings->downloadBoxArt = !m_settings->downloadBoxArt;
+                                     m_settings->Save(*m_platform);
+                                     if (m_library)
+                                         m_library->SetBoxArt(m_settings->downloadBoxArt);
+                                 },
+                                 nullptr, nullptr, UiIconId::Save);
+    boxArt->toggle = [this]() { return m_settings && m_settings->downloadBoxArt; };
+    m_rebuildEntry = list->AddEntry("Make thumbnails again", [this](MenuItem *)
+                                    { if (m_library) m_library->RebuildAll(); }, nullptr, nullptr, UiIconId::Reset);
     if (m_platform->SupportsChangeRomsFolder())
     {
         // Way back into the ROMs-folder picker (SAF, on Android). Clears the
         // folder and asks for a restart rather than re-popping the picker
         // directly (see Platform::RequestChangeRomsFolder).
-        list->AddSpacer(kMenuSpacerSize);
-        m_changeRomsFolderEntry = list->AddEntry("Change ROMs Folder...", [this](MenuItem *) { RequestChangeRomsFolder(); },
+        m_changeRomsFolderEntry = list->AddEntry("Change ROMs folder", [this](MenuItem *) { RequestChangeRomsFolder(); },
             nullptr, nullptr, UiIconId::RomList);
     }
 
-    list->AddSpacer(kMenuSpacerSize);
-    auto aboutEntry = list->AddEntry("About VBoy Color", [this](MenuItem *)
-                                     { if (aboutPage) Navigate(aboutPage, 1); });
-    aboutEntry->reserveIconSpace = true;
-
     m_menu.MenuItems.push_back(list);
-
-    // Version string, bottom-right, small/secondary font - not part of the
-    // scrollable list (non-selectable, doesn't participate in navigation).
-    // MenuLabel centers text within its box, so measure the actual text
-    // width and size the box to match - that's what makes it right-aligned
-    // against kMenuContentX instead of just centered somewhere near it.
-    const float versionWidth = ui.GetTextWidth(resources.smallFont, kVersionString) + 0.5f;
-    constexpr float kVersionHeight = 8.0f;
-    auto versionLabel = std::make_shared<MenuLabel>(
-        ui, resources.smallFont, kVersionString,
-        kMenuWidth - 5.0f - versionWidth, kMenuHeight - kBottomHeight - kVersionHeight - 4.0f,
-        versionWidth, kVersionHeight, kMenuVersionColor);
-    m_menu.MenuItems.push_back(versionLabel);
-
-    m_menu.BackPress = [this]()
-    { if (mainPage) Navigate(mainPage, -1); };
     m_menu.Init();
 
-    RefreshLabels();
+    RefreshLabels(false);
+}
+
+std::string SettingsPage::Subtitle() const
+{
+    if (!m_emulator || m_emulator->RomName().empty())
+        return "";
+    const std::string &name = m_emulator->RomName();
+    return "Colors for " + name.substr(0, name.find(" ("));
+}
+
+void SettingsPage::Update(uint32_t *buttonState, uint32_t *lastButtonState, float deltaSeconds)
+{
+    MenuPage::Update(buttonState, lastButtonState, deltaSeconds);
+    if (m_rebuildEntry && m_library)
+    {
+        const char *value = m_library->Remaining() > 0 ? "Making..." : "";
+        if (m_rebuildEntry->value != value)
+            m_rebuildEntry->SetValue(value);
+    }
 }
 
 SettingsPage::ColorMode SettingsPage::CurrentColorMode() const
@@ -281,16 +281,27 @@ void SettingsPage::RefreshLabels(bool save)
     if (!m_settings)
         return;
 
-    // Color Palette's label stays static ("Color Palette") - its row draws
-    // the actual colors via DrawColorPreview instead of a selected-index
-    // number (see AddEntry's accessoryDraw above).
+    // The Palette row draws the actual colors via DrawColorPreview instead
+    // of a selected-index number (see AddEntry's accessoryDraw above).
     static constexpr const char *kModeNames[kColorModeCount] = {"Tint", "Gradient", "Multicolor", "Auto"};
-    m_colorModeEntry->SetText(std::string("Color Mode: ") + kModeNames[static_cast<int>(CurrentColorMode())]);
+    m_colorModeEntry->SetValue(kModeNames[static_cast<int>(CurrentColorMode())]);
     // 2 decimals, not 3 - kColorStep is 0.05, so the third decimal is always
     // 0 and never actually reachable by adjusting the value.
-    m_colorREntry->SetText(FormatFloat("Red: ", m_settings->colorR, 2));
-    m_colorGEntry->SetText(FormatFloat("Green: ", m_settings->colorG, 2));
-    m_colorBEntry->SetText(FormatFloat("Blue: ", m_settings->colorB, 2));
+    m_colorREntry->SetValue(FormatFloat("", m_settings->colorR, 2));
+    m_colorGEntry->SetValue(FormatFloat("", m_settings->colorG, 2));
+    m_colorBEntry->SetValue(FormatFloat("", m_settings->colorB, 2));
+    // Auto has no presets to step through.
+    const bool autoMode = CurrentColorMode() == ColorMode::Auto;
+    if (autoMode != !m_paletteEntry->leftFunction)
+    {
+        if (autoMode)
+            m_paletteEntry->leftFunction = m_paletteEntry->rightFunction = nullptr;
+        else
+        {
+            m_paletteEntry->leftFunction = [this](MenuItem *) { ChangePalette(-1); };
+            m_paletteEntry->rightFunction = [this](MenuItem *) { ChangePalette(1); };
+        }
+    }
     // A gradient pattern or per-shade palette has no R/G/B of its own to
     // adjust - hide those rows entirely while one's selected (see
     // MenuList::Entry::Visible).
@@ -302,7 +313,12 @@ void SettingsPage::RefreshLabels(bool save)
     if (!save)
         return;
     m_settings->Save(*m_platform); // always-on autosave - no explicit save action anywhere in the menu anymore
-    // ...and remembered for the game being played (see AppSettings::SaveGameColors).
+    // ...and remembered for the game being played (see AppSettings::SaveGameColors),
+    // whose thumbnail then shows them too.
     if (m_emulator)
+    {
         m_settings->SaveGameColors(*m_platform, m_emulator->RomName());
+        if (m_library)
+            m_library->Recheck(m_emulator->RomName());
+    }
 }

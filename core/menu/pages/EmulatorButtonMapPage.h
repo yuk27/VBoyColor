@@ -21,6 +21,12 @@ public:
     MenuPage *settingsPage = nullptr;
 
     void Init(UiRenderer &ui, const UiMenuResources &resources) override;
+    std::string Title() const override { return "Button mapping"; }
+    std::string Subtitle() const override { return "Settings"; }
+    std::vector<MenuHint> Hints() const override
+    {
+        return {{UiIconId::ButtonA, "Change"}, {UiIconId::ButtonB, "Back"}};
+    }
 
 private:
     // buttonIndex: row into kButtons; column: 0 = primary, 1 = secondary.

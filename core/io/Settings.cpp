@@ -13,8 +13,8 @@ namespace
 {
     constexpr const char *kSettingsFileName = "settings.dat";
 
-    // Versions 12 and 13 only appended fields (selectedShadePalette, then
-    // passthrough), so an older file's AppSettings bytes are exactly a
+    // Versions 12, 13 and 14 only appended fields (selectedShadePalette,
+    // passthrough, then the library's), so an older file's AppSettings bytes are exactly a
     // prefix of today's layout - copying just that much keeps everything the
     // user had set up (button mapping, screen placement, palette) and leaves
     // the newer fields at their defaults.
@@ -26,6 +26,8 @@ namespace
             return offsetof(AppSettings, selectedShadePalette);
         case 12:
             return offsetof(AppSettings, passthrough);
+        case 13:
+            return offsetof(AppSettings, libraryListView);
         default:
             return 0;
         }

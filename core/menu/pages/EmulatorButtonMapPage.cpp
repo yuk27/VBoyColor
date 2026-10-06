@@ -81,14 +81,11 @@ void EmulatorButtonMapPage::Init(UiRenderer &ui, const UiMenuResources &resource
     m_platform = resources.platform;
     m_mappingProfile = resources.buttonMappingProfile;
 
-    auto list = std::make_shared<MenuList>(ui, resources.menuFont, kMenuContentX, kMenuContentY, kListWidth, kListHeight,
-                                           kMenuItemSize, resources.icons);
-    list->Color          = kMenuTextColor;
-    list->SelectionColor = kMenuSelectionColor;
-    list->HighlightColor = kMenuHighlightColor;
+    auto list = MakeList(ui, resources);
     // The icon identifies the emulated button; it is not either of the two
     // selectable physical bindings and therefore never receives focus tint.
     list->TintIconOnSelect = false;
+    list->AddHeader("Virtual Boy buttons");
 
     // One row per VB button: its icon plus two side-by-side binding columns
     // (primary + secondary). Left/Right pick the column, pressing it rebinds
@@ -98,12 +95,13 @@ void EmulatorButtonMapPage::Init(UiRenderer &ui, const UiMenuResources &resource
         auto entry = list->AddEntry("-", [this, i](MenuItem *) { StartCapture(i, m_list->GetActiveColumn()); },
                                     nullptr, nullptr, kButtons[i].icon);
         entry->twoColumn = true;
+        entry->SetCaption(kButtons[i].name);
         m_rowEntries.push_back(entry);
     }
 
-    list->AddSpacer(kMenuSpacerSize);
+    list->AddSpacer(kGroupGap);
 
-    auto resetEntry = list->AddEntry("Reset Mapping", [this](MenuItem *) { ResetMapping(); }, nullptr, nullptr,
+    auto resetEntry = list->AddEntry("Reset mapping", [this](MenuItem *) { ResetMapping(); }, nullptr, nullptr,
                                      UiIconId::ResetView);
     resetEntry->centered = true;
     resetEntry->tintIconOnSelect = true;

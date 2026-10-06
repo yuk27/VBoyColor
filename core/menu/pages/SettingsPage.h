@@ -7,24 +7,25 @@ class MenuList;
 struct AppSettings;
 class Platform;
 class Emulator;
+class ThumbnailLibrary;
 
-// Settings: Button Mapping, Adjust Screen, and the VB screen colors - a
-// Color Mode (tint / gradient / multicolor), that mode's Color Palette
-// presets, and the custom R/G/B tint - plus a version label (and Change ROMs Folder, on
-// platforms where Platform::SupportsChangeRomsFolder() is true). Screen
-// placement/view settings live in the Adjust Screen page. Every change
-// autosaves immediately (see RefreshLabels); Back is the bottom-bar B hint
-// (see MenuPage::HasBackAction).
+// Settings, in groups: Controls (Button mapping, and Adjust screen in the
+// headset), Colors (the VB screen colors - a Color mode (tint / gradient /
+// multicolor / auto), that mode's Palette presets, and the custom R/G/B
+// tint) and Library (make the thumbnails again, and Change ROMs folder on
+// platforms where Platform::SupportsChangeRomsFolder() is true). Every
+// change autosaves immediately (see RefreshLabels).
 class SettingsPage : public MenuPage
 {
 public:
-    MenuPage *mainPage = nullptr;
     MenuPage *emulatorButtonMapPage = nullptr;
     MenuPage *moveScreenPage = nullptr;
-    MenuPage *aboutPage = nullptr;
 
     void Init(UiRenderer &ui, const UiMenuResources &resources) override;
     void OnShow() override;
+    std::string Title() const override { return "Settings"; }
+    std::string Subtitle() const override;
+    void Update(uint32_t *buttonState, uint32_t *lastButtonState, float deltaSeconds) override;
 
 private:
     static constexpr float kColorStep = 0.05f; // matches FrontendGo's COLOR_STEP_SIZE
@@ -51,6 +52,8 @@ private:
     void RequestChangeRomsFolder();
 
     std::shared_ptr<MenuList::Entry> m_colorModeEntry;
+    std::shared_ptr<MenuList::Entry> m_paletteEntry;
+    std::shared_ptr<MenuList::Entry> m_rebuildEntry;
     std::shared_ptr<MenuList::Entry> m_colorREntry;
     std::shared_ptr<MenuList::Entry> m_colorGEntry;
     std::shared_ptr<MenuList::Entry> m_colorBEntry;
@@ -62,4 +65,5 @@ private:
     AppSettings *m_settings = nullptr;
     Platform *m_platform = nullptr;
     Emulator *m_emulator = nullptr;
+    ThumbnailLibrary *m_library = nullptr;
 };

@@ -155,6 +155,11 @@ public:
     // offscreen-rendered AppMenu) as a single rounded panel, instead of
     // rounding each shape inside it separately.
     void DrawImageRounded(UiImageHandle image, float x, float y, float w, float h, float cornerRadiusPx, float alpha = 1.0f);
+    // Limits every draw that follows to a rect (in the frame's logical
+    // units, like the Draw* calls) - e.g. a scrolling list's own area -
+    // until ResetClipRect or the frame ends. Clipped to the target.
+    void SetClipRect(float x, float y, float w, float h);
+    void ResetClipRect();
     void EndFrame();
 
     // Drops all cached per-image framebuffers (see GetOrCreateRenderTarget).
@@ -295,6 +300,9 @@ private:
     // Per-frame state between BeginFrame/EndFrame.
     float m_frameWidth{0};
     float m_frameHeight{0};
+    // The target's physical size (for SetClipRect/ResetClipRect).
+    uint32_t m_targetWidth{0};
+    uint32_t m_targetHeight{0};
     // Physical pixels per logical unit for the current frame (1.0 outside
     // BeginOffscreenFrame's logical/physical split). DrawUnitQuad uses this
     // to snap every quad's edges to the physical pixel grid - a fractional

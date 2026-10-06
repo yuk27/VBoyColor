@@ -185,6 +185,46 @@ int AndroidPlatform::GetBatteryPercent() const
     return percent;
 }
 
+bool AndroidPlatform::StartDownload(const std::string &url)
+{
+    JNIEnv *env = nullptr;
+    m_vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6);
+
+    jclass activityClass = env->GetObjectClass(m_activity);
+    jmethodID start = env->GetMethodID(activityClass, "startDownload", "(Ljava/lang/String;)Z");
+    jstring urlJString = env->NewStringUTF(url.c_str());
+    const bool started = env->CallBooleanMethod(m_activity, start, urlJString);
+    env->DeleteLocalRef(activityClass);
+    env->DeleteLocalRef(urlJString);
+    return started;
+}
+
+int AndroidPlatform::PollDownload(std::vector<uint8_t> &bytes)
+{
+    JNIEnv *env = nullptr;
+    m_vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6);
+
+    jclass activityClass = env->GetObjectClass(m_activity);
+    jmethodID poll = env->GetMethodID(activityClass, "pollDownload", "()I");
+    int state = env->CallIntMethod(m_activity, poll);
+    if (state == 1)
+    {
+        jmethodID take = env->GetMethodID(activityClass, "takeDownload", "()[B");
+        auto array = static_cast<jbyteArray>(env->CallObjectMethod(m_activity, take));
+        if (array)
+        {
+            const jsize length = env->GetArrayLength(array);
+            bytes.resize(static_cast<size_t>(length));
+            env->GetByteArrayRegion(array, 0, length, reinterpret_cast<jbyte *>(bytes.data()));
+            env->DeleteLocalRef(array);
+        }
+        else
+            state = -1;
+    }
+    env->DeleteLocalRef(activityClass);
+    return state;
+}
+
 std::vector<uint8_t> AndroidPlatform::LoadAssetBytes(const std::string &name)
 {
     if (!m_assetManager)

@@ -8,10 +8,8 @@ struct AppSettings;
 class Platform;
 
 // Adjust Screen: screen placement and view mode - position (Yaw/Pitch/Roll/
-// Distance/Scale + Reset Values), Follow Head, 3D Screen, Screen: Flat/Curved,
-// Background: Black/Your room (passthrough, where supported) and IPD offset.
-// Back is the bottom-bar B hint, not an in-list entry (see
-// MenuPage::HasBackAction).
+// Distance/Scale), Follow Head, 3D Screen, your room around it (passthrough,
+// where supported), IPD offset, and Reset Values.
 // These only matter on the OpenXR path (they feed OpenXrApp's screen quad
 // pose); pc2d's flat debug window has no 3D screen to move.
 class MoveScreenPage : public MenuPage
@@ -20,6 +18,8 @@ public:
     MenuPage *settingsPage = nullptr;
 
     void Init(UiRenderer &ui, const UiMenuResources &resources) override;
+    std::string Title() const override { return "Adjust screen"; }
+    std::string Subtitle() const override { return "Settings"; }
 
 private:
     static constexpr float kYawPitchStep = 1.0f;  // degrees
@@ -52,7 +52,6 @@ private:
     // Off<->Smooth<->Instant.
     void CycleFollowHeadMode(int direction);
     void ToggleThreeDeeMode();
-    void ToggleCurvedScreen();
     void TogglePassthrough();
     void ChangeIpd(int delta);
     void RefreshLabels();
@@ -64,7 +63,6 @@ private:
     std::shared_ptr<MenuList::Entry> m_scaleEntry;
     std::shared_ptr<MenuList::Entry> m_followHeadEntry;
     std::shared_ptr<MenuList::Entry> m_threeDeeEntry;
-    std::shared_ptr<MenuList::Entry> m_curvedScreenEntry;
     std::shared_ptr<MenuList::Entry> m_passthroughEntry; // only where passthrough is supported
     std::shared_ptr<MenuList::Entry> m_ipdEntry;
     AppSettings *m_settings = nullptr;

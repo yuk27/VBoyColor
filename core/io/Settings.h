@@ -37,7 +37,7 @@ struct AppSettings
     // defaults in place) on a mismatch rather than attempting migration,
     // except from version 11, whose layout is an exact prefix of this one
     // (12 only appended selectedShadePalette) - see Settings.cpp.
-    static constexpr int kVersion = 13;
+    static constexpr int kVersion = 14;
 
     // Move Screen / Follow Head. Only OpenXrApp's quad-layer pose consumes
     // these - meaningless on the flat pc2d debug build.
@@ -50,9 +50,8 @@ struct AppSettings
     // kMenuDistanceMeters.
     float screenDistance = 2.2f;
     float screenScale = 1.0f;
-    // Curves the screen into a cylindrical section instead of a flat quad -
-    // falls back to flat if the runtime lacks XR_KHR_composition_layer_cylinder
-    // (e.g. SteamVR).
+    // Unused: the curved screen option was dropped (kept so the file's
+    // layout stays the same).
     bool curvedScreen = false;
 
     bool useThreeDeeMode = true;
@@ -82,6 +81,12 @@ struct AppSettings
     // Version 13: the room around the screen (passthrough, on headsets that
     // have it) instead of black. Appended - older files load as a prefix.
     bool passthrough = false;
+
+    // Version 14 (appended - older files load as a prefix): the library as
+    // a list instead of cards, and its thumbnails from libretro's box art
+    // (downloaded) instead of title screens.
+    bool libraryListView = false;
+    bool downloadBoxArt = false;
 
     // What the screen should be drawn with (Emulator::DrawScreen's tint/
     // patternIndex) - neutral while a shade palette is active, since its
