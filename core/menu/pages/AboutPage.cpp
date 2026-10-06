@@ -60,14 +60,14 @@ void AboutPage::Init(UiRenderer &ui, const UiMenuResources &resources)
     cards->lines = {
         {"A free, open-source Virtual Boy emulator", bold, kMenuTextColor},
         {"for Meta Quest and PC - GPL-3.0", body, kMenuTextColor},
-        {"", body, kMenuTextColor},
-        {"Started from VirtualBoyGo by CidVonHighwind", body, kMenuTextColor},
         {"Emulation: Beetle VB (Mednafen, libretro)", body, kMenuTextColor},
-        {"Shade colors: an idea from Red Viper", body, kMenuTextColor},
         {"", body, kMenuTextColor},
-        {"Not affiliated with Nintendo or Meta.", small, kMenuDimTextColor},
+        {"Not affiliated with Nintendo or Meta in any way.", small, kMenuDimTextColor},
         {"github.com/yuk27/VBoyColor", small, kMenuDimTextColor},
-        {"Help paint the next game: github.com/sponsors/yuk27", small, kMenuSelectionColor},
+        {"", body, kMenuTextColor},
+        {"Thanks", bold, kMenuSelectionColor},
+        {"VirtualBoyGo by CidVonHighwind - where it all started", body, kMenuTextColor},
+        {"Red Viper - whose colors inspired our gradients", body, kMenuTextColor},
     };
     for (const auto &line : cards->lines)
         ui.EnsureGlyphsForText(line.font, line.text);
