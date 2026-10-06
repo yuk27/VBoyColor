@@ -84,9 +84,9 @@ namespace
     // rendering each game's title and play screens in every scheme (Oct 2026,
     // the games without a color pack). Everything else starts in Auto - the
     // games with a pack, and those Auto suits (Space Pinball; Red Alarm, its
-    // wireframes by depth - listed to say so).
+    // wireframes by depth; the games with a pack listed here say so).
     // Multicolor palettes, by index in kShadePalettes:
-    constexpr int kArcade = 0, kNeon = 1, kCandy = 2, kFireLeaf = 3, kOcean = 7, kSunsetM = 8, kLcdDark = 13;
+    constexpr int kArcade = 0, kNeon = 1, kCandy = 2, kFireLeaf = 3, kOcean = 7, kSunsetM = 8;
     struct Suggestion
     {
         uint32_t crc;
@@ -104,14 +104,14 @@ namespace
         {0x83cb6a00, "innsmouth", kOcean, -1}, // the sea town's deep blue
         {0xdf4d56b4, "funky bowling", kCandy, -1},
         {0xf3cd40dd, "niko-chan", kArcade, -1},
-        {0x19bb2dfb, "panic bomber", kArcade, -1},
-        {0x40498f5e, "panibon", kArcade, -1},
+        {0x19bb2dfb, "panic bomber", kAutoColors, -1}, // its color pack (scenery) - Panibon uses it too
+        {0x40498f5e, "panibon", kAutoColors, -1},
         {0xaa10a7b4, "red alarm", kAutoColors, -1}, // wireframes colored by depth (DepthColors.h)
         {0x7e85c45d, "red alarm", kAutoColors, -1},
         {0x44788197, "gundam", kOcean, -1},
         {0xfa44402d, "space invaders", kNeon, -1},
         {0x60895693, "space squash", kNeon, -1},
-        {0x3ccb67ae, "v-tetris", kLcdDark, -1},
+        {0x3ccb67ae, "v-tetris", kAutoColors, -1}, // its color pack
         {0x4c32ba5e, "vertical force", kArcade, -1},
         {0x9e9b8b92, "vertical force", kArcade, -1},
         {0x20688279, "virtual bowling", kSunsetM, -1}, // wooden lanes

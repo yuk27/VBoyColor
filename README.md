@@ -39,8 +39,9 @@ pack).*
   - **Tint** - the classic look: red, or any color you mix.
 - **Color packs** - hand-painted colors for a game, tile by tile, shown in
   Auto and Multicolor modes. Packs for Galactic Pinball, Jack Bros., Mario
-  Clash, Mario's Tennis, Teleroboxer and Wario Land are built in; they hold
-  only colors, no game graphics. A `.vbcp` file next to a ROM overrides the
+  Clash, Mario's Tennis, Teleroboxer and Wario Land are built in, and the
+  scenery of Panic Bomber and V-Tetris (their characters are still to be
+  painted); they hold only colors, no game graphics. A `.vbcp` file next to a ROM overrides the
   built-in one, and you can paint your own on PC: see
   [docs/COLOR_PACKS.md](docs/COLOR_PACKS.md).
 - **Colors per game** - every Virtual Boy game starts in the scheme that
