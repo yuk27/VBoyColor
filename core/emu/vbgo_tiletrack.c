@@ -86,9 +86,16 @@ static void StartPass(unsigned fb, const uint16_t *chr_ram, const uint16_t *dram
 
 void vbgo_tiletrack_set_enabled(bool enabled)
 {
-   vbgo_tt_on = enabled ? 1 : 0;
-   if (!enabled)
+   if (!enabled && vbgo_tt_on)
+   {
+      /* What was tracked goes stale while off - nothing to show until the
+       * next pass (switched back on: the screen shows tags again once a
+       * frame drawn with tracking on is displayed). */
       s_pass_open = 0;
+      s_have[0] = s_have[1] = 0;
+      memset(s_disp, 0, sizeof(s_disp));
+   }
+   vbgo_tt_on = enabled ? 1 : 0;
 }
 
 bool vbgo_tiletrack_is_enabled(void) { return vbgo_tt_on != 0; }

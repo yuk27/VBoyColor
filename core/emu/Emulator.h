@@ -164,8 +164,10 @@ public:
     // --- Experimental tile colorization groundwork (see vbgo_tiletrack.h) ---
     //
     // Tracking makes the core record, per displayed pixel, which 8x8 tile and
-    // which pixel of it was drawn there. Off by default (costs a little per
-    // drawn pixel); the debug view and captures need it on.
+    // which pixel of it was drawn there. It costs the core time on every drawn
+    // pixel, so it only runs while something uses it: the Auto mode, a
+    // Multicolor palette with a color pack, the debug view, the collector -
+    // or this (captures need it on).
     void SetTileTracking(bool enabled);
     bool IsTileTracking() const;
 
@@ -206,8 +208,8 @@ public:
     // to the ROM; otherwise loads an existing <rom>.vbcp (any platform), or
     // else one built into the app (asset "colorpacks/<rom>.vbcp" - Android
     // bundles them at build time, see android/app/build.gradle).
-    // Called by LoadRom; call again to pick up edited paintings. Turns tile
-    // tracking on when a pack is present. Returns a one-line summary.
+    // Called by LoadRom; call again to pick up edited paintings. Returns a
+    // one-line summary.
     std::string ReloadColorPack();
     bool HasColorPack() const { return !m_colorPack.Empty(); }
     // Painted tiles are drawn while a Multicolor palette is active (the
@@ -268,6 +270,8 @@ private:
     void PaintTileDebugView();
     // Tells the tracker which fills to tag (see SetAuthoring).
     void UpdateFillTracking();
+    // Turns the tracker on while anything uses it (see SetTileTracking).
+    void UpdateTileTracking();
     // Next free "<rom><infix> NNN" in captures/.
     std::string NextCaptureName(const char *infix) const;
     // Writes captures/<base>.png (3x upscale of rgb, width x height RGB) and
@@ -335,9 +339,11 @@ private:
     bool m_tileDebugView = false; // see SetTileDebugView
     TileColorPack m_colorPack;    // see ReloadColorPack
     ColorPackRenderer m_packRenderer;
-    // Coloring time (see UploadFrame): summed / worst over the frames since the last log line.
-    double m_coloringMs = 0.0, m_coloringMaxMs = 0.0;
-    int m_coloringFrames = 0;
+    bool m_trackingWanted = false; // see SetTileTracking
+    // Time per emulated frame (see RunFrame): the core's, and coloring both
+    // eyes' (UploadFrame) - summed / worst since the last log line.
+    double m_emulationMs = 0.0, m_emulationMaxMs = 0.0, m_coloringMs = 0.0, m_coloringMaxMs = 0.0;
+    int m_timedFrames = 0, m_coloringFrames = 0, m_catchUps = 0;
     bool m_colorPackEnabled = true;
     bool m_authoring = false;     // see SetAuthoring
     std::vector<uint64_t> m_records; // one eye's tile records, for the debug view / F7 collector

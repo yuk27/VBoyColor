@@ -83,22 +83,16 @@ struct AppSettings
     // colors are already in the frame and tinting on top would double them.
     //
     // The per-shade palette the emulator colors with (Emulator::
-    // SetShadePalette): the Multicolor one or kAutoColors - or, in Gradient mode for a game
-    // with a color pack, the gradient's own per-shade version: the pack's
-    // colors show, and whatever it doesn't color takes the gradient (picked
-    // by each shade's brightness, as Gradient mode does, but held steady
-    // through fades - see ShadeColorizer::SetGradient).
-    int EffectiveShadePalette(bool colorPack = false) const
+    // SetShadePalette): the Multicolor one or kAutoColors, the modes that
+    // show a game's color pack. Tint and Gradient never do - they only tint
+    // the shades (a Multicolor palette made from a gradient colors with the
+    // pack, and takes the gradient wherever the pack doesn't).
+    int EffectiveShadePalette() const { return selectedShadePalette >= 0 ? selectedShadePalette : -1; }
+    XrColor4f ScreenTint() const
     {
-        if (selectedShadePalette >= 0)
-            return selectedShadePalette;
-        return colorPack && selectedPattern >= 0 ? kFirstGradientShadePalette + selectedPattern : -1;
+        return EffectiveShadePalette() >= 0 ? XrColor4f{1.0f, 1.0f, 1.0f, 1.0f} : XrColor4f{colorR, colorG, colorB, 1.0f};
     }
-    XrColor4f ScreenTint(bool colorPack = false) const
-    {
-        return EffectiveShadePalette(colorPack) >= 0 ? XrColor4f{1.0f, 1.0f, 1.0f, 1.0f} : XrColor4f{colorR, colorG, colorB, 1.0f};
-    }
-    int ScreenPattern(bool colorPack = false) const { return EffectiveShadePalette(colorPack) >= 0 ? -1 : selectedPattern; }
+    int ScreenPattern() const { return EffectiveShadePalette() >= 0 ? -1 : selectedPattern; }
 
     // Best-effort; failures are silently ignored. Takes Platform by
     // reference rather than storing one - this struct is memcpy'd whole

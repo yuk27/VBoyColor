@@ -25,6 +25,19 @@ if(MSVC)
     add_compile_options(/utf-8)
 endif()
 
+# Android: native code is always optimized, also in the debug variant that
+# Android Studio's Run/Debug buttons build - otherwise that variant compiles
+# with no optimization at all (CMAKE_BUILD_TYPE=Debug), which makes the
+# emulator and the coloring 2-3x slower and the games stutter on the headset.
+# -g stays, so crashes still symbolize. To step through native code line by
+# line in a debugger, configure with -DVBGO_OPTIMIZE_DEBUG=OFF.
+if(ANDROID)
+    option(VBGO_OPTIMIZE_DEBUG "Optimize native code in debug builds too" ON)
+    if(VBGO_OPTIMIZE_DEBUG)
+        add_compile_options($<$<CONFIG:Debug>:-O2>)
+    endif()
+endif()
+
 include(FetchContent)
 
 # --------------------------------------------------------------------------

@@ -592,7 +592,7 @@ bool OpenXrApp::RenderScreenLayer(XrCompositionLayerQuad &leftQuadLayer, XrCompo
     // matches the flat quad's width at the same settings, so toggling curved
     // on/off doesn't change the screen's apparent horizontal size.
     const float centralAngle = (quadHeight * aspect) / cylinderRadius;
-    const XrColor4f tint = m_settings.ScreenTint(ColorPackShown());
+    const XrColor4f tint = m_settings.ScreenTint();
     const Emulator::Eye rightEyeCrop = m_settings.useThreeDeeMode ? Emulator::Eye::Right : Emulator::Eye::Left;
 
     struct LayerInfo
@@ -622,7 +622,7 @@ bool OpenXrApp::RenderScreenLayer(XrCompositionLayerQuad &leftQuadLayer, XrCompo
                                 m_appMenu.GetBackgroundColor());
         if (m_emulator.HasScreen())
             m_emulator.DrawScreen(m_uiRenderer, 0.0f, 0.0f, static_cast<float>(sc.width),
-                                  static_cast<float>(sc.height), info.eye, tint, m_settings.ScreenPattern(ColorPackShown()));
+                                  static_cast<float>(sc.height), info.eye, tint, m_settings.ScreenPattern());
         m_uiRenderer.EndFrame();
         XrSwapchainImageReleaseInfo releaseInfo{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
         CheckXr(xrReleaseSwapchainImage(sc.handle, &releaseInfo), "xrReleaseSwapchainImage (screen eye)");
@@ -810,7 +810,7 @@ void OpenXrApp::RenderFrame()
     m_emulator.SetGameplayInput(joypadBits);
     // Before RunFrame, and even while paused: a palette change from the
     // menu re-colors the frame already on screen (see SetShadePalette).
-    m_emulator.SetShadePalette(m_settings.EffectiveShadePalette(ColorPackShown()));
+    m_emulator.SetShadePalette(m_settings.EffectiveShadePalette());
     // Pause emulation while the menu is open so gameplay doesn't run away
     // unseen behind it - same as pc2d's Main.cpp. The screen layer keeps
     // redrawing the last streamed frame.

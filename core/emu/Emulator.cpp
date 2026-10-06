@@ -276,12 +276,21 @@ void Emulator::RunFrame(float deltaSeconds)
         m_frameAccumulator = kMaxCatchUp;
 
     bool ranAny = false;
+    int runs = 0;
     while (m_frameAccumulator >= framePeriod)
     {
+        const auto runStart = std::chrono::steady_clock::now();
         retro_run();
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - runStart).count();
+        m_emulationMs += ms;
+        m_emulationMaxMs = std::max(m_emulationMaxMs, ms);
+        ++m_timedFrames;
         m_frameAccumulator -= framePeriod;
         ranAny = true;
+        ++runs;
     }
+    if (runs > 1)
+        ++m_catchUps;
 
     if (ranAny && g_frameReady && m_ui)
     {
@@ -297,6 +306,28 @@ void Emulator::RunFrame(float deltaSeconds)
         m_lastFrameWidth = g_pendingWidth > 0 ? g_pendingWidth : kSideBySideWidth;
         m_lastFrameHeight = g_pendingHeight > 0 ? g_pendingHeight : kSideBySideHeight;
         g_frameReady = false;
+    }
+
+    // Frame times, logged every few seconds - to check them on the headset
+    // (logcat: VirtualBoyGo). Both run on the render thread, once per
+    // emulated frame (50 a second); "behind" counts app frames that had to
+    // run the core more than once to catch up (the app missed frames).
+    if (m_timedFrames >= 250)
+    {
+        // (an unoptimized build's times say little about an optimized one's)
+#if defined(__OPTIMIZE__) || (defined(_MSC_VER) && defined(NDEBUG))
+        const char *build = "";
+#else
+        const char *build = " - unoptimized build: build Release to measure";
+#endif
+        char coloring[96] = "no coloring";
+        if (m_coloringFrames > 0)
+            std::snprintf(coloring, sizeof(coloring), "coloring both eyes %.2f ms (%.2f at most)",
+                          m_coloringMs / m_coloringFrames, m_coloringMaxMs);
+        LogLine("[Emulator] A frame: emulation %.2f ms on average (%.2f at most), %s - last %d frames, behind %d times%s",
+                m_emulationMs / m_timedFrames, m_emulationMaxMs, coloring, m_timedFrames, m_catchUps, build);
+        m_emulationMs = m_emulationMaxMs = m_coloringMs = m_coloringMaxMs = 0.0;
+        m_timedFrames = m_coloringFrames = m_catchUps = 0;
     }
 }
 
@@ -319,7 +350,6 @@ void Emulator::SetShadePalette(int paletteIndex)
             palette[i] = ShadeRgb{AutoColors::kBase[i][0] / 255.0f, AutoColors::kBase[i][1] / 255.0f, AutoColors::kBase[i][2] / 255.0f};
         m_shadeColorizer.SetPalette(palette);
         m_shadeBackground = m_shadeColorizer.Palette()[0];
-        vbgo_tiletrack_set_enabled(true);
     }
     else if (paletteIndex >= 0)
     {
@@ -353,6 +383,7 @@ void Emulator::SetShadePalette(int paletteIndex)
         }
         m_shadeBackground = m_shadeColorizer.Palette()[0];
     }
+    UpdateTileTracking();
 
     // Emulation is paused while the menu is open, so RunFrame won't upload
     // anything new until it closes - re-color the frame already on screen
@@ -395,24 +426,12 @@ void Emulator::UploadFrame()
         const uint32_t eyeOffset[2] = {0, m_lastFrameWidth - VBGO_TT_WIDTH};
         m_packRenderer.SetPackShown(packShown);
         m_packRenderer.Paint(m_frameBufferRgba.data(), m_rawFrame.data(), kFbWidth, eyeOffset, m_shadeBackground);
-        // How long coloring both eyes takes (colorize + paint), logged every
-        // few seconds - to check it on the headset (logcat: VirtualBoyGo).
+        // How long coloring both eyes takes (colorize + paint) - logged with
+        // the emulation's time (see RunFrame).
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - coloringStart).count();
         m_coloringMs += ms;
         m_coloringMaxMs = std::max(m_coloringMaxMs, ms);
-        if (++m_coloringFrames == 250)
-        {
-            // (a Debug build isn't optimized - its times say little about a Release build's)
-#ifdef NDEBUG
-            const char *build = "";
-#else
-            const char *build = " - Debug build, unoptimized: build Release to measure";
-#endif
-            LogLine("[Emulator] Coloring both eyes: %.2f ms a frame on average, %.2f ms at most (last %d frames)%s",
-                    m_coloringMs / m_coloringFrames, m_coloringMaxMs, m_coloringFrames, build);
-            m_coloringMs = m_coloringMaxMs = 0.0;
-            m_coloringFrames = 0;
-        }
+        ++m_coloringFrames;
     }
     if (m_tileDebugView)
         PaintTileDebugView();
@@ -474,18 +493,26 @@ void Emulator::PaintTileDebugView()
 
 void Emulator::SetTileTracking(bool enabled)
 {
-    vbgo_tiletrack_set_enabled(enabled);
+    m_trackingWanted = enabled;
     if (!enabled && m_tileDebugView)
         SetTileDebugView(false);
+    UpdateTileTracking();
+}
+
+void Emulator::UpdateTileTracking()
+{
+    const bool colors = m_shadePaletteIndex >= 0 && (!m_colorPack.Empty() || m_packRenderer.AutoColorsOn());
+    const bool on = colors || m_trackingWanted || m_tileDebugView || m_collecting;
+    if (on != vbgo_tiletrack_is_enabled())
+        vbgo_tiletrack_set_enabled(on);
 }
 
 bool Emulator::IsTileTracking() const { return vbgo_tiletrack_is_enabled(); }
 
 void Emulator::SetTileDebugView(bool enabled)
 {
-    if (enabled)
-        vbgo_tiletrack_set_enabled(true);
     m_tileDebugView = enabled;
+    UpdateTileTracking();
     if (m_hasFrame && m_ui)
         UploadFrame(); // show/hide it right away, even while paused
 }
@@ -569,8 +596,7 @@ std::string Emulator::ReloadColorPack()
                       stats.rejected ? " - skipped: " : "", stats.rejected ? stats.lastError.c_str() : "");
 
     m_packRenderer.SetPack(&m_colorPack);
-    if (!m_colorPack.Empty() || m_packRenderer.AutoColorsOn())
-        vbgo_tiletrack_set_enabled(true);
+    UpdateTileTracking();
     UpdateFillTracking();
     // A gradient palette learns each game's brightness anew (and takes the
     // new pack's reference brightness).
@@ -884,11 +910,9 @@ std::string Emulator::SetCollectingUncolored(bool enabled)
     if (enabled == m_collecting)
         return m_collecting ? "Collecting uncolored objects" : "Not collecting";
     m_collecting = enabled;
+    UpdateTileTracking();
     if (enabled)
-    {
-        vbgo_tiletrack_set_enabled(true);
         return "Collecting uncolored objects - play, then switch it off to save paint sheets";
-    }
     if (!m_romLoaded)
         return "Stopped collecting";
     const std::vector<UncoloredCollector::Sheet> sheets = m_collector.TakeSheets(CapturePalette()[0]);
