@@ -246,7 +246,8 @@ eyes share, never on a search of the other eye. Layers both eyes draw and
 every sprite both eyes show are the same tile pixels in both eyes, so they're
 colored the same by construction. Some games draw a picture per eye instead -
 a left-only layer next to a right-only one (Mario Clash's stage, Wario Land's
-title, Galactic Pinball's tables), or sprites only one eye shows (much of a
+title, Galactic Pinball's tables - some draw a few left layers, then their
+right partners in the same order), or sprites only one eye shows (much of a
 Galactic Pinball table). The right picture then takes its left partner's
 colors: tiles both pictures use by tile (and a map cell's own colors by the
 left picture's cell with that tile pixel); the right picture's own tiles
