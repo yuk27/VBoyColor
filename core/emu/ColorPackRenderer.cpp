@@ -44,10 +44,11 @@ inline uint64_t Shifted(const uint64_t *row, int k, int d)
 
 constexpr int kMaxDisparity = 64;
 
-// The left-picture map (see m_leftPicture) has kPad guard pixels all
-// round, so a look kPad pixels away needs no bounds check.
-constexpr int kPad = 3, kMapW = VBGO_TT_WIDTH + 2 * kPad, kMapH = VBGO_TT_HEIGHT + 2 * kPad;
-// (dx, dy) within kPad pixels, nearest first (rows before columns on ties:
+// RegionColor looks for a left-picture pixel within kNear pixels of a spot
+// up to kNear pixels off the frame: the left-picture map (see m_leftPicture)
+// has kPad guard pixels all round, so that needs no bounds check.
+constexpr int kNear = 3, kPad = 2 * kNear, kMapW = VBGO_TT_WIDTH + 2 * kPad, kMapH = VBGO_TT_HEIGHT + 2 * kPad;
+// (dx, dy) within kNear pixels, nearest first (rows before columns on ties:
 // pictures are drawn in rows), with their offset in the map - see RegionColor.
 struct NearSpot
 {
@@ -56,9 +57,9 @@ struct NearSpot
 };
 const std::vector<NearSpot> kNearest = [] {
     std::vector<NearSpot> v;
-    for (int dy = -kPad; dy <= kPad; ++dy)
-        for (int dx = -kPad; dx <= kPad; ++dx)
-            if (dx * dx + dy * dy <= kPad * kPad)
+    for (int dy = -kNear; dy <= kNear; ++dy)
+        for (int dx = -kNear; dx <= kNear; ++dx)
+            if (dx * dx + dy * dy <= kNear * kNear)
                 v.push_back({static_cast<int8_t>(dx), static_cast<int8_t>(dy), dy * kMapW + dx});
     std::stable_sort(v.begin(), v.end(), [](const NearSpot &a, const NearSpot &b) {
         const int da = a.dx * a.dx + a.dy * a.dy, db = b.dx * b.dx + b.dy * b.dy;
@@ -606,10 +607,10 @@ bool ColorPackRenderer::RegionColor(int p, int x, int y, unsigned shade, const u
         return false;
     // The nearest left-picture pixel of the same shade to where the block's
     // disparity puts it (the very pixel, if the block is the left drawing
-    // shifted), within kNearReach.
+    // shifted), within kNear.
     const int lx = x + d;
     const uint8_t want = static_cast<uint8_t>((p + 1) | (shade << 5));
-    if (lx >= -kPad && lx < VBGO_TT_WIDTH + kPad)
+    if (lx >= -kNear && lx < VBGO_TT_WIDTH + kNear)
     {
         const uint8_t *at = &m_leftPicture[MapAt(lx, y)];
         for (const NearSpot &o : kNearest)
