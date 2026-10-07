@@ -84,8 +84,18 @@ namespace
         g_h = h;
         g_pitch = pitch;
     }
-    void Audio(int16_t, int16_t) {}
-    size_t AudioBatch(const int16_t *, size_t f) { return f; }
+    // The core's sound (44.1 kHz stereo), kept for vbp_audio_take.
+    std::vector<int16_t> g_audio;
+    void Audio(int16_t l, int16_t r)
+    {
+        g_audio.push_back(l);
+        g_audio.push_back(r);
+    }
+    size_t AudioBatch(const int16_t *d, size_t f)
+    {
+        g_audio.insert(g_audio.end(), d, d + f * 2);
+        return f;
+    }
     void Poll() {}
     int16_t Input(unsigned port, unsigned device, unsigned, unsigned id)
     {
@@ -387,6 +397,20 @@ extern "C"
             out[i * 3 + 2] = bgra[i * 4 + 0];
         }
         return static_cast<int>(g_w - VBGO_TT_WIDTH);
+    }
+
+    // Sound since the last call (or since loading), interleaved stereo
+    // samples: how many there are (out may be null to just ask), then
+    // copied out and forgotten.
+    size_t vbp_audio_take(int16_t *out)
+    {
+        const size_t n = g_audio.size();
+        if (out)
+        {
+            std::memcpy(out, g_audio.data(), n * sizeof(int16_t));
+            g_audio.clear();
+        }
+        return n;
     }
 
     void vbp_collect_reset() { g_collector.Reset(); }
