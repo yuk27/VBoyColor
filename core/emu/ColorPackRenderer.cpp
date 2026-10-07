@@ -676,6 +676,11 @@ ColorPackRenderer::Run ColorPackRenderer::SetUpRun(uint64_t t, unsigned eye, int
     if (c.pack)
     {
         const Slot &slot = m_slots[chr];
+        // A sprite drawn in a palette that shows all its shades alike is a
+        // silhouette - the game flashing a hit enemy (or boss), a blinking
+        // player - which painted colors alone would hide: they're washed
+        // toward that shade (see Paint), so the flash still shows.
+        run.flash = sprite && (c.flatObjPalettes >> palette & 1);
         run.slow = slot.ambiguous || (c.markers && slot.markerBits) || (slot.contextCount && c.haveContexts);
         if (c.haveCells && VBGO_TAG_HAS_CELL(t))
             run.cell = FindCell(VBGO_TAG_CELL(t), palette, slot.hash);
@@ -940,12 +945,13 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
         m_runCache.resize(kRunCacheSize);
     constexpr uint64_t kRunMask = 0x7FFull | (3ull << 17) | (1ull << 19) | (31ull << 22) | (1ull << 27) | (0xFFFFull << 28);
 
-    const RunSetUp setUp{pack, haveCells, markers != nullptr, haveContexts, pairs, leftPairSlot.data()};
+    RunSetUp setUp{pack, haveCells, markers != nullptr, haveContexts, pairs, leftPairSlot.data(), 0};
     for (unsigned eye = 0; eye < 2; ++eye)
     {
         if (!have[eye])
             continue;
         const vbgo_tt_eye_view &v = view[eye];
+        setUp.flatObjPalettes = v.flat_obj_palettes;
         if (pack)
             ResolveSlots(v.hashes);
         if (eye == 1 && pairs)
@@ -1151,6 +1157,16 @@ void ColorPackRenderer::Paint(uint8_t *frame, const uint8_t *raw, uint32_t fbWid
                         m_pairRows[y].push_back({static_cast<int16_t>(x), static_cast<uint8_t>(index), static_cast<uint8_t>(VBGO_TAG_PALETTE(t)),
                                                  static_cast<uint8_t>(VBGO_TAG_WORLD(t)), static_cast<uint16_t>(VBGO_TAG_CELL(t)),
                                                  m_slots[VBGO_TAG_CHAR(t)].hash});
+                    if (run.flash && shade && (!run.ramp || rgb != (*run.ramp)[shade - 1].data()))
+                    {
+                        // (painted, in a flash: 60% of the way to the shade's white, gray or black)
+                        static constexpr int kTarget[4] = {0, 0, 128, 255};
+                        uint8_t washed[3];
+                        for (int ch = 0; ch < 3; ++ch)
+                            washed[ch] = static_cast<uint8_t>((rgb[ch] * 2 + kTarget[shade] * 3) / 5);
+                        write(&frame[i], washed, rawPixel >> 26);
+                        continue;
+                    }
                     write(&frame[i], rgb, rawPixel >> 26);
                 }
         }

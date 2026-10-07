@@ -93,7 +93,7 @@ function(vbgo_generate_patched_vip VB_CORE_DIR OUT_DIR)
     # (it writes its tags straight into its own frame buffer copy).
     _vbgo_replace_once(VIP
         [=[               VIP_DrawBlock(DrawingBlock, DrawingBuffers[0] + 8, DrawingBuffers[1] + 8);]=]
-        [=[               vbgo_tiletrack_begin_block(DrawingBuffers[0], CHR_RAM, DRAM, DrawingBlock, DrawingFB); /* VirtualBoyGo */
+        [=[               vbgo_tiletrack_begin_block(DrawingBuffers[0], CHR_RAM, DRAM, DrawingBlock, DrawingFB, &JPLT_Cache[0][0]); /* VirtualBoyGo */
                VIP_DrawBlock(DrawingBlock, DrawingBuffers[0] + 8, DrawingBuffers[1] + 8);]=]
         "vip.c (VIP_DrawBlock call)")
     # Displayed column -> output tags (side-by-side is the only 3D mode the

@@ -247,6 +247,7 @@ private:
         uint64_t rightPainted = 0;                     // (own tile: its pixels painted in right-eye captures)
         bool record = false;                           // (a left picture's tile colored per map cell: remember where)
         bool slow = false;                             // context, ambiguous or a marker: per 8 rows (see Paint)
+        bool flash = false;                            // a sprite in a palette showing all its shades alike
         bool extra = false;                            // any of the four above: more to do per pixel than color it
         int band = -1;                                 // (slow: the row of grid cells its markers and tile are for)
         int copyBand = -1, copyDx = 0;                 // (copy: the row of blocks, and its shift there or kNoDisparity)
@@ -262,6 +263,7 @@ private:
         const TileColorPack *pack;
         bool haveCells, markers, haveContexts, pairs;
         uint32_t *leftPairSlot;
+        unsigned flatObjPalettes; // (this eye's - see vbgo_tt_eye_view)
     };
     Run SetUpRun(uint64_t tag, unsigned eye, int x, int y, const RunSetUp &setUp);
     static constexpr int kRunCacheBits = 10, kRunCacheSize = 1 << kRunCacheBits;

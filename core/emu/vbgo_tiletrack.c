@@ -31,6 +31,7 @@ static uint8_t s_blank[2][2048];
 static uint16_t s_worlds[2][VBGO_WORLD_HALFWORDS];
 static uint16_t s_oam[2][VBGO_OAM_HALFWORDS];
 static int s_have_attrs[2];
+static unsigned s_flat[2]; /* per buffer: flat sprite palettes as its pass started (see the view) */
 static int s_have[2];
 static int s_cpu[2]; /* per buffer: the CPU wrote into it since its pass (or a reset since) */
 static int s_pass_open; /* a drawing pass has started (block 0 seen, or tracking switched on mid-pass) */
@@ -125,7 +126,7 @@ void vbgo_tiletrack_set_fill_cells(const uint8_t *bits)
 }
 
 void vbgo_tiletrack_begin_block(const uint8_t *drawing_buffers, const uint16_t *chr_ram, const uint16_t *dram,
-                                unsigned block_no, unsigned fb)
+                                unsigned block_no, unsigned fb, const uint8_t *jplt)
 {
    if (!vbgo_tt_on)
       return;
@@ -133,7 +134,15 @@ void vbgo_tiletrack_begin_block(const uint8_t *drawing_buffers, const uint16_t *
    /* Once per pass (games update tile graphics between frames), or right
     * after tracking was switched on mid-pass. */
    if (block_no == 0 || !s_pass_open || (int)fb != s_last_fb)
+   {
+      unsigned p;
       StartPass(fb, chr_ram, dram);
+      s_flat[fb] = 0;
+      if (jplt)
+         for (p = 0; p < 4; p++)
+            if (jplt[p * 4 + 1] == jplt[p * 4 + 2] && jplt[p * 4 + 2] == jplt[p * 4 + 3])
+               s_flat[fb] |= 1u << p;
+   }
    s_last_fb = (int)fb;
    vbgo_tt_block_base = drawing_buffers;
    vbgo_tt_blank = s_blank[fb];
@@ -192,6 +201,7 @@ bool vbgo_tiletrack_eye_view(unsigned eye, vbgo_tt_eye_view *view)
    view->worlds = s_have_attrs[fb] ? s_worlds[fb] : NULL;
    view->oam = s_have_attrs[fb] ? s_oam[fb] : NULL;
    view->cpu_drawn = s_cpu[fb];
+   view->flat_obj_palettes = s_flat[fb];
    for (x = 0; x < VBGO_TT_WIDTH; x++)
    {
       const uint8_t d = s_disp[eye & 1][x];

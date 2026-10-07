@@ -113,6 +113,10 @@ typedef struct
     * (pixels no tile drew - see vbgo_tiletrack_cpu_fb_write), or what's in
     * it isn't known (a reset since) - 0: every pixel shown came from the pass. */
    int cpu_drawn;
+   /* Sprite palettes (bit per JPLT0-3) that showed every pixel value 1-3 in
+    * one shade as the pass started - a silhouette: games flash a hit enemy
+    * by switching it to such a palette. */
+   unsigned flat_obj_palettes;
 } vbgo_tt_eye_view;
 
 /* World attribute fields (w = 16 halfwords of one world). */
@@ -257,9 +261,10 @@ static inline void vbgo_tt_tag_row8(uint64_t *d, unsigned pixels, int flipped, u
 }
 
 /* dram: the VIP's DRAM (VIP 0x20000-0x3FFFF as halfwords), for the world and
- * OBJ attributes - may be NULL. */
+ * OBJ attributes - may be NULL. jplt: the sprite palettes as shades (4 x 4:
+ * palette, pixel value -> shade) - may be NULL. */
 void vbgo_tiletrack_begin_block(const uint8_t *drawing_buffers, const uint16_t *chr_ram, const uint16_t *dram,
-                                unsigned block_no, unsigned fb);
+                                unsigned block_no, unsigned fb, const uint8_t *jplt);
 void vbgo_tiletrack_display_column(unsigned fb, unsigned lr, unsigned dest_lr, unsigned column, bool display_active);
 void vbgo_tiletrack_cpu_fb_write(unsigned fb, unsigned lr, unsigned offset, unsigned bytes);
 
