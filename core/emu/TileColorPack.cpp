@@ -1267,8 +1267,8 @@ void TileColorPack::FinishImport(ImportStats &stats)
             inFigure = (vote->extra & kFigureVote) != 0;
         if (!rightPicture && inFigure && distinct > 1 && contextHashes.count(current.hash) != 0)
         {
-            constexpr int kAlike = 60; // |dR|+|dG|+|dB| still the same color (another brush shade)
             auto alikeColor = [best](uint32_t c) {
+                constexpr int kAlike = 60; // |dR|+|dG|+|dB| still the same color (another brush shade)
                 if (c == best)
                     return true;
                 if (c == kNoColor || c == kBackground || best == kNoColor || best == kBackground)
