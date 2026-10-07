@@ -1,6 +1,7 @@
 // Python-drivable (ctypes) wrapper around the patched core + the app's own
 // ShadeColorizer / TileColorPack / ColorPackRenderer / UncoloredCollector,
 // for exploring games and rendering frames exactly as the app does.
+#include <string>
 #include <libretro.h>
 #include "vbgo_tiletrack.h"
 #include "emu/ColorPackRenderer.h"
@@ -51,6 +52,22 @@ namespace
             {
                 var->value = "side-by-side";
                 return true;
+            }
+            // VBP_OPTS="key=value,key=value": other core options (e.g.
+            // vb_opposite_directions=enabled for movies that press both).
+            if (const char *opts = std::getenv("VBP_OPTS"))
+            {
+                static std::string value;
+                const std::string all = std::string(",") + opts + ",";
+                const std::string key = std::string(",") + var->key + "=";
+                const size_t at = all.find(key);
+                if (at != std::string::npos)
+                {
+                    const size_t start = at + key.size();
+                    value = all.substr(start, all.find(',', start) - start);
+                    var->value = value.c_str();
+                    return true;
+                }
             }
             return false;
         }
@@ -373,13 +390,18 @@ extern "C"
     }
 
     void vbp_collect_reset() { g_collector.Reset(); }
-    int vbp_collect_frame()
+    // objectsOnly: only sprites count (backgrounds are left to the palette).
+    int vbp_collect_frame(int objectsOnly)
     {
         std::vector<uint8_t> raw(static_cast<size_t>(g_w) * g_h * 4);
         vbp_raw(raw.data());
         std::vector<uint64_t> rec(VBGO_TT_EYE_PIXELS);
         if (!vbgo_tiletrack_records(0, rec.data(), nullptr, false))
             return 0;
+        if (objectsOnly)
+            for (uint64_t &r : rec)
+                if (!VBGO_TT_IS_OBJ(r))
+                    r = 0;
         return g_collector.AddFrame(rec.data(), raw.data(), g_w, g_pack, g_pal8);
     }
     long vbp_collect_stats(int which) { return which ? static_cast<long>(g_collector.CollectedTilePixels()) : static_cast<long>(g_collector.PendingCrops()); }

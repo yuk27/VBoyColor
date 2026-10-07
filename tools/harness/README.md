@@ -14,6 +14,7 @@ export VBP_STATES=/path/to/states               # save states (not in the repo)
 python3 worlds.py ROM.vb [STATE] ["_*60"]       # how the game draws its 3D right now
 python3 symmetry.py ROM.vb PACK.vbcp|auto [STATE] [FRAMES] [EVERY]
 python3 timing.py ROM.vb PACK.vbcp|auto [STATE] [FRAMES]
+python3 tas.py ROM.vb MOVIE.bk2 OUT_DIR [--pack PACK.vbcp] [--all]   # a TAS's run, F7-style paint sheets
 ```
 
 ROMs, save states, packs and paintings stay out of the repo (they're the
@@ -40,6 +41,12 @@ games' content or Juan's work); they live on Juan's PC under `out\`.
   the left pixel where the left eye's per-eye content best matches the shades
   around it (not 0 - the two pictures are often different drawings - but
   lower is closer).
+- `tas.py` - plays a BizHawk movie (`.bk2`, as TASVideos publishes them) with
+  the app's core and collects everything the pack doesn't color yet along the
+  whole run into paint sheets, like the app's F7 (sprites only unless `--all`).
+  Syncs with the core options BizHawk's Mednafen core uses (accurate CPU, both
+  directions of a D-pad at once) - `VBP_OPTS` passes core options to the
+  library (`key=value,key=value`).
 - `timing.py` - milliseconds per emulated frame for coloring both eyes
   (colorize + paint, as the app's UploadFrame - with the app's frame layout,
   1024 pixels a row; the app logs the same, with the emulation's time, on the
