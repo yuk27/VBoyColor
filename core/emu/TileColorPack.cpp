@@ -831,6 +831,27 @@ void TileColorPack::ResolveContexts(ImportStats &stats)
         // other paintings made of the same frames.
         rank[i] = nth > 0 ? 0 : 1;
     }
+    // Two ways of one tile in one group can't both be used (the runtime takes
+    // the group's first): the ATLUS logo's blue square and the message boxes'
+    // cream one, joined through objects whose markers overlap. The way with
+    // the most pixels stays; each other way also gets a group of its own -
+    // its own markers, tried before the others - so it shows by its own
+    // object. (The group it came from keeps its markers: it switches on just
+    // as before.) Groups past the limit are this kind first.
+    std::vector<bool> second(pending.size(), false);
+    {
+        std::unordered_map<uint64_t, size_t> keep; // (group, tile) -> the way that stays
+        for (size_t i = 0; i < pending.size(); ++i)
+        {
+            if (pending[i].family >= 0)
+                continue;
+            const auto it = keep.emplace((static_cast<uint64_t>(root(i)) << 32) | pending[i].hash, i).first;
+            if (pending[i].pixels > pending[it->second].pixels)
+                it->second = i;
+        }
+        for (size_t i = 0; i < pending.size(); ++i)
+            second[i] = pending[i].family < 0 && keep[(static_cast<uint64_t>(root(i)) << 32) | pending[i].hash] != i;
+    }
     std::unordered_map<size_t, std::pair<size_t, size_t>> groups; // root -> (pixels, group index)
     for (size_t i = 0; i < pending.size(); ++i)
         groups[root(i)].first += pending[i].pixels;
@@ -840,18 +861,32 @@ void TileColorPack::ResolveContexts(ImportStats &stats)
     std::sort(order.begin(), order.end(), [](const auto &a, const auto &b) { return a.first != b.first ? a.first > b.first : a.second < b.second; });
     if (order.size() > kMaxContextGroups)
         order.resize(kMaxContextGroups);
-    // Deterministic group order: by precedence (see rank), then their
-    // smallest marker.
+    // The second ways' own groups (keyed past the roots), the largest first, in what room is left.
+    std::vector<std::pair<size_t, size_t>> seconds;
+    for (size_t i = 0; i < pending.size(); ++i)
+        if (second[i])
+        {
+            const bool kept = std::any_of(order.begin(), order.end(), [&](const auto &o) { return o.second == root(i); });
+            if (kept)
+                seconds.emplace_back(pending[i].pixels, pending.size() + i);
+        }
+    std::sort(seconds.begin(), seconds.end(), [](const auto &a, const auto &b) { return a.first != b.first ? a.first > b.first : a.second < b.second; });
+    for (const auto &g : seconds)
+        if (order.size() < kMaxContextGroups)
+            order.push_back(g);
+    auto member = [&](size_t i, size_t group) { return group >= pending.size() ? i == group - pending.size() : root(i) == group; };
+    // Deterministic group order: by precedence (see rank; a second way's own
+    // group before the groups it overlaps), then their smallest marker.
     std::vector<std::pair<uint64_t, size_t>> byMarker;
     for (const auto &o : order)
     {
         uint32_t smallest = ~0u;
         int groupRank = 2;
         for (size_t i = 0; i < pending.size(); ++i)
-            if (root(i) == o.second)
+            if (member(i, o.second))
             {
                 smallest = std::min(smallest, pending[i].markers.front());
-                groupRank = std::min(groupRank, rank[i]);
+                groupRank = std::min(groupRank, o.second >= pending.size() ? 1 : rank[i]);
             }
         byMarker.emplace_back((static_cast<uint64_t>(groupRank) << 32) | smallest, o.second);
     }
@@ -862,10 +897,11 @@ void TileColorPack::ResolveContexts(ImportStats &stats)
         std::vector<uint32_t> markers;
         bool figures = true;
         for (size_t i = 0; i < pending.size(); ++i)
-            if (root(i) == g.second)
+            if (member(i, g.second))
             {
                 markers.insert(markers.end(), pending[i].markers.begin(), pending[i].markers.end());
-                m_contextTiles.push_back({pending[i].hash, index, pending[i].tile});
+                if (g.second >= pending.size() || !second[i])
+                    m_contextTiles.push_back({pending[i].hash, index, pending[i].tile});
                 figures = figures && pending[i].figures;
             }
         if (figures)
