@@ -286,6 +286,8 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
     // of the screen's sides (the players Mario's Tennis draws as backgrounds,
     // which share their solid tiles with every other player).
     constexpr size_t kMaxObjectPixels = 4096, kMaxObjectTiles = 96, kMinFigurePixels = 16;
+    // (a background figure can be bigger: Panic Bomber's story portraits, up to ~10,000 pixels and 160 tiles)
+    constexpr size_t kMaxFigurePixels = 16384, kMaxFigureTiles = 256;
     std::vector<int32_t> object;
     if (figureIds)
     {
@@ -391,14 +393,14 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
             const uint8_t layer = layerOf[group.first];
             if (layer >= 32 && (figures[layer - 32] != 1 || atSide[layer - 32] || group.second.size() < kMinFigurePixels))
                 continue;
-            if (group.second.size() > kMaxObjectPixels)
+            if (group.second.size() > (layer >= 32 ? kMaxFigurePixels : kMaxObjectPixels))
                 continue;
             std::vector<uint32_t> tiles;
             for (const size_t i : group.second)
                 tiles.push_back(VBGO_TT_HASH(ReadLe64(&sidecar[headerSize + i * 8])));
             std::sort(tiles.begin(), tiles.end());
             tiles.erase(std::unique(tiles.begin(), tiles.end()), tiles.end());
-            if (tiles.size() > kMaxObjectTiles)
+            if (tiles.size() > (layer >= 32 ? kMaxFigureTiles : kMaxObjectTiles))
                 continue;
             uint8_t palette = 0xFE;
             for (const size_t i : group.second)
@@ -1198,7 +1200,13 @@ void TileColorPack::FinishImport(ImportStats &stats)
     std::sort(m_layerVotes.begin(), m_layerVotes.end(), byKeyThenColor);
     variants(m_layerVotes, 5, m_layerTiles, stats.layerPixels, nullptr);
 
-    // Cleanup 4: map cells. Wherever a painting shows a background tile at a
+    // Cleanup 4: shared tiles that objects paint differently (context).
+    ResolveContexts(stats);
+    std::unordered_set<uint32_t> contextHashes;
+    for (const ContextTile &c : m_contextTiles)
+        contextHashes.insert(c.hash);
+
+    // Cleanup 5: map cells. Wherever a painting shows a background tile at a
     // fixed spot, the color painted there wins at that spot if it differs
     // from what the tile gets anyway (palette variant, else the tile's own) -
     // and that's the only place fills (transparent pixels painted over) live.
@@ -1250,6 +1258,32 @@ void TileColorPack::FinishImport(ImportStats &stats)
             expected = kNoColor;
         if (best == expected && !rightPicture)
             return;
+        // Paintings that disagree at a spot about a tile background figures
+        // paint their own ways (Panic Bomber draws every opponent's portrait
+        // at the same place, out of the same plain filled tiles): no color of
+        // the spot's own - the tile's context there decides whose it is.
+        bool inFigure = false; // (shown inside a background figure - a portrait - in some painting)
+        for (auto vote = begin; vote != end && !inFigure; ++vote)
+            inFigure = (vote->extra & kFigureVote) != 0;
+        if (!rightPicture && inFigure && distinct > 1 && contextHashes.count(current.hash) != 0)
+        {
+            constexpr int kAlike = 60; // |dR|+|dG|+|dB| still the same color (another brush shade)
+            auto alikeColor = [best](uint32_t c) {
+                if (c == best)
+                    return true;
+                if (c == kNoColor || c == kBackground || best == kNoColor || best == kBackground)
+                    return false;
+                int d = 0;
+                for (int shift = 0; shift <= 16; shift += 8)
+                    d += std::abs(static_cast<int>((c >> shift) & 255) - static_cast<int>((best >> shift) & 255));
+                return d <= kAlike;
+            };
+            uint32_t alike = 0;
+            for (auto vote = begin; vote != end; ++vote)
+                alike += alikeColor(vote->rgb);
+            if (alike * 3 < allVotes * 2)
+                return;
+        }
         if (best == kNoColor)
             current.keep |= 1ull << index;
         else
@@ -1257,9 +1291,6 @@ void TileColorPack::FinishImport(ImportStats &stats)
         ++stats.cellPixels;
     });
     flush();
-
-    // Cleanup 5: shared tiles that objects paint differently (context).
-    ResolveContexts(stats);
 
     // Right-eye sprites' tiles painted in right-eye captures: which of their
     // pixels (the renderer uses those as painted, not from the left picture).

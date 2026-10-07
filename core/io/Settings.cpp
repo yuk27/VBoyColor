@@ -103,8 +103,7 @@ namespace
         int pattern;      // a gradient (with shadePalette -1), else -1
     };
     constexpr Suggestion kSuggestions[] = {
-        // Gradient, Sunset: its blocks, coins and treasure in warm, natural hues (Juan's pick).
-        {0x133e9372, "wario land", -1, 2},
+        {0x133e9372, "wario land", kAutoColors, -1}, // its color pack (it started in Gradient, Sunset before it had one)
         {0xbb71b522, "3-d tetris", kArcade, -1},
         {0xe81a3703, "bound high", kArcade, -1},
         {0x2199af41, "golf", kFireLeaf, -1}, // green fairways
