@@ -50,6 +50,39 @@
 //
 // Saved as "<rom>.vbcp" next to the ROM, so a finished pack can be copied to
 // any platform without the paintings.
+
+// A set of context groups, one bit each (see TileColorPack::ContextGroups).
+struct ContextGroupBits
+{
+    static constexpr size_t kWords = 4;
+    uint64_t w[kWords] = {};
+    bool Any() const { return (w[0] | w[1] | w[2] | w[3]) != 0; }
+    explicit operator bool() const { return Any(); }
+    bool Test(size_t g) const { return (w[g >> 6] >> (g & 63)) & 1; }
+    void Set(size_t g) { w[g >> 6] |= 1ull << (g & 63); }
+    ContextGroupBits &operator|=(const ContextGroupBits &o)
+    {
+        for (size_t i = 0; i < kWords; ++i)
+            w[i] |= o.w[i];
+        return *this;
+    }
+    ContextGroupBits operator|(const ContextGroupBits &o) const { ContextGroupBits r = *this; return r |= o; }
+    ContextGroupBits operator&(const ContextGroupBits &o) const
+    {
+        ContextGroupBits r;
+        for (size_t i = 0; i < kWords; ++i)
+            r.w[i] = w[i] & o.w[i];
+        return r;
+    }
+    ContextGroupBits operator~() const
+    {
+        ContextGroupBits r;
+        for (size_t i = 0; i < kWords; ++i)
+            r.w[i] = ~w[i];
+        return r;
+    }
+};
+
 class TileColorPack
 {
 public:
@@ -121,14 +154,14 @@ public:
         Tile tile;
     };
     // Per group, its marker tiles (sorted); at most kMaxContextGroups groups.
-    static constexpr size_t kMaxContextGroups = 64;
+    static constexpr size_t kMaxContextGroups = 64 * ContextGroupBits::kWords;
     const std::vector<std::vector<uint32_t>> &ContextGroups() const { return m_contextGroups; }
     // Sorted by hash, then group.
     const std::vector<ContextTile> &ContextTiles() const { return m_contextTiles; }
     // Groups (bit per group) found on background figures only: their markers
     // switch them on only on the layer the marker is drawn on - so a figure
     // next to another (portraits in a row) doesn't take its colors.
-    uint64_t LayerBoundGroups() const { return m_contextLayerBound; }
+    const ContextGroupBits &LayerBoundGroups() const { return m_contextLayerBound; }
 
     // Tiles a character sheet (VBGOFIG1) paints two ways within one frame (a
     // plain filled tile white on the shirt, green on the cap): no context can
@@ -248,7 +281,7 @@ private:
     std::vector<CellTile> m_cellTiles;
     std::vector<std::vector<uint32_t>> m_contextGroups;
     std::vector<ContextTile> m_contextTiles;
-    uint64_t m_contextLayerBound = 0;
+    ContextGroupBits m_contextLayerBound;
     std::unordered_set<uint32_t> m_ambiguous;
     std::unordered_map<uint32_t, uint64_t> m_eyeTiles;   // hash -> right-eye sprite pixels painted (RightEyePainted)
     std::unordered_map<uint32_t, uint64_t> m_eyePending; // (import: the same, before resolving)

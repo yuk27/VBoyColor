@@ -109,7 +109,7 @@ private:
         bool layered = false;                        // the tile has per-layer colors - look them up
         const TileColorPack::Tile *base = nullptr;   // the tile's own colors
         const TileColorPack::Tile *palette[4] = {};  // per palette: its own colors, else base
-        uint64_t markerBits = 0;                     // context groups this tile is a marker of
+        ContextGroupBits markerBits;                 // context groups this tile is a marker of
         uint32_t contextFirst = 0, contextCount = 0; // its context variants in the pack's ContextTiles()
         bool ambiguous = false;                      // painted two ways in a frame: takes its surroundings' colors
         bool cellColored = false;                    // some map cell has colors of its own for it
@@ -285,21 +285,23 @@ private:
     // layer, by a marker drawn on it (each cell remembers the layer its last
     // such marker was drawn on).
     static constexpr int kGridW = VBGO_TT_WIDTH / 8, kGridH = VBGO_TT_HEIGHT / 8, kContextReach = 4;
-    std::unordered_map<uint32_t, uint64_t> m_markerBits;
+    std::unordered_map<uint32_t, ContextGroupBits> m_markerBits;
     std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>> m_contextRange; // hash -> (first, count)
-    std::vector<uint64_t> m_markerGrid[3];
-    std::array<uint64_t, 2048> m_slotMarkers{}; // per slot: its markerBits (compact, for gathering this frame's markers)
+    std::vector<ContextGroupBits> m_markerGrid[3];
+    std::array<ContextGroupBits, 2048> m_slotMarkers{}; // per slot: its markerBits (compact, for gathering this frame's markers)
     std::vector<uint8_t> m_markerLayer[3];
-    uint64_t m_layerBound = 0;
+    ContextGroupBits m_layerBound;
     unsigned m_gridCurrent = 0;
-    uint64_t Near(int x, int y, unsigned world);
+    // (near: within kContextReach cells; close: within 1 - see contextTile)
+    void Near(int x, int y, unsigned world, ContextGroupBits &near, ContextGroupBits &close);
     struct NearCell
     {
         uint32_t frame = 0; // (when worked out)
-        uint64_t bits = 0;
+        ContextGroupBits bits, close;
     };
     std::array<std::vector<NearCell>, 32> m_nearCache; // (Near's, per layer and grid cell)
-    std::vector<uint64_t> m_nearSprites; // per grid cell: sprites' groups with a marker within reach (this frame and the last two)
+    std::vector<ContextGroupBits> m_nearSprites;  // per grid cell: sprites' groups with a marker within reach (this frame and the last two)
+    std::vector<ContextGroupBits> m_closeSprites; // (the same, within one cell)
 
     // Auto mode, what no tile drew (the game's CPU wrote it into the frame
     // buffer): colored by depth. Returns the brightest level it painted.

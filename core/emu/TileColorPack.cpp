@@ -19,6 +19,7 @@ namespace
     constexpr char kFiguresMagic[8] = {'V', 'B', 'G', 'O', 'F', 'I', 'G', '1'}; // + figure id per pixel (uint16)
     constexpr char kContextMagic[8] = {'V', 'B', 'G', 'O', 'C', 'T', 'X', '1'}; // context variants, after the v3 pack
     constexpr char kLayerBoundMagic[8] = {'V', 'B', 'G', 'O', 'C', 'T', 'X', 'L'}; // which of them are layer-bound, after that
+    constexpr char kLayerBoundWideMagic[8] = {'V', 'B', 'G', 'O', 'C', 'T', 'X', 'W'}; // (the same, past 64 groups)
     constexpr char kAmbiguousMagic[8] = {'V', 'B', 'G', 'O', 'A', 'M', 'B', '1'};
     constexpr char kEyeMagic[8] = {'V', 'B', 'G', 'O', 'E', 'Y', 'E', '1'};      // sidecar: per pixel, 1 = a right picture's own (right-eye capture)
     constexpr char kEyeTilesMagic[8] = {'V', 'B', 'G', 'O', 'E', 'Y', 'T', '1'}; // pack: tiles painted in right-eye captures, after those
@@ -116,7 +117,7 @@ void TileColorPack::Clear()
     m_cellTiles.clear();
     m_contextGroups.clear();
     m_contextTiles.clear();
-    m_contextLayerBound = 0;
+    m_contextLayerBound = ContextGroupBits{};
     m_ambiguous.clear();
     m_eyeTiles.clear();
     m_eyePending.clear();
@@ -269,7 +270,12 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
     const bool sheet = !figureIds && !(w == VBGO_TT_WIDTH && h == VBGO_TT_HEIGHT);
     if (!sheet && !figureIds && level >= 0 && level <= 63)
         m_paintingLevels.push_back(static_cast<uint8_t>(level));
-    constexpr int kSameColor = 24;  // |dR|+|dG|+|dB| still counted as the capture's own color
+    // |dR|+|dG|+|dB| still counted as the capture's own shade color: just
+    // rounding (a capture saved at another brightness is off by a few) - a
+    // color picked near it is painted (Jack Lantern's pumpkin orange, a
+    // cream a little warmer than the capture's: 16-18 away).
+    constexpr int kSameShade = 6;
+    constexpr int kSameColor = 24; // (the background: a dark color that close to it is still the background)
     constexpr int kMagentaReach = 40;
     static const uint8_t kMagenta[3] = {255, 0, 255};
 
@@ -432,10 +438,10 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
                 continue; // fills only count at their map cell
             const int px = std::min(width - 1, static_cast<int>((x + 0.5) * sx));
             const uint8_t *p = &pixels[(static_cast<size_t>(py) * width + px) * channels];
-            if (!fill && (Distance(p, shown[1]) <= kSameColor || Distance(p, shown[2]) <= kSameColor ||
-                          Distance(p, shown[3]) <= kSameColor))
+            if (!fill && (Distance(p, shown[1]) <= kSameShade || Distance(p, shown[2]) <= kSameShade ||
+                          Distance(p, shown[3]) <= kSameShade))
                 continue; // left as captured - not painted
-            if (shownPixels && Distance(p, &shownPixels[i * 3]) <= kSameColor &&
+            if (shownPixels && Distance(p, &shownPixels[i * 3]) <= kSameShade &&
                 (!fill || Distance(&shownPixels[i * 3], shown[0]) > kSameColor))
                 continue; // still the pack's color it was captured with (a background left as such still counts)
             // (A transparent pixel left as the background still counts: it
@@ -536,7 +542,7 @@ void TileColorPack::ResolveContexts(ImportStats &stats)
     // the objects' own tiles that no other object with that tile has.
     m_contextGroups.clear();
     m_contextTiles.clear();
-    m_contextLayerBound = 0;
+    m_contextLayerBound = ContextGroupBits{};
     m_ambiguous.clear();
     if (m_contextVotes.empty() || m_objectTiles.empty())
         return;
@@ -571,6 +577,7 @@ void TileColorPack::ResolveContexts(ImportStats &stats)
         uint64_t painted = 0; // pixels the objects showed
         bool figures = false; // only background figures paint it so (their markers count on their own layer)
         int32_t family = -1;  // all its objects are frames of one figure sheet's character
+        bool usual = false;   // the tile's usual colors (switched on by the objects that paint it so)
     };
     std::vector<Pending> pending;
     const size_t total = m_contextVotes.size();
@@ -786,13 +793,63 @@ void TileColorPack::ResolveContexts(ImportStats &stats)
                 }
                 pending.push_back(std::move(p));
             }
+            // The tile's usual colors as a context of their own too, switched
+            // on by the markers of the sprites that paint it so: on one of
+            // those, its usual colors win over another way whose markers are
+            // only near because a neighbor shows them (a row of Jack Bros.'
+            // bushes, one turned to show a tile the pink demon shares - see
+            // the renderer's close pass).
+            if (!figures && !clusters.empty())
+            {
+                std::vector<uint32_t> others, markers;
+                size_t usualPixels = 0;
+                for (size_t a = 0; a < objects.size(); ++a)
+                    if (clusterOf[a] >= 0)
+                        others.insert(others.end(), m_objectTiles[objects[a].id].begin(), m_objectTiles[objects[a].id].end());
+                std::sort(others.begin(), others.end());
+                for (size_t a = 0; a < objects.size(); ++a)
+                    if (clusterOf[a] < 0 && objects[a].differs < 3)
+                    {
+                        usualPixels += objects[a].painted;
+                        for (const uint32_t m : m_objectTiles[objects[a].id])
+                            if (m != hash && !std::binary_search(others.begin(), others.end(), m))
+                                markers.push_back(m);
+                    }
+                std::sort(markers.begin(), markers.end());
+                markers.erase(std::unique(markers.begin(), markers.end()), markers.end());
+                if (!markers.empty())
+                {
+                    Pending p{hash, std::move(markers), *base, usualPixels, base->mask};
+                    p.usual = true;
+                    pending.push_back(std::move(p));
+                }
+            }
         }
+    }
+    // A tile that has ways of its own is no marker: it shows in objects of
+    // every color it has (a plain filled tile - half the sprites have one),
+    // so a group it marks would switch on wherever the tile is (Teleroboxer's
+    // health bars took Pagero's cream).
+    {
+        std::unordered_set<uint32_t> shared;
+        for (const Pending &p : pending)
+            shared.insert(p.hash);
+        for (Pending &p : pending)
+            if (p.family < 0) // (a sheet character's frames are switched on by all its tiles - see below)
+                p.markers.erase(std::remove_if(p.markers.begin(), p.markers.end(), [&shared](uint32_t m) { return shared.count(m) != 0; }),
+                                p.markers.end());
+        pending.erase(std::remove_if(pending.begin(), pending.end(), [](const Pending &p) { return p.markers.empty(); }), pending.end());
     }
     if (pending.empty())
         return;
 
-    // Variants whose markers overlap belong to the same object (Skelton's
-    // hat brim and his coat): one group, all their markers together.
+    // Variants with mostly the same markers belong to the same object
+    // (Skelton's hat brim and his coat): one group, all their markers
+    // together. Mostly: at least half of the two's markers together are
+    // both's - a few markers in common (a tile two characters share, a
+    // marker of one variant only) would chain every object on the screen
+    // into one group that's near everything (Jack Bros.' sprites were one
+    // group of 400 variants, so their own colors never showed).
     std::vector<size_t> parent(pending.size());
     for (size_t i = 0; i < parent.size(); ++i)
         parent[i] = i;
@@ -801,14 +858,27 @@ void TileColorPack::ResolveContexts(ImportStats &stats)
             i = parent[i] = parent[parent[i]];
         return i;
     };
-    std::unordered_map<uint64_t, size_t> firstWith; // (marker, figures) -> first variant with it
-    for (size_t i = 0; i < pending.size(); ++i)
-        if (pending[i].family < 0) // (a figure sheet's characters are grouped below)
-            for (const uint32_t m : pending[i].markers)
-            {
-                const auto it = firstWith.emplace(static_cast<uint64_t>(m) | (static_cast<uint64_t>(pending[i].figures) << 32), i).first;
-                parent[root(i)] = root(it->second);
-            }
+    {
+        std::unordered_map<uint64_t, std::vector<size_t>> withMarker; // (marker, figures) -> variants with it
+        for (size_t i = 0; i < pending.size(); ++i)
+            if (pending[i].family < 0) // (a figure sheet's characters are grouped below)
+                for (const uint32_t m : pending[i].markers)
+                    withMarker[static_cast<uint64_t>(m) | (static_cast<uint64_t>(pending[i].figures) << 32)].push_back(i);
+        std::unordered_map<uint64_t, size_t> common; // (i, j), i < j -> markers in common
+        for (const auto &w : withMarker)
+            for (size_t a = 0; a < w.second.size(); ++a)
+                for (size_t b = a + 1; b < w.second.size(); ++b)
+                    ++common[(static_cast<uint64_t>(w.second[a]) << 32) | w.second[b]];
+        std::vector<std::pair<uint64_t, size_t>> pairs(common.begin(), common.end());
+        std::sort(pairs.begin(), pairs.end());
+        for (const auto &c : pairs)
+        {
+            const size_t i = static_cast<size_t>(c.first >> 32), j = static_cast<size_t>(c.first & 0xFFFFFFFFu);
+            const size_t either = pending[i].markers.size() + pending[j].markers.size() - c.second;
+            if (c.second * 2 >= either)
+                parent[root(j)] = root(i);
+        }
+    }
     // A figure sheet's character is one object too: its frames' variants go
     // together (all its markers switch its colors on) - except a tile it
     // paints two ways (a shirt's white and a cap's red on one solid tile),
@@ -876,19 +946,26 @@ void TileColorPack::ResolveContexts(ImportStats &stats)
             order.push_back(g);
     auto member = [&](size_t i, size_t group) { return group >= pending.size() ? i == group - pending.size() : root(i) == group; };
     // Deterministic group order: by precedence (see rank; a second way's own
-    // group before the groups it overlaps), then their smallest marker.
+    // group before the groups it overlaps), then the fewest markers first
+    // (the runtime takes the first group nearby: one object's own colors
+    // before a way many objects share - the ATLUS logo's blue square before
+    // the cream that half the sprites give it), then their smallest marker.
     std::vector<std::pair<uint64_t, size_t>> byMarker;
     for (const auto &o : order)
     {
         uint32_t smallest = ~0u;
         int groupRank = 2;
+        std::vector<uint32_t> all;
         for (size_t i = 0; i < pending.size(); ++i)
             if (member(i, o.second))
             {
                 smallest = std::min(smallest, pending[i].markers.front());
                 groupRank = std::min(groupRank, o.second >= pending.size() ? 1 : rank[i]);
+                all.insert(all.end(), pending[i].markers.begin(), pending[i].markers.end());
             }
-        byMarker.emplace_back((static_cast<uint64_t>(groupRank) << 32) | smallest, o.second);
+        std::sort(all.begin(), all.end());
+        const uint64_t markerCount = std::min<uint64_t>(std::unique(all.begin(), all.end()) - all.begin(), 0xFFFFFF);
+        byMarker.emplace_back((static_cast<uint64_t>(groupRank) << 56) | (markerCount << 32) | smallest, o.second);
     }
     std::sort(byMarker.begin(), byMarker.end());
     for (const auto &g : byMarker)
@@ -905,7 +982,7 @@ void TileColorPack::ResolveContexts(ImportStats &stats)
                 figures = figures && pending[i].figures;
             }
         if (figures)
-            m_contextLayerBound |= 1ull << index;
+            m_contextLayerBound.Set(index);
         std::sort(markers.begin(), markers.end());
         markers.erase(std::unique(markers.begin(), markers.end()), markers.end());
         m_contextGroups.push_back(std::move(markers));
@@ -1306,11 +1383,14 @@ std::vector<uint8_t> TileColorPack::Serialize() const
             appendTile(out, c.tile);
         }
         // Optional again: "VBGOCTXL", the groups (bit per group) whose markers
-        // only count on the layer they're drawn on.
-        if (m_contextLayerBound)
+        // only count on the layer they're drawn on - 64 bits; past 64 groups
+        // "VBGOCTXW", all of them (ContextGroupBits' words).
+        if (m_contextLayerBound.Any())
         {
-            out.insert(out.end(), kLayerBoundMagic, kLayerBoundMagic + 8);
-            AppendLe(out, m_contextLayerBound, 8);
+            const bool wide = m_contextGroups.size() > 64;
+            out.insert(out.end(), wide ? kLayerBoundWideMagic : kLayerBoundMagic, (wide ? kLayerBoundWideMagic : kLayerBoundMagic) + 8);
+            for (size_t i = 0; i < (wide ? ContextGroupBits::kWords : 1); ++i)
+                AppendLe(out, m_contextLayerBound.w[i], 8);
         }
     }
     // Optional too: "VBGOAMB1", count, the tiles painted two ways in a frame.
@@ -1519,7 +1599,15 @@ bool TileColorPack::Deserialize(const std::vector<uint8_t> &bytes)
                 {
                     const uint64_t bits = ReadLe64(&bytes[offset + 8]);
                     offset += 16;
-                    m_contextLayerBound = m_contextGroups.size() >= 64 ? bits : bits & ((1ull << m_contextGroups.size()) - 1);
+                    m_contextLayerBound.w[0] = m_contextGroups.size() >= 64 ? bits : bits & ((1ull << m_contextGroups.size()) - 1);
+                }
+                else if (have(8 + 8 * ContextGroupBits::kWords) && std::memcmp(&bytes[offset], kLayerBoundWideMagic, 8) == 0)
+                {
+                    for (size_t i = 0; i < ContextGroupBits::kWords; ++i)
+                        m_contextLayerBound.w[i] = ReadLe64(&bytes[offset + 8 + i * 8]);
+                    offset += 8 + 8 * ContextGroupBits::kWords;
+                    for (size_t g = m_contextGroups.size(); g < kMaxContextGroups; ++g)
+                        m_contextLayerBound.w[g >> 6] &= ~(1ull << (g & 63));
                 }
             }
         }

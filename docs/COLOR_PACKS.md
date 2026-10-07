@@ -144,7 +144,9 @@ palette. Paint the rest, drop the sheet into the pack folder like any other
 painting, and repeat until nothing new turns up. A whole new area is kept as a
 full screen instead of pieces, so it's easier to recognize. Whatever is left
 the way it was captured - Multicolor shades or the pack's colors - doesn't
-count as painted (in any capture, F10 and F6 too), so a wrong color the pack
+count as painted (in any capture, F10 and F6 too; only a color within a few
+steps of the captured one counts as left alone, so a color picked close to it
+- a warmer cream, a pumpkin orange - still paints), so a wrong color the pack
 showed (another sprite's color on a shared tile) only goes away by painting
 over it, but leaving it doesn't paint it in for good. Captures from builds
 before this didn't record what they showed: there, every pixel that isn't a
