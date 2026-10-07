@@ -15,6 +15,11 @@ python3 worlds.py ROM.vb [STATE] ["_*60"]       # how the game draws its 3D righ
 python3 symmetry.py ROM.vb PACK.vbcp|auto [STATE] [FRAMES] [EVERY]
 python3 timing.py ROM.vb PACK.vbcp|auto [STATE] [FRAMES]
 python3 tas.py ROM.vb MOVIE.bk2 OUT_DIR [--pack PACK.vbcp] [--all]   # a TAS's run, F7-style paint sheets
+python3 library.py ROM.vb MOVIE.bk2 PACK.vbcp LIB.npz       # every tile along the run, with the pack's colors
+python3 bgscan.py ROM.vb MOVIE.bk2 BG.npy                   # tiles a background layer draws too
+python3 extrapolate.py ROM.vb PACK.vbcp LIB.npz SHEETS OUT --bg BG.npy --design DESIGN.json   # color the sheets
+python3 sheetview.py OUT SHEETS [scale] [x0 y0 x1 y1 sheet]  # the result, uncolored in grays, with a grid
+python3 compare.py ROM.vb MOVIE.bk2 OLD.vbcp NEW.vbcp OUT EVERY [N]   # the N most changed frames, old | new
 ```
 
 ROMs, save states, packs and paintings stay out of the repo (they're the
@@ -47,6 +52,19 @@ games' content or Juan's work); they live on Juan's PC under `out\`.
   Syncs with the core options BizHawk's Mednafen core uses (accurate CPU, both
   directions of a D-pad at once) - `VBP_OPTS` passes core options to the
   library (`key=value,key=value`).
+- `library.py`, `bgscan.py`, `extrapolate.py`, `sheetview.py`, `compare.py`,
+  `findtiles.py` - coloring a TAS's sheets without painting them by hand:
+  colors carried over from the pack's painted tiles (similar tiles - the next
+  animation frame - and small gaps), then a design file (rects of the sheets
+  with a ramp per object, `"over"` for shared tiles the pack colors otherwise,
+  `"skip"` to protect another object's tiles, ramps for whole groups). Tiles a
+  background also draws are left alone (a pack colors a tile everywhere).
+  The painted sheets import with the pack's paintings like any painting.
+  `compare.py` renders the run with both packs and keeps the most changed
+  frames; `findtiles.py` finds the frame where a group's tiles first show.
+  `designs/` holds the design files the Wario Land, Jack Bros. and
+  Teleroboxer packs were made with (TASVideos runs: Wario Land "Best
+  Ending", Jack Bros. 5906M, Teleroboxer 3619M; `tas.py` sheets, sprites).
 - `timing.py` - milliseconds per emulated frame for coloring both eyes
   (colorize + paint, as the app's UploadFrame - with the app's frame layout,
   1024 pixels a row; the app logs the same, with the emulation's time, on the
