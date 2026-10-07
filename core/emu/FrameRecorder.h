@@ -20,8 +20,9 @@
 // an image sequence at 50 fps).
 //
 // PNGs are upscaled (nearest neighbor, kScale) so editors don't blur the
-// pixels, and encoded on worker threads so the game keeps running; Stop()
-// waits for whatever is still queued.
+// pixels, and encoded on worker threads so the game keeps running (slowing
+// it down only if they can't keep up - see kMaxQueued); Stop() waits for
+// whatever is still queued.
 class FrameRecorder
 {
 public:
@@ -31,6 +32,11 @@ public:
     // The Virtual Boy's frame rate; the WAV claims a sample rate scaled by
     // 50 / this, so it lasts exactly as long as the frames played at 50 fps.
     static constexpr double kGameFps = 50.27;
+    // Longest recording, in frames (Emulator::RecordFrame stops it): ten
+    // minutes at 50 fps.
+    static constexpr size_t kMaxFrames = 10 * 60 * 50;
+    // Frames waiting to be encoded before AddFrame waits (~150 MB).
+    static constexpr size_t kMaxQueued = 300;
 
     ~FrameRecorder();
 
@@ -64,6 +70,7 @@ private:
 
     std::mutex m_mutex;
     std::condition_variable m_wake;
+    std::condition_variable m_drained; // (the queue shrank - see AddFrame)
     std::deque<Item> m_queue;
     bool m_stopping = false;
     std::vector<std::thread> m_workers;

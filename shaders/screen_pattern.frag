@@ -23,6 +23,7 @@ layout(push_constant) uniform PushConstants {
     float cornerRadiusPx;
     float pixelScale;
     float patternColors[15];
+    float filterMode;
 } pc;
 
 // Identical to ui_image.frag's helper - see its doc comment for why.

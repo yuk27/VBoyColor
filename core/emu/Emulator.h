@@ -166,8 +166,23 @@ public:
     // screen_pattern.frag's multi-hue gradient instead, ignoring tint
     // entirely - the flat single-color multiply path above is otherwise
     // completely unchanged. -1 (default) keeps today's tint-only behavior.
+    // look: ScreenLook (Settings.h) - Sharp draws as above; Smooth and LED
+    // go through screen_filter.frag, from the picture PrepareScreen colored
+    // (call it first, with the same tint/pattern/look, outside the frame).
+    // shownPixelSize: see UiRenderer::DrawScreenFiltered (0 for a window).
     void DrawScreen(UiRenderer &ui, float x, float y, float w, float h, Eye eye = Eye::Both,
-                    const XrColor4f &tint = XrColor4f{1.0f, 1.0f, 1.0f, 1.0f}, int patternIndex = -1) const;
+                    const XrColor4f &tint = XrColor4f{1.0f, 1.0f, 1.0f, 1.0f}, int patternIndex = -1,
+                    int look = 0, float shownPixelSize = 0.0f) const;
+    // For a look other than Sharp: colors the current picture (tint or
+    // gradient) once into a texture of its own, so the look's shader reads
+    // finished colors - instead of coloring each of the many pixels it reads
+    // for every pixel it draws, again and again. Only does anything when the
+    // picture or its colors changed. Outside BeginFrame/EndFrame; format:
+    // the format the frame's target (and so every UI pipeline) uses.
+    void PrepareScreen(UiRenderer &ui, VkFormat format, const XrColor4f &tint, int patternIndex, int look);
+    // Bumped whenever a new picture reaches the screen texture - a caller
+    // can skip redrawing what hasn't changed (see OpenXrApp::RenderScreenLayer).
+    uint64_t ScreenVersion() const { return m_screenVersion; }
 
     // Per-shade colorization (AppSettings::selectedShadePalette): -1 = off,
     // the core's grayscale goes to the screen texture as-is; 0+ = index into
@@ -385,8 +400,26 @@ private:
     UiRenderer *m_ui = nullptr;
     Platform *m_platform = nullptr;
     UiImageHandle m_screenTexture;
+    // PrepareScreen's colored picture (kFbWidth x kFbHeight, the picture in
+    // its top-left like m_screenTexture) and what it was made from.
+    UiImageHandle m_coloredTexture;
+    struct ColoredKey
+    {
+        uint64_t version = 0;
+        float r = 0, g = 0, b = 0;
+        int pattern = -1;
+        uint32_t width = 0, height = 0;
+        bool operator==(const ColoredKey &o) const
+        {
+            return version == o.version && r == o.r && g == o.g && b == o.b && pattern == o.pattern &&
+                   width == o.width && height == o.height;
+        }
+    };
+    ColoredKey m_coloredKey;
+    bool m_coloredReady = false;
     bool m_coreInitialized = false;
     bool m_romLoaded = false;
+    uint64_t m_screenVersion = 0; // see ScreenVersion
 
     // Set by LoadRom - the currently-loaded ROM's display name, used to
     // build save-state/SRAM file names. Empty before any ROM loads, when

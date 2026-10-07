@@ -14,6 +14,12 @@
 namespace
 {
     constexpr int32_t kMaxMenuRenderScale = 6;
+    // The screen's swapchains hold the picture at this many pixels per
+    // Virtual Boy pixel (5x: 1920x1120 per eye) - about what Quest 3 shows
+    // of the screen at its default size, so the compositor barely resamples
+    // it, and enough room for a Look's smooth edges / LED rows. (Physical
+    // sizes still go by Emulator::kScale - see m_screenReferenceHeight.)
+    constexpr int32_t kScreenSwapchainScale = 5;
     constexpr float kRadiansToDegrees = 57.2957795f;
     // Recalibrated so the user-facing 1.0x setting has the same physical
     // height as the previous 1.4x setting (1.2m * 1.4) at
@@ -327,10 +333,15 @@ void OpenXrApp::CreateSwapchains()
     // see OpenXrApp.h's member comment for why two independent swapchains
     // instead of one shared/cropped one. Falls back to the menu's own size
     // if no screen is loaded.
-    const int32_t screenWidth = m_emulator.HasScreen() ? static_cast<int32_t>(m_emulator.GetScreenWidth() * Emulator::kScale)
+    const int32_t screenWidth = m_emulator.HasScreen() ? static_cast<int32_t>(m_emulator.GetScreenWidth() * kScreenSwapchainScale)
                                                        : static_cast<int32_t>(kMenuWidth * kMenuScale);
-    const int32_t screenHeight = m_emulator.HasScreen() ? static_cast<int32_t>(m_emulator.GetScreenHeight() * Emulator::kScale)
+    const int32_t screenHeight = m_emulator.HasScreen() ? static_cast<int32_t>(m_emulator.GetScreenHeight() * kScreenSwapchainScale)
                                                         : static_cast<int32_t>(kMenuHeight * kMenuScale);
+    // (what metersPerPixel goes by: the picture at Emulator::kScale, as the
+    // screen and menu sizes were tuned)
+    m_screenDrawn[0] = m_screenDrawn[1] = false; // (new swapchains: nothing drawn yet)
+    m_screenReferenceHeight = m_emulator.HasScreen() ? static_cast<int32_t>(m_emulator.GetScreenHeight() * Emulator::kScale)
+                                                     : static_cast<int32_t>(kMenuHeight * kMenuScale);
     const int32_t eyeWidth = m_emulator.HasScreen() ? screenWidth / 2 : screenWidth;
     for (Swapchain *sc : {&m_screenSwapchainLeft, &m_screenSwapchainRight})
     {
@@ -427,14 +438,15 @@ void OpenXrApp::UpdateMenuRenderScale()
     }
     if (headsetPpd <= 0.0f)
         return;
+    m_headsetPpd = headsetPpd;
 
     // Preserve the panel's existing real-world size (the legacy scale-2
     // pixel dimensions times the screen layer's meters-per-pixel at the
     // default 1.0x screen scale - the user's screen-scale setting must not
     // resize the menu), then find how many pixels that angular area warrants
     // at the headset's PPD.
-    const float metersPerPixel = m_screenSwapchainLeft.height != 0
-                                     ? kScreenQuadHeightMeters / static_cast<float>(m_screenSwapchainLeft.height)
+    const float metersPerPixel = m_screenReferenceHeight != 0
+                                     ? kScreenQuadHeightMeters / static_cast<float>(m_screenReferenceHeight)
                                      : 1.0f;
     const float panelWidthMeters = kMenuWidth * kMenuScale * metersPerPixel;
     const float panelHeightMeters = kMenuHeight * kMenuScale * metersPerPixel;
@@ -616,24 +628,53 @@ bool OpenXrApp::RenderScreenLayer(XrCompositionLayerQuad &leftQuadLayer, XrCompo
                                 Emulator::Eye::Left, -1.0f},
                                {&m_screenSwapchainRight, &rightQuadLayer, &rightCylinderLayer, XR_EYE_VISIBILITY_RIGHT,
                                 rightEyeCrop, 1.0f}};
+    // How many display pixels one of the picture's pixels covers in the
+    // headset (the LED look fades its rows out where they'd be too fine for
+    // the display - see screen_filter.frag). By angle: the screen grows with
+    // its distance, so only its scale matters. (Rounded, so it's steady.)
+    float shownPixelSize = 0.0f;
+    if (m_headsetPpd > 0.0f && m_emulator.HasScreen() && m_emulator.GetScreenHeight() > 0)
+    {
+        const float halfHeight = 0.5f * kScreenQuadHeightMeters * m_settings.screenScale / kReferenceScreenDistanceMeters;
+        const float degrees = 2.0f * std::atan(halfHeight) * kRadiansToDegrees;
+        shownPixelSize = std::round(degrees * m_headsetPpd / static_cast<float>(m_emulator.GetScreenHeight()) * 16.0f) / 16.0f;
+    }
+    m_emulator.PrepareScreen(m_uiRenderer, static_cast<VkFormat>(m_colorFormat), tint, m_settings.ScreenPattern(),
+                             m_settings.screenLook);
+
     for (const LayerInfo &info : infos)
     {
         Swapchain &sc = *info.swapchain;
-        XrSwapchainImageAcquireInfo acquireInfo{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
-        uint32_t imageIndex = 0;
-        CheckXr(xrAcquireSwapchainImage(sc.handle, &acquireInfo, &imageIndex), "xrAcquireSwapchainImage (screen eye)");
-        XrSwapchainImageWaitInfo waitInfo{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
-        waitInfo.timeout = XR_INFINITE_DURATION;
-        CheckXr(xrWaitSwapchainImage(sc.handle, &waitInfo), "xrWaitSwapchainImage (screen eye)");
-        m_uiRenderer.BeginFrame(sc.images[imageIndex].image, static_cast<VkFormat>(m_colorFormat),
-                                static_cast<uint32_t>(sc.width), static_cast<uint32_t>(sc.height),
-                                m_appMenu.GetBackgroundColor());
-        if (m_emulator.HasScreen())
-            m_emulator.DrawScreen(m_uiRenderer, 0.0f, 0.0f, static_cast<float>(sc.width),
-                                  static_cast<float>(sc.height), info.eye, tint, m_settings.ScreenPattern());
-        m_uiRenderer.EndFrame();
-        XrSwapchainImageReleaseInfo releaseInfo{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-        CheckXr(xrReleaseSwapchainImage(sc.handle, &releaseInfo), "xrReleaseSwapchainImage (screen eye)");
+        // Redrawn only when something it shows changed - a new picture (50
+        // a second), the colors, the Look, 3D on/off; otherwise the layer
+        // keeps showing the image released last (the display runs at 72-120
+        // Hz, so most frames have nothing new).
+        const int slot = info.visibility == XR_EYE_VISIBILITY_LEFT ? 0 : 1;
+        ScreenDrawKey key{m_emulator.HasScreen() ? m_emulator.ScreenVersion() + 1 : 0, tint.r, tint.g, tint.b,
+                          m_settings.ScreenPattern(), m_settings.screenLook, static_cast<int>(info.eye),
+                          shownPixelSize};
+        const bool redraw = !m_screenDrawn[slot] || !(key == m_screenDrawKey[slot]);
+        m_screenDrawKey[slot] = key;
+        m_screenDrawn[slot] = true;
+        if (redraw) // (else the layer itself is still submitted below)
+        {
+            XrSwapchainImageAcquireInfo acquireInfo{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+            uint32_t imageIndex = 0;
+            CheckXr(xrAcquireSwapchainImage(sc.handle, &acquireInfo, &imageIndex), "xrAcquireSwapchainImage (screen eye)");
+            XrSwapchainImageWaitInfo waitInfo{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+            waitInfo.timeout = XR_INFINITE_DURATION;
+            CheckXr(xrWaitSwapchainImage(sc.handle, &waitInfo), "xrWaitSwapchainImage (screen eye)");
+            m_uiRenderer.BeginFrame(sc.images[imageIndex].image, static_cast<VkFormat>(m_colorFormat),
+                                    static_cast<uint32_t>(sc.width), static_cast<uint32_t>(sc.height),
+                                    m_appMenu.GetBackgroundColor());
+            if (m_emulator.HasScreen())
+                m_emulator.DrawScreen(m_uiRenderer, 0.0f, 0.0f, static_cast<float>(sc.width),
+                                      static_cast<float>(sc.height), info.eye, tint, m_settings.ScreenPattern(),
+                                      m_settings.screenLook, shownPixelSize);
+            m_uiRenderer.EndFrame();
+            XrSwapchainImageReleaseInfo releaseInfo{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+            CheckXr(xrReleaseSwapchainImage(sc.handle, &releaseInfo), "xrReleaseSwapchainImage (screen eye)");
+        }
 
         const float ipdHalf = m_settings.useThreeDeeMode ? (m_settings.ipdOffset * 0.5f * info.ipdSign) : 0.0f;
 
@@ -728,7 +769,7 @@ void OpenXrApp::MenuQuadPose(XrPosef &pose, XrExtent2Df &size) const
     // setting, so scaling the screen never resizes the menu. Both per-eye
     // screen swapchains share the same height, so either works here.
     const float metersPerPixel =
-        m_screenSwapchainLeft.height != 0 ? kScreenQuadHeightMeters / static_cast<float>(m_screenSwapchainLeft.height) : 1.0f;
+        m_screenReferenceHeight != 0 ? kScreenQuadHeightMeters / static_cast<float>(m_screenReferenceHeight) : 1.0f;
 
     const bool followHeadActive = m_settings.followHeadMode != FollowHeadMode::Off && m_headPoseValid;
     const XrQuaternionf &followOrientation =

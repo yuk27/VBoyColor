@@ -40,7 +40,11 @@ void FrameRecorder::AddFrame(const uint8_t *originalRgb, const uint8_t *coloredR
     const size_t bytes = static_cast<size_t>(m_width) * m_height * 3;
     Item item{m_frames++, std::vector<uint8_t>(originalRgb, originalRgb + bytes), std::vector<uint8_t>(coloredRgb, coloredRgb + bytes)};
     {
-        std::lock_guard<std::mutex> lock(m_mutex);
+        // A machine whose encoders can't keep up slows the game down while
+        // recording (no frame is ever dropped) instead of piling frames up
+        // in memory - and stopping then only waits for a few seconds' worth.
+        std::unique_lock<std::mutex> lock(m_mutex);
+        m_drained.wait(lock, [this] { return m_queue.size() < kMaxQueued; });
         m_queue.push_back(std::move(item));
     }
     m_wake.notify_one();
@@ -106,6 +110,7 @@ void FrameRecorder::Work()
             item = std::move(m_queue.front());
             m_queue.pop_front();
         }
+        m_drained.notify_one();
         char name[64];
         std::snprintf(name, sizeof(name), "/original/original_%05zu.png", item.index);
         WritePng(m_folder + name, item.original);

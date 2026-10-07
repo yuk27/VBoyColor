@@ -469,6 +469,7 @@ void Emulator::UploadDisplay()
     m_shownWidth = m_displayWidth;
     m_shownHeight = m_displayHeight;
     m_displayNew = false;
+    ++m_screenVersion;
 }
 
 void Emulator::RecolorShown()
@@ -515,7 +516,7 @@ std::string Emulator::ToggleRecordingLocked()
         return "Recording: couldn't start";
     // (the folder exists from the first frame on, so the next recording picks the next number)
     g_recorder = &m_recorder;
-    return "Recording into roms/" + folder + "/ - press again to stop (stops on its own after a minute)";
+    return "Recording into roms/" + folder + "/ - press again to stop (stops on its own after ten minutes)";
 }
 
 void Emulator::RecordFrame()
@@ -539,7 +540,7 @@ void Emulator::RecordFrame()
         }
     }
     m_recorder.AddFrame(original.data(), colored.data());
-    if (m_recorder.Frames() >= 60 * 50)
+    if (m_recorder.Frames() >= FrameRecorder::kMaxFrames)
         std::fprintf(stderr, "[Emulator] %s\n", ToggleRecordingLocked().c_str());
 }
 
@@ -1162,7 +1163,7 @@ std::string Emulator::SetCollectingUncolored(bool enabled)
 }
 
 void Emulator::DrawScreen(UiRenderer &ui, float x, float y, float w, float h, Eye eye, const XrColor4f &tint,
-                          int patternIndex) const
+                          int patternIndex, int look, float shownPixelSize) const
 {
     if (!m_screenTexture.IsValid())
         return;
@@ -1181,10 +1182,40 @@ void Emulator::DrawScreen(UiRenderer &ui, float x, float y, float w, float h, Ey
     else if (eye == Eye::Right)
         u0 = fullU1 * 0.5f;
 
-    if (patternIndex >= 0 && patternIndex < kScreenPatternCount)
+    const bool pattern = patternIndex >= 0 && patternIndex < kScreenPatternCount;
+    if (look > 0 && look < kScreenLookCount && eye != Eye::Both && m_coloredReady)
+        ui.DrawScreenFiltered(m_coloredTexture, x, y, w, h, u0, 0.0f, u1, v1, look, shownPixelSize);
+    else if (pattern)
         ui.DrawImageRegionPattern(m_screenTexture, x, y, w, h, u0, 0.0f, u1, v1, kScreenPatterns[patternIndex]);
     else
         ui.DrawImageRegion(m_screenTexture, x, y, w, h, u0, 0.0f, u1, v1, 1.0f, tint);
+}
+
+void Emulator::PrepareScreen(UiRenderer &ui, VkFormat format, const XrColor4f &tint, int patternIndex, int look)
+{
+    if (look <= 0 || look >= kScreenLookCount || !m_screenTexture.IsValid())
+        return;
+    if (!m_coloredTexture.IsValid())
+        // (read back as stored - sRGB-encoded - see screen_filter.frag)
+        m_coloredTexture = ui.CreateRenderTexture(kFbWidth, kFbHeight, format, true);
+    const bool pattern = patternIndex >= 0 && patternIndex < kScreenPatternCount;
+    ColoredKey key{m_screenVersion, tint.r, tint.g, tint.b, pattern ? patternIndex : -1, m_shownWidth, m_shownHeight};
+    if (pattern)
+        key.r = key.g = key.b = 0.0f; // (the tint isn't used)
+    if (m_coloredReady && key == m_coloredKey)
+        return;
+    m_coloredKey = key;
+    m_coloredReady = true;
+
+    // The picture 1:1 into the same corner, colored exactly as Sharp draws it.
+    const float w = static_cast<float>(m_shownWidth), h = static_cast<float>(m_shownHeight);
+    const float u1 = w / static_cast<float>(kFbWidth), v1 = h / static_cast<float>(kFbHeight);
+    ui.BeginOffscreenFrame(m_coloredTexture, XrColor4f{0.0f, 0.0f, 0.0f, 1.0f});
+    if (pattern)
+        ui.DrawImageRegionPattern(m_screenTexture, 0.0f, 0.0f, w, h, 0.0f, 0.0f, u1, v1, kScreenPatterns[patternIndex]);
+    else
+        ui.DrawImageRegion(m_screenTexture, 0.0f, 0.0f, w, h, 0.0f, 0.0f, u1, v1, 1.0f, tint);
+    ui.EndFrame();
 }
 
 std::string Emulator::StateFileName(int uiSlot, const char *ext) const

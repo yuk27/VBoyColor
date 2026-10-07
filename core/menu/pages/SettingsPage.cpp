@@ -7,6 +7,7 @@
 #include "menu/pages/AppMenuLayout.h"
 #include "menu/ThumbnailLibrary.h"
 
+#include <algorithm>
 #include <cstdio>
 
 namespace
@@ -135,9 +136,24 @@ void SettingsPage::Init(UiRenderer &ui, const UiMenuResources &resources)
     m_colorGEntry->reserveIconSpace = true;
     m_colorBEntry->reserveIconSpace = true;
 
+    // How the game screen is drawn (see shaders/screen_filter.frag).
+    list->AddHeader("Screen");
+    m_lookEntry = list->AddEntry("Look", [this](MenuItem *) { ChangeLook(1); }, [this](MenuItem *) { ChangeLook(-1); },
+                                 [this](MenuItem *) { ChangeLook(1); }, UiIconId::FlatScreen);
+    if (resources.buttonMappingProfile == ButtonMappingProfile::Desktop)
+    {
+        // The PC window: as big as fits, or whole multiples of the pixels.
+        auto toggleSize = [this](MenuItem *)
+        {
+            m_settings->screenWholePixels = !m_settings->screenWholePixels;
+            RefreshLabels();
+        };
+        m_sizeEntry = list->AddEntry("Size", toggleSize, toggleSize, toggleSize, UiIconId::Scale);
+    }
+
     list->AddHeader("Library");
     // Box art from libretro's thumbnail collection instead of title screens
-    // (off by default - it downloads them).
+    // (on by default; a game without one gets its title screen).
     auto boxArt = list->AddEntry("Download box art", [this](MenuItem *)
                                  {
                                      m_settings->downloadBoxArt = !m_settings->downloadBoxArt;
@@ -264,6 +280,14 @@ void SettingsPage::ChangeColorChannel(float AppSettings::*channel, float delta)
     RefreshLabels();
 }
 
+void SettingsPage::ChangeLook(int delta)
+{
+    if (!m_settings)
+        return;
+    m_settings->screenLook = (m_settings->screenLook + delta + kScreenLookCount) % kScreenLookCount;
+    RefreshLabels();
+}
+
 void SettingsPage::RequestChangeRomsFolder()
 {
     m_platform->RequestChangeRomsFolder();
@@ -285,6 +309,10 @@ void SettingsPage::RefreshLabels(bool save)
     // of a selected-index number (see AddEntry's accessoryDraw above).
     static constexpr const char *kModeNames[kColorModeCount] = {"Tint", "Gradient", "Multicolor", "Auto"};
     m_colorModeEntry->SetValue(kModeNames[static_cast<int>(CurrentColorMode())]);
+    static constexpr const char *kLookNames[kScreenLookCount] = {"Sharp", "Smooth", "LED"};
+    m_lookEntry->SetValue(kLookNames[std::clamp(m_settings->screenLook, 0, kScreenLookCount - 1)]);
+    if (m_sizeEntry)
+        m_sizeEntry->SetValue(m_settings->screenWholePixels ? "Whole pixels" : "Fit");
     // 2 decimals, not 3 - kColorStep is 0.05, so the third decimal is always
     // 0 and never actually reachable by adjusting the value.
     m_colorREntry->SetValue(FormatFloat("", m_settings->colorR, 2));

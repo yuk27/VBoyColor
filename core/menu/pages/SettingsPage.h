@@ -50,10 +50,13 @@ private:
     // save: also autosave settings.dat and the game's colors (a change).
     void RefreshLabels(bool save = true);
     void RequestChangeRomsFolder();
+    void ChangeLook(int delta);
 
     std::shared_ptr<MenuList::Entry> m_colorModeEntry;
     std::shared_ptr<MenuList::Entry> m_paletteEntry;
     std::shared_ptr<MenuList::Entry> m_rebuildEntry;
+    std::shared_ptr<MenuList::Entry> m_lookEntry;
+    std::shared_ptr<MenuList::Entry> m_sizeEntry; // (the PC window only)
     std::shared_ptr<MenuList::Entry> m_colorREntry;
     std::shared_ptr<MenuList::Entry> m_colorGEntry;
     std::shared_ptr<MenuList::Entry> m_colorBEntry;

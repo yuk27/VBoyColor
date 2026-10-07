@@ -8,6 +8,7 @@
 #include <stb_image_write.h> // (implementation in Emulator.cpp)
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 
@@ -340,7 +341,43 @@ void ThumbnailLibrary::SetBoxArt(bool boxArt)
     m_boxArt = boxArt;
     m_noBoxArt.clear();
     for (const Game &game : m_games) // (each shows what it should now)
+    {
         m_decodeQueue.push_back(game.rom.name);
+        // Title screens again: the ones never made (their box art showed).
+        if (!boxArt && game.rom.name != m_making &&
+            std::find(m_checkQueue.begin(), m_checkQueue.end(), game.rom.name) == m_checkQueue.end())
+            m_checkQueue.push_back(game.rom.name);
+    }
+}
+
+bool ThumbnailLibrary::WantsBoxArt(const std::string &name) const
+{
+    return m_boxArt && !m_downloadsUnavailable &&
+           std::find(m_noBoxArt.begin(), m_noBoxArt.end(), name) == m_noBoxArt.end();
+}
+
+bool ThumbnailLibrary::WaitingForBoxArt(const std::string &name) const
+{
+    return WantsBoxArt(name) && m_saved.count(kBoxPrefix + name) == 0;
+}
+
+bool ThumbnailLibrary::BoxArtToCome() const
+{
+    if (Downloading())
+        return true;
+    for (const Game &game : m_games)
+        if (WaitingForBoxArt(game.rom.name))
+            return true;
+    return false;
+}
+
+int ThumbnailLibrary::Remaining() const
+{
+    int remaining = m_making.empty() ? 0 : 1;
+    for (const std::string &name : m_checkQueue)
+        if (!WaitingForBoxArt(name))
+            ++remaining;
+    return remaining;
 }
 
 const ThumbnailLibrary::Saved *ThumbnailLibrary::ShownFor(const std::string &name, bool &box) const
@@ -377,29 +414,45 @@ void ThumbnailLibrary::DownloadNext()
     }
 }
 
-void ThumbnailLibrary::FinishDownload(const std::vector<uint8_t> &bytes)
+namespace
 {
-    const std::string name = m_downloading;
-    m_downloading.clear();
-    int w = 0, h = 0, channels = 0;
-    stbi_uc *pixels = bytes.empty() ? nullptr
-                                    : stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()), &w, &h, &channels, 3);
-    if (!pixels || w < 8 || h < 8)
+    // (On a thread of its own - nothing here touches the library.)
+    std::vector<uint8_t> MakeBoxArtCard(const std::vector<uint8_t> &bytes, uint32_t width, uint32_t height)
     {
-        if (pixels)
-            stbi_image_free(pixels);
-        m_noBoxArt.push_back(name);
+        int w = 0, h = 0, channels = 0;
+        stbi_uc *pixels = bytes.empty() ? nullptr
+                                        : stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()), &w, &h, &channels, 3);
+        if (!pixels || w < 8 || h < 8)
+        {
+            if (pixels)
+                stbi_image_free(pixels);
+            return {};
+        }
+        const std::vector<uint8_t> card = ComposeBoxArt(pixels, w, h, width, height);
+        stbi_image_free(pixels);
+        return EncodePng(card, width, height);
+    }
+} // namespace
+
+void ThumbnailLibrary::FinishCard()
+{
+    Card card = m_card.get();
+    if (card.png.empty())
+    {
+        // None to get (or no internet): its title screen it is - in its turn
+        // (it's still waiting in the queue, unless something took it out).
+        m_noBoxArt.push_back(card.name);
+        if (card.name != m_making &&
+            std::find(m_checkQueue.begin(), m_checkQueue.end(), card.name) == m_checkQueue.end())
+            m_checkQueue.push_back(card.name);
         return;
     }
-    const std::vector<uint8_t> card = ComposeBoxArt(pixels, w, h, kWidth, kHeight);
-    stbi_image_free(pixels);
     Saved saved;
     saved.key = "box1";
-    saved.png = EncodePng(card, kWidth, kHeight);
-    m_saved[kBoxPrefix + name] = std::move(saved);
+    saved.png = std::move(card.png);
+    m_saved[kBoxPrefix + card.name] = std::move(saved);
     m_archiveDirty = true;
-    if (Game *game = Find(name); game && m_boxArt)
-        Upload(*game, card, true);
+    m_decodeQueue.push_back(card.name); // (shown once the menu's open)
 }
 
 void ThumbnailLibrary::Update(bool allowed)
@@ -445,8 +498,9 @@ void ThumbnailLibrary::Update(bool allowed)
         }
     }
 
-    // Saved ones, a couple a frame.
-    for (int decoded = 0; decoded < kDecodesPerFrame && !m_decodeQueue.empty();)
+    // Saved ones, a couple a frame - while the menu's open (uploading one
+    // waits for the GPU, which a game being played shouldn't).
+    for (int decoded = 0; allowed && decoded < kDecodesPerFrame && !m_decodeQueue.empty();)
     {
         const std::string next = m_decodeQueue.front();
         m_decodeQueue.pop_front();
@@ -466,30 +520,49 @@ void ThumbnailLibrary::Update(bool allowed)
         ++decoded;
     }
 
-    // Box art, one download at a time (while the menu's open).
-    if (!m_downloading.empty())
+    // Box art, one at a time - menu open or not.
+    if (m_card.valid())
+    {
+        if (m_card.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+            FinishCard();
+    }
+    else if (!m_downloading.empty())
     {
         std::vector<uint8_t> bytes;
         const int state = m_platform->PollDownload(bytes);
         if (state != 0)
-            FinishDownload(state == 1 ? bytes : std::vector<uint8_t>());
+        {
+            if (state != 1)
+                bytes.clear();
+            m_card = std::async(std::launch::async,
+                                [name = m_downloading, bytes = std::move(bytes)]()
+                                { return Card{name, MakeBoxArtCard(bytes, kWidth, kHeight)}; });
+            m_downloading.clear();
+        }
     }
-    else if (allowed && m_boxArt && !m_downloadsUnavailable)
+    else if (m_boxArt && !m_downloadsUnavailable)
         DownloadNext();
 
     if (allowed && m_making.empty() && !m_checkQueue.empty() && m_emulator->WantsThumbnailInput())
         CheckNext();
 
-    // Kept: once everything's done, or now and then while making them.
+    // Kept: once everything's done, or now and then while making them - while
+    // the menu's open (the file's big enough for a game to stutter).
     ++m_framesSinceSave;
-    if (m_archiveDirty && ((Remaining() == 0 && m_downloading.empty()) || m_framesSinceSave >= kSaveEveryFrames))
+    if (allowed && m_archiveDirty && ((Remaining() == 0 && !BoxArtToCome()) || m_framesSinceSave >= kSaveEveryFrames))
         SaveArchive();
 }
 
 void ThumbnailLibrary::CheckNext()
 {
-    const std::string name = m_checkQueue.front();
-    m_checkQueue.pop_front();
+    // The next game not waiting for its box art (its title screen's only
+    // made if it turns out there's none).
+    const auto next = std::find_if(m_checkQueue.begin(), m_checkQueue.end(),
+                                   [this](const std::string &name) { return !WaitingForBoxArt(name); });
+    if (next == m_checkQueue.end())
+        return;
+    const std::string name = *next;
+    m_checkQueue.erase(next);
     Game *game = Find(name);
     if (!game)
         return;
@@ -506,6 +579,11 @@ void ThumbnailLibrary::CheckNext()
     const uint32_t size = static_cast<uint32_t>(input.rom.size());
     const ThumbnailRecipe &recipe = ThumbnailRecipeFor(crc);
     input.pack = Emulator::FindPackBytes(*m_platform, name, crc, size);
+    if (WantsBoxArt(name)) // (and it has it): no title screen needed
+    {
+        game->hasPack = !input.pack.empty();
+        return;
+    }
 
     // The colors it starts with: its own (saved for it in Settings), its
     // suggestion, or Auto - what LibraryPage applies when it loads.

@@ -177,14 +177,14 @@ namespace
         ApplyDefaultGamepadBindings(settings.vbButtons);
     }
 
-    // Where the game screen goes in a w x h window: as big as fits with the
-    // Virtual Boy's shape kept, at a whole multiple of its pixels when that
-    // wastes little room (sharp pixels), else exactly as big as fits.
-    void ScreenRect(int w, int h, float &x, float &y, float &sw, float &sh)
+    // Where the game screen goes in a w x h window, the Virtual Boy's shape
+    // kept: as big as fits, or (Settings > Screen > Size: Whole pixels) the
+    // biggest whole multiple of its pixels that fits.
+    void ScreenRect(int w, int h, bool wholePixels, float &x, float &y, float &sw, float &sh)
     {
         const float fit = std::min(w / static_cast<float>(Emulator::kPreviewWidth), h / static_cast<float>(Emulator::kPreviewHeight));
         const float whole = std::floor(fit);
-        const float scale = whole >= 1.0f && whole / fit >= 0.85f ? whole : fit;
+        const float scale = wholePixels && whole >= 1.0f ? whole : fit;
         sw = Emulator::kPreviewWidth * scale;
         sh = Emulator::kPreviewHeight * scale;
         x = std::floor((w - sw) / 2.0f);
@@ -196,6 +196,10 @@ namespace
     // Mouse wheel since last frame (the menu scrolls with it).
     double g_scrollY = 0.0;
     void OnScroll(GLFWwindow *, double, double yoffset) { g_scrollY += yoffset; }
+
+    // F5: the left eye's picture (as normal), both eyes side by side, or the
+    // right eye's - for checking how the two differ (e.g. with a Look).
+    int g_eyeView = 0; // 0 left, 1 both, 2 right
 
     std::string g_droppedRom;
     void OnDrop(GLFWwindow *, int count, const char **paths)
@@ -308,8 +312,10 @@ int main(int argc, char **argv)
     }
     glfwSetDropCallback(window, OnDrop);
     glfwSetScrollCallback(window, OnScroll);
-    // (a click shorter than a frame still reads as pressed once)
+    // (a click or key press shorter than a frame - or made while a frame
+    // took long, e.g. while recording - still reads as pressed once)
     glfwSetInputMode(window, GLFW_STICKY_MOUSE_BUTTONS, GLFW_TRUE);
+    glfwSetInputMode(window, GLFW_STICKY_KEYS, GLFW_TRUE);
 #if !defined(_WIN32) // (Windows: the exe's GLFW_ICON resource)
     {
         const std::vector<uint8_t> png = platform.LoadAssetBytes("icon.png");
@@ -442,6 +448,7 @@ int main(int argc, char **argv)
         // doesn't read input for (see AppMenu::Show/Hide/ToggleOpen).
         // Edge-triggered so holding the key doesn't spam-toggle every frame.
         bool tabWasPressed = false;
+        bool escWasPressed = false;
         // Experimental tile colorization tools (see Emulator::SetTileDebugView /
         // CaptureTileReference): F9 toggles the per-tile debug view, F10 saves
         // a paint-ready reference of the current frame (Shift+F10: of the
@@ -455,6 +462,7 @@ int main(int argc, char **argv)
         // starts/stops recording gameplay for side-by-side videos - original
         // red and colored, frame for frame (roms/recordings/<rom> NNN, see
         // Emulator::ToggleRecording).
+        bool f5WasPressed = false;
         bool f9WasPressed = false, f10WasPressed = false, f8WasPressed = false, f11WasPressed = false,
              f7WasPressed = false, f6WasPressed = false, f12WasPressed = false, fullscreenWasPressed = false;
         bool keyboardWasDown[GLFW_KEY_LAST + 1]{};
@@ -505,6 +513,14 @@ int main(int argc, char **argv)
                 appMenu.ToggleOpen();
             tabWasPressed = tabPressed;
 
+            const bool f5Pressed = glfwGetKey(window, GLFW_KEY_F5) == GLFW_PRESS;
+            if (f5Pressed && !f5WasPressed)
+            {
+                g_eyeView = (g_eyeView + 1) % 3;
+                static const char *kViews[3] = {"the left eye", "both eyes side by side", "the right eye"};
+                std::printf("Showing %s\n", kViews[g_eyeView]);
+            }
+            f5WasPressed = f5Pressed;
             const bool f9Pressed = glfwGetKey(window, GLFW_KEY_F9) == GLFW_PRESS;
             if (f9Pressed && !f9WasPressed)
             {
@@ -587,7 +603,16 @@ int main(int argc, char **argv)
 
             std::memcpy(lastButtonStates, buttonStates, sizeof(buttonStates));
             PollDesktopButtonState(window, buttonStates);
+            const bool menuWasOpen = appMenu.IsOpen();
             appMenu.Update(buttonStates, lastButtonStates, deltaSeconds);
+
+            // Esc opens the menu from a game too (in the menu it's Back) -
+            // after the menu's update, so the press that opens it isn't also
+            // taken as Back, and one that just closed it doesn't reopen it.
+            const bool escPressed = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+            if (escPressed && !escWasPressed && !menuWasOpen && !appMenu.IsOpen() && emulator.HasGame())
+                appMenu.Show();
+            escWasPressed = escPressed;
 
             // Gamepad mapping capture uses physical gamepad edges, never
             // the synthetic keyboard/menu device slots.
@@ -624,6 +649,8 @@ int main(int argc, char **argv)
 
             if (appMenu.IsVisible())
                 appMenu.RenderToBuffer(uiRenderer);
+            emulator.PrepareScreen(uiRenderer, chosen.format, settings.ScreenTint(), settings.ScreenPattern(),
+                                   settings.screenLook);
 
             vkResetFences(renderer.GetDevice(), 1, &acquireFence);
             uint32_t imageIndex = 0;
@@ -646,8 +673,23 @@ int main(int argc, char **argv)
             if (emulator.HasScreen())
             {
                 float sx = 0, sy = 0, sw = 0, sh = 0;
-                ScreenRect(static_cast<int>(extent.width), static_cast<int>(extent.height), sx, sy, sw, sh);
-                emulator.DrawScreen(uiRenderer, sx, sy, sw, sh, Emulator::Eye::Left, settings.ScreenTint(), settings.ScreenPattern());
+                if (g_eyeView == 1)
+                {
+                    // Each eye in its half of the window.
+                    const int half = static_cast<int>(extent.width) / 2;
+                    ScreenRect(half, static_cast<int>(extent.height), settings.screenWholePixels, sx, sy, sw, sh);
+                    emulator.DrawScreen(uiRenderer, sx, sy, sw, sh, Emulator::Eye::Left, settings.ScreenTint(),
+                                        settings.ScreenPattern(), settings.screenLook);
+                    emulator.DrawScreen(uiRenderer, sx + half, sy, sw, sh, Emulator::Eye::Right, settings.ScreenTint(),
+                                        settings.ScreenPattern(), settings.screenLook);
+                }
+                else
+                {
+                    ScreenRect(static_cast<int>(extent.width), static_cast<int>(extent.height), settings.screenWholePixels, sx, sy,
+                               sw, sh);
+                    emulator.DrawScreen(uiRenderer, sx, sy, sw, sh, g_eyeView == 2 ? Emulator::Eye::Right : Emulator::Eye::Left,
+                                        settings.ScreenTint(), settings.ScreenPattern(), settings.screenLook);
+                }
             }
             if (appMenu.IsVisible())
                 appMenu.Draw(uiRenderer, menuX, menuY);

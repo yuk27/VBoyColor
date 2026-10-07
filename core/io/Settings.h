@@ -31,13 +31,24 @@ enum class FollowHeadMode : int32_t
 
 // Persisted app-wide settings, one instance for the app's lifetime, threaded
 // to every menu page via UiMenuResources::settings.
+// How the game screen is drawn (Settings > Screen > Look - see
+// shaders/screen_filter.frag): crisp pixels, smoothed edges, or the
+// Virtual Boy's own LED rows with a glow.
+enum class ScreenLook
+{
+    Sharp = 0,
+    Smooth = 1,
+    Led = 2,
+};
+inline constexpr int kScreenLookCount = 3;
+
 struct AppSettings
 {
     // Bumped whenever the on-disk layout changes - Load() refuses (leaves
     // defaults in place) on a mismatch rather than attempting migration,
     // except from version 11, whose layout is an exact prefix of this one
     // (12 only appended selectedShadePalette) - see Settings.cpp.
-    static constexpr int kVersion = 15;
+    static constexpr int kVersion = 16;
 
     // Move Screen / Follow Head. Only OpenXrApp's quad-layer pose consumes
     // these - meaningless on the flat pc2d debug build.
@@ -84,12 +95,19 @@ struct AppSettings
 
     // Version 14 (appended - older files load as a prefix): the library as
     // a list instead of cards, and its thumbnails from libretro's box art
-    // (downloaded) instead of title screens.
+    // (downloaded) instead of title screens - on by default since version 16
+    // (a game without box art gets its title screen; see Settings.cpp).
     bool libraryListView = false;
-    bool downloadBoxArt = false;
+    bool downloadBoxArt = true;
 
     // Version 15 (appended): the library's last played games first.
     bool librarySortRecent = false;
+
+    // Version 16 (appended): how the game screen is drawn - ScreenLook - and,
+    // in the PC window, how big: as big as fits (false) or the biggest whole
+    // multiple of its pixels (true).
+    int screenLook = 0;
+    bool screenWholePixels = false;
 
     // What the screen should be drawn with (Emulator::DrawScreen's tint/
     // patternIndex) - neutral while a shade palette is active, since its

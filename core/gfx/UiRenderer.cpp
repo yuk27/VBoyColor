@@ -127,6 +127,8 @@ void UiRenderer::Shutdown()
         vkDestroyDescriptorSetLayout(m_device, m_textDescriptorSetLayout, nullptr);
     if (m_screenPatternPipeline != VK_NULL_HANDLE)
         vkDestroyPipeline(m_device, m_screenPatternPipeline, nullptr);
+    if (m_screenFilterPipeline != VK_NULL_HANDLE)
+        vkDestroyPipeline(m_device, m_screenFilterPipeline, nullptr);
     if (m_imageRoundedPipeline != VK_NULL_HANDLE)
         vkDestroyPipeline(m_device, m_imageRoundedPipeline, nullptr);
     if (m_imagePipeline != VK_NULL_HANDLE)
@@ -263,6 +265,21 @@ void UiRenderer::CreateImageResources(Image &img, uint32_t width, uint32_t heigh
     imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    // Rendered to as `format`, sampled through its UNORM twin: what's read
+    // is what's stored, still sRGB-encoded.
+    VkFormat sampledFormat = format;
+    if (img.sampleEncoded)
+    {
+        switch (format)
+        {
+        case VK_FORMAT_B8G8R8A8_SRGB: sampledFormat = VK_FORMAT_B8G8R8A8_UNORM; break;
+        case VK_FORMAT_R8G8B8A8_SRGB: sampledFormat = VK_FORMAT_R8G8B8A8_UNORM; break;
+        case VK_FORMAT_A8B8G8R8_SRGB_PACK32: sampledFormat = VK_FORMAT_A8B8G8R8_UNORM_PACK32; break;
+        default: break;
+        }
+        if (sampledFormat != format)
+            imageInfo.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+    }
     CheckVk(vkCreateImage(m_device, &imageInfo, nullptr, &img.image), "vkCreateImage (render texture)");
 
     VkMemoryRequirements memReq;
@@ -277,7 +294,7 @@ void UiRenderer::CreateImageResources(Image &img, uint32_t width, uint32_t heigh
     VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     viewInfo.image = img.image;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewInfo.format = format;
+    viewInfo.format = sampledFormat;
     viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     CheckVk(vkCreateImageView(m_device, &viewInfo, nullptr, &img.view), "vkCreateImageView (render texture)");
 
@@ -316,9 +333,10 @@ void UiRenderer::DestroyImageResources(Image &img)
     img.memory = VK_NULL_HANDLE;
 }
 
-UiImageHandle UiRenderer::CreateRenderTexture(uint32_t width, uint32_t height, VkFormat format)
+UiImageHandle UiRenderer::CreateRenderTexture(uint32_t width, uint32_t height, VkFormat format, bool sampleEncoded)
 {
     Image image;
+    image.sampleEncoded = sampleEncoded;
     CreateImageResources(image, width, height, format);
 
     VkDescriptorSetAllocateInfo setAllocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
@@ -730,7 +748,8 @@ void UiRenderer::ReadRenderTexture(UiImageHandle handle, uint32_t width, uint32_
 void UiRenderer::DrawUnitQuad(VkPipeline pipeline, VkPipelineLayout layout, VkDescriptorSet descriptorSet,
                               float x, float y, float w, float h,
                               float u0, float v0, float u1, float v1,
-                              const XrColor4f &color, float cornerRadiusPx, const float *patternColors)
+                              const XrColor4f &color, float cornerRadiusPx, const float *patternColors,
+                              float filterMode)
 {
     vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     if (descriptorSet != VK_NULL_HANDLE)
@@ -768,6 +787,7 @@ void UiRenderer::DrawUnitQuad(VkPipeline pipeline, VkPipelineLayout layout, VkDe
     pc.pixelScale = m_pixelScale;
     if (patternColors)
         std::memcpy(pc.patternColors, patternColors, sizeof(pc.patternColors));
+    pc.filterMode = filterMode;
     vkCmdPushConstants(m_commandBuffer, layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof(PushConstants), &pc);
 
@@ -848,6 +868,17 @@ void UiRenderer::DrawImageRegionPattern(UiImageHandle imageHandle, float x, floa
     }
     DrawUnitQuad(m_screenPatternPipeline, m_textPipelineLayout, img.descriptorSet,
                  x, y, w, h, u0, v0, u1, v1, XrColor4f{1.0f, 1.0f, 1.0f, alpha}, 0.0f, packed);
+}
+
+void UiRenderer::DrawScreenFiltered(UiImageHandle imageHandle, float x, float y, float w, float h, float u0, float v0,
+                                    float u1, float v1, int look, float shownPixelSize)
+{
+    if (!imageHandle.IsValid())
+        return;
+    const Image &img = m_images[imageHandle.id];
+    // (cornerRadiusPx carries shownPixelSize - this shader rounds nothing)
+    DrawUnitQuad(m_screenFilterPipeline, m_textPipelineLayout, img.descriptorSet, x, y, w, h, u0, v0, u1, v1,
+                 XrColor4f{1.0f, 1.0f, 1.0f, 1.0f}, shownPixelSize, nullptr, static_cast<float>(look));
 }
 
 void UiRenderer::DrawImageRounded(UiImageHandle imageHandle, float x, float y, float w, float h, float cornerRadiusPx, float alpha)

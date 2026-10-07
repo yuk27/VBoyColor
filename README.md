@@ -48,23 +48,32 @@ pack).*
   suits it best (picked game by game: Red Alarm's wireframes by depth,
   Golf's fairways green, Virtual Bowling's lanes in Sunset wood...),
   and remembers yours once you change it.
-- **A library of your games** - each one a card with its title screen in
-  its own colors, made on your device the first time (nothing of any game
-  ships with the app). As a list (Y), last played first (X), or - Settings → Download box art, off
-  by default - the box art from libretro's thumbnail collection. Pick with
-  the sticks, a gamepad, the mouse, or by pointing a Quest controller and
+- **A library of your games** - each one a card with its box art,
+  downloaded from libretro's thumbnail collection (keep playing while it
+  comes). A game without box art, or with no internet, gets its title
+  screen in its own colors instead, made on your device (nothing of any
+  game ships with the app); Settings → Download box art off shows title
+  screens for all. As a list (Y) or last played first (X). Pick with the
+  sticks, a gamepad, the mouse, or by pointing a Quest controller and
   pulling its trigger.
 - **Real 3D on Quest** - each eye gets its own picture, as on the hardware,
   and both eyes always show the same colors.
 - **Save states** - several slots per game, with thumbnails in color.
 - **Button mapping** - Quest controllers, gamepads and keyboard, all
   remappable.
-- **Screen placement** - size and distance of the screen in VR.
+- **Screen looks** - Settings → Screen → Look: *Sharp* pixels, *Smooth*
+  (OmniScale's rounded edges and diagonals) or *LED* (the Virtual Boy's
+  own rows of light, with a soft glow). Both eyes always get the same
+  look, so the 3D stays clean.
+- **Screen placement** - size and distance of the screen in VR; on PC,
+  Settings → Screen → Size: as big as the window allows (*Fit*) or *Whole
+  pixels*.
 - **Your room as the background** (Quest) - Settings → Adjust screen →
   Show your room around it: the game floats in your room (passthrough)
   instead of in the dark.
 - **Video recording** (PC) - F12 records the original red and the colored
-  version side by side, frame for frame, for comparison videos.
+  version side by side, frame for frame, for comparison videos (F12 again
+  to stop; it stops on its own after ten minutes).
 
 ## Getting started
 
@@ -96,8 +105,8 @@ Download `VBoyColor-linux-<version>.tar.gz`, unpack it, put your ROMs in
 ## Controls
 
 **Menu:** left stick click (Quest controllers and gamepads), the left
-controller's Menu button, or **Tab** on PC (gamepad: Guide or left stick
-click). Some PC VR runtimes keep the Menu button for themselves - the stick
+controller's Menu button, or **Tab** or **Esc** on PC (gamepad: Guide or
+left stick click). Some PC VR runtimes keep the Menu button for themselves - the stick
 click always works. In the menu: sticks / D-pad / arrow keys move, A (Enter)
 picks, B (Esc) goes back - out to the sidebar, or back to the game. The
 mouse and the Quest controllers' lasers (trigger) work too.

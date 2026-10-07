@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <deque>
+#include <future>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -22,13 +23,18 @@ struct AppSettings;
 // pack - and made again when any of that changes (a new pack, the game's
 // colors changed in Settings, a new version of the app's recipes).
 //
-// Optionally (Settings > Download box art, off by default) the cards show
-// each game's box art instead, downloaded once from libretro's thumbnail
-// collection (github.com/libretro-thumbnails) and kept in the same file;
-// a game without one keeps its title screen.
+// By default (Settings > Download box art) the cards show each game's box
+// art instead, downloaded once from libretro's thumbnail collection
+// (github.com/libretro-thumbnails) and kept in the same file - and only a
+// game without one (or with no internet) gets its title screen made, which
+// takes a lot more work than a download.
 //
-// Everything here runs on the render thread (Android's file access needs
-// it); only the emulation itself runs on the emulator's own thread.
+// Downloads go on while a game is played (one at a time, each made into a
+// card on a thread of its own); everything else waits for the menu: making
+// title screens, showing new cards, writing the file.
+//
+// Everything else here runs on the render thread (Android's file access
+// needs it); the emulation itself runs on the emulator's own thread.
 class ThumbnailLibrary
 {
 public:
@@ -53,7 +59,8 @@ public:
     // frames; missing or outdated ones get made while the menu is open.
     void Rescan();
     // Once per app frame, outside rendering (it uploads textures). allowed:
-    // the menu is open - thumbnails are only made then.
+    // the menu is open - thumbnails are only made (and shown, and saved)
+    // then; box art downloads either way.
     void Update(bool allowed);
 
     const std::vector<Game> &Games() const { return m_games; }
@@ -73,11 +80,12 @@ public:
     // Box art instead of title screens (downloaded as needed).
     void SetBoxArt(bool boxArt);
     // Box art is being downloaded right now.
-    bool Downloading() const { return !m_downloading.empty(); }
+    bool Downloading() const { return !m_downloading.empty() || m_card.valid(); }
     // A thumbnail is being made right now.
     bool Making() const { return !m_making.empty(); }
-    // Games still to check or make (0: all done).
-    int Remaining() const { return static_cast<int>(m_checkQueue.size()) + (m_making.empty() ? 0 : 1); }
+    // Games still to check or make (0: all done) - not counting those
+    // waiting for their box art.
+    int Remaining() const;
 
 private:
     struct Saved
@@ -96,9 +104,17 @@ private:
     // What a game's card should show: its box art (box mode, and it has
     // one), else its title screen - nullptr if neither is here yet.
     const Saved *ShownFor(const std::string &name, bool &box) const;
-    // Box art: the next game's download, and a finished one.
+    // Box art: the next game's download, and a finished one (made into a
+    // card off the render thread - see m_card).
     void DownloadNext();
-    void FinishDownload(const std::vector<uint8_t> &bytes);
+    void FinishCard();
+    // A game's card should show its box art: box art's on, and it has (or
+    // may yet get) one. Waiting: ...and it hasn't come yet - its title
+    // screen isn't made unless it turns out there's none.
+    bool WantsBoxArt(const std::string &name) const;
+    bool WaitingForBoxArt(const std::string &name) const;
+    // Box art still downloading or to download.
+    bool BoxArtToCome() const;
 
     UiRenderer *m_ui = nullptr;
     Platform *m_platform = nullptr;
@@ -128,4 +144,12 @@ private:
     std::string m_downloading;            // the game whose box art is downloading
     std::vector<std::string> m_noBoxArt;  // games with none to get (this session)
     bool m_downloadsUnavailable = false;  // (the platform can't download)
+    // A downloaded picture being made into a card (decoded, fitted, encoded
+    // as PNG) on a thread of its own, so a game being played never stutters.
+    struct Card
+    {
+        std::string name;
+        std::vector<uint8_t> png; // empty: it wasn't a picture
+    };
+    std::future<Card> m_card;
 };

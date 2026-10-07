@@ -11,7 +11,7 @@ layout(push_constant) uniform PushConstants {
     vec4 uvRect;      // xMin, yMin, xMax, yMax - unused (0,0,1,1) for solid quads
     vec4 color;
     vec2 screenSizePx;
-    float cornerRadiusPx;  // only read by ui_solid.frag - 0 for a plain rect
+    float cornerRadiusPx;  // read by ui_solid.frag - 0 for a plain rect (screen_filter.frag: see there)
     float pixelScale;      // physical pixels per logical unit - see PushConstants comment
     // 5 vec3 gradient stops (tightly packed, 15 floats), only read directly
     // from the push constant block by screen_pattern.frag (which
@@ -23,6 +23,7 @@ layout(push_constant) uniform PushConstants {
     // can read push constants without going through the vertex stage. See
     // UiRenderer::PushConstants.
     float patternColors[15];
+    float filterMode;      // only read by screen_filter.frag (the screen's Look)
 } pc;
 
 layout(location = 0) out vec2 vUV;

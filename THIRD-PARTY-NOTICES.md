@@ -26,6 +26,7 @@ logo (`assets/logo/`) is Juan's own artwork.
 | [GLFW](https://www.glfw.org) (desktop only) | windows and input | zlib (`licenses/Zlib-GLFW.txt`) |
 | [stb_image, stb_image_write](https://github.com/nothings/stb) | PNG/JPEG reading and writing | public domain or MIT (in the headers, `third_party/`) |
 | [miniaudio](https://miniaud.io) | audio output | public domain or MIT-0 (in the header, `third_party/`) |
+| OmniScale by Lior Halphon, from [SameBoy](https://github.com/LIJI32/SameBoy) | the screen's Smooth look (`shaders/screen_filter.frag`) | Expat/MIT (`licenses/Expat-SameBoy-OmniScale.txt`) |
 
 Portions of this software are copyright © 2023 The FreeType Project
 (www.freetype.org). All rights reserved.

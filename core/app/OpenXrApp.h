@@ -156,11 +156,31 @@ private:
     // shared/cropped swapchain) - the OpenXR equivalent of the old VrApi
     // ovrLayerCylinder2 used to show the emulator screen outside the main
     // eye-buffer projection layer. Each sized to half the emulator's
-    // (side-by-side, both eyes) screen width at Emulator::kScale (falling
-    // back to AppMenu::kMenuWidth/kMenuHeight if no screen is loaded) so
-    // they render at 1:1 pixel resolution instead of being up/downscaled.
+    // (side-by-side, both eyes) screen width at kScreenSwapchainScale
+    // (falling back to AppMenu::kMenuWidth/kMenuHeight if no screen is
+    // loaded).
     Swapchain m_screenSwapchainLeft;
     Swapchain m_screenSwapchainRight;
+    // The screen's height in pixels at Emulator::kScale - what the screen's
+    // and the menu's physical sizes are measured against (the swapchains
+    // themselves are bigger - see kScreenSwapchainScale).
+    int32_t m_screenReferenceHeight{0};
+    // What each eye's screen swapchain shows now (see RenderScreenLayer):
+    // drawn again only when this changes.
+    struct ScreenDrawKey
+    {
+        uint64_t version = 0;
+        float r = 0, g = 0, b = 0;
+        int pattern = 0, look = 0, eye = 0;
+        float shownPixelSize = 0;
+        bool operator==(const ScreenDrawKey &o) const
+        {
+            return version == o.version && r == o.r && g == o.g && b == o.b && pattern == o.pattern && look == o.look &&
+                   eye == o.eye && shownPixelSize == o.shownPixelSize;
+        }
+    };
+    ScreenDrawKey m_screenDrawKey[2];
+    bool m_screenDrawn[2]{false, false};
     // Dedicated swapchain for the menu's own quad composition layer -
     // separate from the screen so the menu can be positioned at its own
     // depth (see RenderMenuLayer) instead of being baked into the same
@@ -172,6 +192,9 @@ private:
     // Integer supersampling tier selected from the headset's recommended
     // pixels-per-degree and the menu quad's current angular size.
     int32_t m_menuRenderScale{2};
+    // UpdateMenuRenderScale's estimate of the headset's display pixels per
+    // degree (0 until views have been located).
+    float m_headsetPpd = 0.0f;
 
     VulkanRenderer m_renderer;
     UiRenderer m_uiRenderer;

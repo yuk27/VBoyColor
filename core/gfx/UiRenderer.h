@@ -65,7 +65,9 @@ public:
     // finished result onto a real target with DrawImageRounded. format must
     // match whatever format the real target(s) use (see EnsurePipelines -
     // pipelines are tied to one format for the process lifetime).
-    UiImageHandle CreateRenderTexture(uint32_t width, uint32_t height, VkFormat format);
+    // sampleEncoded: shaders read it back as stored (an _SRGB format's
+    // encoded values, not decoded to linear) - see screen_filter.frag.
+    UiImageHandle CreateRenderTexture(uint32_t width, uint32_t height, VkFormat format, bool sampleEncoded = false);
 
     // Destroys and recreates a CreateRenderTexture texture at a new size in
     // place - the handle stays valid (same index), and its descriptor set is
@@ -150,6 +152,14 @@ public:
     void DrawImageRegionPattern(UiImageHandle image, float x, float y, float w, float h,
                                 float u0, float v0, float u1, float v1, const std::array<XrColor4f, 5> &stops,
                                 float alpha = 1.0f);
+    // The game screen with a look (see screen_filter.frag): look 1 Smooth,
+    // 2 LED - from an already colored picture (Emulator::PrepareScreen's,
+    // made with CreateRenderTexture's sampleEncoded).
+    // shownPixelSize: how many display pixels one of the picture's pixels
+    // ends up covering when the target is shown resampled (the headset's
+    // screen layer) - 0 when the target is what's shown (a window).
+    void DrawScreenFiltered(UiImageHandle image, float x, float y, float w, float h, float u0, float v0, float u1,
+                            float v1, int look, float shownPixelSize = 0.0f);
     // Like DrawImage, but masks the sampled texture to rounded corners - the
     // intended way to composite a whole pre-rendered buffer (e.g. an
     // offscreen-rendered AppMenu) as a single rounded panel, instead of
@@ -203,7 +213,12 @@ private:
         // bytes), only read by screen_pattern.frag (see its doc comment).
         // Zero-filled for every other draw call.
         float patternColors[15];
+        // screen_filter.frag's look (1 Smooth, 2 LED; +8 with patternColors) -
+        // 0 for every other draw. (With it the block is exactly 128 bytes,
+        // the size every Vulkan device guarantees for push constants.)
+        float filterMode;
     };
+    static_assert(sizeof(PushConstants) == 128, "push constants: 128 bytes is all every device guarantees");
 
 private:
     struct RenderTarget
@@ -222,6 +237,7 @@ private:
         VkImageView view{VK_NULL_HANDLE};
         VkSampler sampler{VK_NULL_HANDLE};
         VkDescriptorSet descriptorSet{VK_NULL_HANDLE};
+        bool sampleEncoded = false; // (see CreateRenderTexture)
 
         // Only set for images created by CreateStreamingImage - see its doc
         // comment. stagingMapped stays non-null for the image's whole
@@ -255,7 +271,7 @@ private:
     // stops - see PushConstants::patternColors); left zero-filled otherwise.
     void DrawUnitQuad(VkPipeline pipeline, VkPipelineLayout layout, VkDescriptorSet descriptorSet, float x, float y,
                       float w, float h, float u0, float v0, float u1, float v1, const XrColor4f &color,
-                      float cornerRadiusPx = 0.0f, const float *patternColors = nullptr);
+                      float cornerRadiusPx = 0.0f, const float *patternColors = nullptr, float filterMode = 0.0f);
 
     VkDevice m_device{VK_NULL_HANDLE};
     VkPhysicalDevice m_physicalDevice{VK_NULL_HANDLE};
@@ -292,6 +308,7 @@ private:
     // screen_pattern.frag - same descriptor shape as m_imagePipeline (one
     // sampler at binding 0), so it also reuses m_textPipelineLayout.
     VkPipeline m_screenPatternPipeline{VK_NULL_HANDLE};
+    VkPipeline m_screenFilterPipeline{VK_NULL_HANDLE}; // screen_filter.frag - same layout as the pattern one
     VkDescriptorPool m_descriptorPool{VK_NULL_HANDLE};
 
     UiFontManager m_fontManager;
