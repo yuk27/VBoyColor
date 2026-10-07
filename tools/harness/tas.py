@@ -25,7 +25,7 @@ import struct
 import sys
 import zipfile
 
-os.environ["VBP_OPTS"] = "vb_opposite_directions=enabled,vb_cpu_emulation=accurate"
+os.environ.setdefault("VBP_OPTS", "vb_opposite_directions=enabled,vb_cpu_emulation=accurate")
 
 import numpy as np  # noqa: E402
 from PIL import Image  # noqa: E402
@@ -36,6 +36,12 @@ from vbp import VB, lib  # noqa: E402
 # mapping - see its libretro.cpp): left pad U D L R, right pad U D L R, B, A,
 # L, R, Select, Start, Power.
 COLUMNS = [4, 5, 6, 7, 12, 14, 13, 15, 0, 8, 10, 11, 2, 3, None]
+# VBjin's .mc2 ("|0|SWsT^v<>ENLRBA|"): the pad's bits from the top - right pad
+# down (S) and left (W), Select, Start, left pad U D L R, right pad right (E)
+# and up (N), L, R, B, A.
+MC2_COLUMNS = [14, 13, 2, 3, 4, 5, 6, 7, 15, 12, 10, 11, 0, 8]
+BUTTONS = {"L_Up": 4, "L_Down": 5, "L_Left": 6, "L_Right": 7, "R_Up": 12, "R_Down": 14, "R_Left": 13, "R_Right": 15,
+           "B": 0, "A": 8, "L": 10, "R": 11, "Select": 2, "Start": 3}
 
 lib.vbp_collect_frame.argtypes = [C.c_int]
 lib.vbp_collect_frame.restype = C.c_int
@@ -46,16 +52,38 @@ lib.vbp_sheet.argtypes = [C.c_int, C.c_void_p, C.c_void_p]
 
 
 def movie_frames(path):
-    """The movie's frames as libretro button masks."""
+    """The movie's frames as libretro button masks (.bk2: BizHawk, .mc2: VBjin)."""
+    if path.lower().endswith(".mc2"):
+        for line in open(path, encoding="utf-8", errors="replace"):
+            parts = line.split("|")
+            if len(parts) < 3 or not line.startswith("|"):
+                continue
+            mask = 0
+            for column, ch in enumerate(parts[2][:14]):
+                if ch != "." and ch != " ":
+                    mask |= 1 << MC2_COLUMNS[column]
+            yield mask
+        return
     with zipfile.ZipFile(path) as z:
         log = z.read("Input Log.txt").decode("utf-8", "replace")
+    # The columns by name, from LogKey ("#Power|Reset|#P1 L_Up|...": groups
+    # start with '#', players' buttons are prefixed "P1 "); one character per
+    # button in each frame line, groups between '|'.
+    columns = None
     for line in io.StringIO(log):
-        if not line.startswith("|") or len(line) < 17:
+        line = line.rstrip("\r\n")
+        if line.startswith("LogKey:"):
+            names = [n.lstrip("#") for n in line[7:].split("|") if n.lstrip("#")]
+            columns = [BUTTONS.get(n[3:] if n.startswith("P1 ") else n) for n in names]
             continue
+        if not line.startswith("|"):
+            continue
+        keys = line.replace("|", "")
+        cols = columns if columns is not None else COLUMNS
         mask = 0
-        for column, ch in enumerate(line[1:16]):
-            if ch != "." and COLUMNS[column] is not None:
-                mask |= 1 << COLUMNS[column]
+        for column, ch in enumerate(keys[:len(cols)]):
+            if ch != "." and ch != " " and cols[column] is not None:
+                mask |= 1 << cols[column]
         yield mask
 
 

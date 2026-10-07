@@ -136,12 +136,19 @@ bool TasMovie::Parse(const std::vector<uint8_t> &bk2, TasMovie &out, std::string
             if (!keys.empty() && keys[0] == '#')
                 keys.erase(0, 1);
             std::istringstream names(keys);
+            // (newer BizHawk: "#Power|Reset|#P1 L_Up|...": a '#' starts a
+            // group, a player's buttons are named "P1 ...")
             for (std::string name; std::getline(names, name, '|');)
-                if (!name.empty())
-                {
-                    const auto it = kButtons.find(name);
-                    columns.push_back(it == kButtons.end() ? -1 : it->second);
-                }
+            {
+                while (!name.empty() && name[0] == '#')
+                    name.erase(0, 1);
+                if (name.empty())
+                    continue;
+                if (name.rfind("P1 ", 0) == 0)
+                    name.erase(0, 3);
+                const auto it = kButtons.find(name);
+                columns.push_back(it == kButtons.end() ? -1 : it->second);
+            }
             continue;
         }
         if (line.size() < 2 || line[0] != '|')
