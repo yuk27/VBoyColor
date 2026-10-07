@@ -74,6 +74,11 @@ pack).*
 - **Video recording** (PC) - F12 records the original red and the colored
   version side by side, frame for frame, for comparison videos (F12 again
   to stop; it stops on its own after ten minutes).
+- **Tool-assisted runs** (PC) - drop a Virtual Boy run from
+  [TASVideos](https://tasvideos.org/Movies-VBoy) (a `.bk2` file) on the
+  window, or open it with `VBoyColor.exe`: its game (from your `roms`
+  folder) plays the whole run by itself, in color - press F12 to record it.
+  Your own save stays untouched; when the run ends, you take over.
 
 ## Getting started
 

@@ -262,6 +262,7 @@ add_library(vbgo_app STATIC
     core/emu/UncoloredCollector.cpp
     core/emu/FrameRecorder.cpp
     core/emu/AudioOutput.cpp
+    core/emu/TasMovie.cpp
     core/input/XrInput.cpp
     core/input/ButtonMapping.cpp
     core/io/Settings.cpp

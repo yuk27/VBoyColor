@@ -6,6 +6,7 @@
 // rendering will eventually show up in without needing to put the headset on.
 #include "gfx/VulkanRenderer.h"
 #include "emu/Emulator.h"
+#include "emu/TasMovie.h"
 #include "io/Settings.h"
 #include "menu/AppMenu.h"
 #include "input/ButtonMapping.h"
@@ -23,6 +24,8 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -202,6 +205,7 @@ namespace
     int g_eyeView = 0; // 0 left, 1 both, 2 right
 
     std::string g_droppedRom;
+    std::string g_droppedMovie; // (a TAS run - .bk2)
     void OnDrop(GLFWwindow *, int count, const char **paths)
     {
         for (int i = 0; i < count; ++i)
@@ -212,6 +216,11 @@ namespace
             if (ext == ".vb")
             {
                 g_droppedRom = path;
+                return;
+            }
+            if (path.size() > 4 && (path.compare(path.size() - 4, 4, ".bk2") == 0 || path.compare(path.size() - 4, 4, ".BK2") == 0))
+            {
+                g_droppedMovie = path;
                 return;
             }
         }
@@ -240,6 +249,60 @@ namespace
         catch (const std::exception &ex)
         {
             std::fprintf(stderr, "VBoy Color: couldn't load %s (%s)\n", utf8Path.c_str(), ex.what());
+            return false;
+        }
+    }
+
+    // A tool-assisted run (TASVideos' .bk2, dropped on the window or named on
+    // the command line): finds its game in the ROMs folder - by name, else by
+    // the ROM's SHA-1 the movie records - and plays the run from power-on
+    // (see Emulator::LoadRom). F12 records it like any play.
+    bool PlayMovieFromPath(Emulator &emulator, AppMenu &appMenu, AppSettings &settings, Platform &platform,
+                           const std::string &utf8Path)
+    {
+        try
+        {
+#if defined(__cpp_char8_t)
+            const std::filesystem::path path(reinterpret_cast<const char8_t *>(utf8Path.c_str()));
+#else
+            const std::filesystem::path path = std::filesystem::u8path(utf8Path);
+#endif
+            std::ifstream in(path, std::ios::binary);
+            const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            TasMovie movie;
+            std::string error;
+            if (!TasMovie::Parse(bytes, movie, error))
+            {
+                std::fprintf(stderr, "VBoy Color: %s: %s\n", utf8Path.c_str(), error.c_str());
+                return false;
+            }
+            const std::vector<RomEntry> roms = platform.ScanRoms();
+            const RomEntry *rom = nullptr;
+            for (const RomEntry &entry : roms)
+                if (entry.name == movie.gameName)
+                    rom = &entry;
+            for (size_t i = 0; !rom && !movie.romSha1.empty() && i < roms.size(); ++i)
+            {
+                const std::vector<uint8_t> data = platform.ReadRomFile(roms[i].fullPath);
+                if (!data.empty() && TasMovie::Sha1(data.data(), data.size()) == movie.romSha1)
+                    rom = &roms[i];
+            }
+            if (!rom)
+            {
+                std::fprintf(stderr, "VBoy Color: the run is for %s - put its ROM in the roms folder\n", movie.gameName.c_str());
+                return false;
+            }
+            if (!emulator.LoadRom(rom->fullPath, rom->name, &movie.frames))
+                return false;
+            settings.ApplyGameColors(platform, emulator.RomName(), emulator.RomCrc()); // this game's colors
+            appMenu.Hide();
+            std::printf("Playing %s: %zu frames of %s\n", path.filename().string().c_str(), movie.frames.size(),
+                        rom->name.c_str());
+            return true;
+        }
+        catch (const std::exception &ex)
+        {
+            std::fprintf(stderr, "VBoy Color: couldn't play %s (%s)\n", utf8Path.c_str(), ex.what());
             return false;
         }
     }
@@ -432,10 +495,16 @@ int main(int argc, char **argv)
         if (!startRom.empty())
         {
 #if defined(_WIN32)
-            LoadRomFromPath(emulator, appMenu, settings, platform, std::filesystem::path(startRom).u8string());
+            const std::string start = std::filesystem::path(startRom).u8string();
 #else
-            LoadRomFromPath(emulator, appMenu, settings, platform, startRom);
+            const std::string start = startRom;
 #endif
+            const bool movie = start.size() > 4 && (start.compare(start.size() - 4, 4, ".bk2") == 0 ||
+                                                    start.compare(start.size() - 4, 4, ".BK2") == 0);
+            if (movie)
+                PlayMovieFromPath(emulator, appMenu, settings, platform, start);
+            else
+                LoadRomFromPath(emulator, appMenu, settings, platform, start);
         }
 
         uint32_t buttonStates[3]{};
@@ -495,6 +564,30 @@ int main(int argc, char **argv)
             {
                 LoadRomFromPath(emulator, appMenu, settings, platform, g_droppedRom);
                 g_droppedRom.clear();
+            }
+            if (!g_droppedMovie.empty())
+            {
+                PlayMovieFromPath(emulator, appMenu, settings, platform, g_droppedMovie);
+                g_droppedMovie.clear();
+            }
+            // While a run plays: how far it is, in the title bar.
+            {
+                static std::string shownTitle = "VBoy Color";
+                size_t frame = 0, total = 0;
+                std::string title = "VBoy Color";
+                if (emulator.MoviePlaying(frame, total))
+                {
+                    const int seconds = static_cast<int>(frame / 50.27), length = static_cast<int>(total / 50.27);
+                    char text[96];
+                    std::snprintf(text, sizeof(text), " - playing the TAS: %d:%02d / %d:%02d", seconds / 60, seconds % 60,
+                                  length / 60, length % 60);
+                    title += text;
+                }
+                if (title != shownTitle)
+                {
+                    glfwSetWindowTitle(window, title.c_str());
+                    shownTitle = title;
+                }
             }
 
             const bool altDown = glfwGetKey(window, GLFW_KEY_LEFT_ALT) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS;

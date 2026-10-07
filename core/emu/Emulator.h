@@ -107,7 +107,23 @@ public:
     // displayName (RomEntry::name) is used for save-state/SRAM naming -
     // romPath itself may be a content:// URI (Android), not a usable
     // filename stem.
-    bool LoadRom(const std::string &romPath, const std::string &displayName = "");
+    //
+    // movie: play a tool-assisted run (TasMovie::frames) from power-on
+    // instead of the player's input - with the core set as BizHawk's is (so
+    // the run stays in sync), a fresh battery save, and nothing of the run
+    // ever written over the player's own save (see InMovie). The player
+    // takes over when it ends (or a state is loaded, or the game reset).
+    bool LoadRom(const std::string &romPath, const std::string &displayName = "",
+                 const std::vector<uint32_t> *movie = nullptr);
+    // The loaded game is playing a movie (or played one: its save stays
+    // apart until another game loads). frame/total: where the run is.
+    bool InMovie() const { return m_movieSession; }
+    bool MoviePlaying(size_t &frame, size_t &total) const
+    {
+        frame = m_movieFrame.load();
+        total = m_movieLength.load();
+        return m_movieSession && frame < total;
+    }
 
     // Cold-resets the currently loaded game through the libretro core.
     // Returns false when no ROM is loaded.
@@ -430,6 +446,13 @@ private:
 
     float m_frameAccumulator = 0.0f; // real time not yet consumed by retro_run() - see kCoreFps (render thread)
     float m_ramCheckSeconds = 0.0f;  // time since SRAM was last checked (render thread)
+    // A movie (see LoadRom): its frames' input, the next one, and whether
+    // the loaded game is a movie's (no battery save read or written, no
+    // thumbnails made while it runs).
+    std::vector<uint32_t> m_movie;
+    std::atomic<size_t> m_movieFrame{0}, m_movieLength{0};
+    bool m_movieSession = false;
+    void StopMovie();
     std::vector<uint8_t> m_savedRam; // SRAM as last written to disk
 
     // The emulation thread (see the class comment). m_emuMutex guards the

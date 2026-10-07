@@ -46,9 +46,17 @@ namespace
     // back by RetroInputState (emulation thread) - see VBButtonBit in
     // Emulator.h for what each bit means.
     std::atomic<uint32_t> g_joypadBitmask{0};
-    // While a thumbnail is made (see Emulator::ThumbnailStep): its game's
-    // input (-1: none - the player's above) and no sound from it.
+    // While a thumbnail is made (see Emulator::ThumbnailStep), or a movie
+    // plays (see Emulator::LoadRom): its input (-1: none - the player's
+    // above).
     std::atomic<int32_t> g_inputOverride{-1};
+    // A movie's game is loaded with the core set the way BizHawk sets it
+    // (its Virtual Boy core is Mednafen's too): the accurate CPU emulation,
+    // and both directions of a pad allowed at once (runs press them).
+    // Everything else gets the fast emulation and no opposite directions,
+    // the core's defaults (said explicitly: it keeps the last values it was
+    // told otherwise).
+    std::atomic<bool> g_movieCore{false};
     std::atomic<bool> g_audioMuted{false};
 
     // Set by Emulator::Initialize to &m_audioOutput - same "necessarily global"
@@ -131,6 +139,16 @@ namespace
             if (std::strcmp(var->key, "vb_3dmode") == 0)
             {
                 var->value = "side-by-side";
+                return true;
+            }
+            if (std::strcmp(var->key, "vb_cpu_emulation") == 0)
+            {
+                var->value = g_movieCore.load() ? "accurate" : "fast";
+                return true;
+            }
+            if (std::strcmp(var->key, "vb_opposite_directions") == 0)
+            {
+                var->value = g_movieCore.load() ? "enabled" : "disabled";
                 return true;
             }
             return false;
@@ -261,7 +279,7 @@ void Emulator::WorkerLoop()
     }
 }
 
-bool Emulator::LoadRom(const std::string &romPath, const std::string &displayName)
+bool Emulator::LoadRom(const std::string &romPath, const std::string &displayName, const std::vector<uint32_t> *movie)
 {
     std::lock_guard<std::recursive_mutex> emu(m_emuMutex);
     if (!m_coreInitialized)
@@ -288,6 +306,15 @@ bool Emulator::LoadRom(const std::string &romPath, const std::string &displayNam
         retro_unload_game();
         m_romLoaded = false;
     }
+    StopMovie();
+    m_movieSession = movie != nullptr;
+    g_movieCore = m_movieSession;
+    if (movie)
+    {
+        m_movie = *movie;
+        m_movieFrame = 0;
+        m_movieLength = m_movie.size();
+    }
 
     retro_game_info info{};
     info.path = romPath.c_str(); // need_fullpath is false, but the core prefers a real path over null
@@ -310,7 +337,8 @@ bool Emulator::LoadRom(const std::string &romPath, const std::string &displayNam
         m_romCrc = TileColorPack::Crc32(romBytes.data(), romBytes.size());
         m_romSize = static_cast<uint32_t>(romBytes.size());
         m_romBytes = std::move(romBytes); // (kept to bring the game back after a thumbnail - see SetGameAside)
-        LoadRam();
+        if (!m_movieSession) // (a movie starts from a fresh battery save, as it was made)
+            LoadRam();
         m_ramCheckSeconds = 0.0f;
         std::fprintf(stderr, "[Emulator] %s\n", ReloadColorPack().c_str());
     }
@@ -326,11 +354,21 @@ bool Emulator::ResetGame()
     if (!m_romLoaded)
         return false;
     BringGameBack();
+    StopMovie();
     g_joypadBitmask = 0;
     m_frameAccumulator = 0.0f;
     g_frameReady = false;
     retro_reset();
     return true;
+}
+
+void Emulator::StopMovie()
+{
+    if (m_movie.empty())
+        return;
+    m_movie.clear();
+    m_movieLength = m_movieFrame.load(); // (where it stopped)
+    g_inputOverride = -1;
 }
 
 void Emulator::RunFrame(float deltaSeconds)
@@ -387,6 +425,21 @@ void Emulator::RunCoreFrames(int runs)
 
     for (int i = 0; i < runs; ++i)
     {
+        // A movie: this frame's buttons - and when it's over, the player's.
+        if (!m_movie.empty())
+        {
+            const size_t frame = m_movieFrame.load();
+            if (frame < m_movie.size())
+            {
+                g_inputOverride = static_cast<int32_t>(m_movie[frame]);
+                m_movieFrame = frame + 1;
+            }
+            else
+            {
+                std::fprintf(stderr, "[Emulator] The run is over (%zu frames) - over to you\n", m_movie.size());
+                StopMovie();
+            }
+        }
         const auto runStart = std::chrono::steady_clock::now();
         retro_run();
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - runStart).count();
@@ -1335,6 +1388,7 @@ bool Emulator::LoadState(int uiSlot)
     if (!retro_unserialize(data.data(), data.size()))
         return false;
     vbgo_tiletrack_reset(); // (the frame buffers now hold what the state saved - nothing tracked drew it)
+    StopMovie(); // (the run's next frame no longer follows)
     return true;
 }
 
@@ -1389,7 +1443,9 @@ bool Emulator::LoadStatePreview(int uiSlot, std::vector<uint8_t> &outRgba) const
 
 void Emulator::SaveRam()
 {
-    if (!m_romLoaded || m_gameAside) // (aside: saved when it was set aside - the core holds another game now)
+    // (aside: saved when it was set aside - the core holds another game now;
+    // a movie's: never - the player's own save stays as it was)
+    if (!m_romLoaded || m_gameAside || m_movieSession)
         return;
 
     const size_t size = retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
@@ -1403,7 +1459,7 @@ void Emulator::SaveRam()
 
 void Emulator::FlushRamIfChanged()
 {
-    if (!m_romLoaded || m_gameAside)
+    if (!m_romLoaded || m_gameAside || m_movieSession)
         return;
     const size_t size = retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
     const auto *data = static_cast<const uint8_t *>(retro_get_memory_data(RETRO_MEMORY_SAVE_RAM));
@@ -1447,7 +1503,9 @@ void Emulator::SetThumbnailsAllowed(bool allowed)
 
 bool Emulator::WantsThumbnailInput()
 {
-    if (!m_coreInitialized || !m_thumbAllowed.load())
+    // (not while a movie's game is loaded: setting it aside and back would
+    // reload it with the everyday core settings)
+    if (!m_coreInitialized || !m_thumbAllowed.load() || m_movieSession)
         return false;
     std::lock_guard<std::mutex> lock(m_workMutex);
     return !m_thumbHasInput;
