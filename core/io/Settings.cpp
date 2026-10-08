@@ -113,7 +113,7 @@ namespace
         {0xf3cd40dd, "niko-chan", kArcade, -1},
         {0x19bb2dfb, "panic bomber", kAutoColors, -1}, // its color pack (scenery) - Panibon uses it too
         {0x40498f5e, "panibon", kAutoColors, -1},
-        {0xaa10a7b4, "red alarm", kAutoColors, -1}, // wireframes colored by depth (DepthColors.h)
+        {0xaa10a7b4, "red alarm", kAutoColors, -1}, // wireframes colored by depth (DepthColors.h), HUD and menus by its pack
         {0x7e85c45d, "red alarm", kAutoColors, -1},
         {0x44788197, "gundam", kOcean, -1},
         {0xfa44402d, "space invaders", kNeon, -1},

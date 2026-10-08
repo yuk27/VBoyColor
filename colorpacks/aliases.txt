@@ -1,3 +1,4 @@
 cab61e8b 1048576 Jack Bros. (USA).vbcp
 40498f5e 524288 Panic Bomber (USA).vbcp
 9e9b8b92 1048576 Vertical Force (USA).vbcp
+7e85c45d 1048576 Red Alarm (USA).vbcp
