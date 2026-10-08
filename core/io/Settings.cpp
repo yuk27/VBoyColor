@@ -119,8 +119,8 @@ namespace
         {0xfa44402d, "space invaders", kNeon, -1},
         {0x60895693, "space squash", kNeon, -1},
         {0x3ccb67ae, "v-tetris", kAutoColors, -1}, // its color pack
-        {0x4c32ba5e, "vertical force", kArcade, -1},
-        {0x9e9b8b92, "vertical force", kArcade, -1},
+        {0x4c32ba5e, "vertical force", kAutoColors, -1}, // its color pack - the Japanese release uses it too
+        {0x9e9b8b92, "vertical force", kAutoColors, -1},
         {0x20688279, "virtual bowling", kSunsetM, -1}, // wooden lanes
         {0x526cc969, "virtual fishing", kOcean, -1},
         {0x8989fe0a, "virtual lab", kCandy, -1},
