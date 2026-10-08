@@ -53,7 +53,9 @@ pack).*
   comes). A game without box art, or with no internet, gets its title
   screen in its own colors instead, made on your device (nothing of any
   game ships with the app); Settings → Download box art off shows title
-  screens for all. As a list (Y) or last played first (X). Pick with the
+  screens for all. As a list (Y) or last played first (X), and all games
+  or only those with a color pack (the chip at the top, or Settings → Only
+  games with color packs). Pick with the
   sticks, a gamepad, the mouse, or by pointing a Quest controller and
   pulling its trigger.
 - **Real 3D on Quest** - each eye gets its own picture, as on the hardware,

@@ -46,7 +46,8 @@ public:
         RomEntry rom;
         std::string title;   // the name up to its first " (" - "Mario Clash"
         std::string details; // the rest - "(Japan, USA)"
-        bool hasPack = false; // made with a color pack (known once its thumbnail is)
+        bool hasPack = false;     // it has a color pack (as last known - see packChecked)
+        bool packChecked = false; // ...checked this session
         bool ready = false;   // `texture` shows its thumbnail (or box art)
         bool showingBox = false; // ...its box art
         int order = 0;           // its place A-Z (the ROMs folder's order)
@@ -63,7 +64,22 @@ public:
     // then; box art downloads either way.
     void Update(bool allowed);
 
-    const std::vector<Game> &Games() const { return m_games; }
+    // The games shown, in order (all of them, or only those with a color
+    // pack - see SetOnlyPacks).
+    struct GameList
+    {
+        const Game *first = nullptr;
+        size_t count = 0;
+        size_t size() const { return count; }
+        bool empty() const { return count == 0; }
+        const Game &operator[](size_t i) const { return first[i]; }
+        const Game *begin() const { return first; }
+        const Game *end() const { return first + count; }
+    };
+    GameList Games() const { return {m_games.data(), m_shownCount}; }
+    // Every game in the ROMs folder, shown or not.
+    size_t AllCount() const { return m_games.size(); }
+    // A shown game's index in Games() (-1: not there, or filtered out).
     int IndexOf(const std::string &name) const;
     // Checks a game's thumbnail again - e.g. its colors changed - and makes
     // it again if it's outdated.
@@ -74,6 +90,13 @@ public:
     // order Games() lists them in.
     void SetSortRecent(bool recent);
     bool IsSortRecent() const { return m_sortRecent; }
+    // Only the games with a color pack. Which ones have one is known from
+    // last time, and checked again (one game a frame while the menu's open)
+    // - so a new pack shows its game within a moment.
+    void SetOnlyPacks(bool onlyPacks);
+    bool IsOnlyPacks() const { return m_onlyPacks; }
+    // Games whose pack isn't checked yet this session.
+    bool CheckingPacks() const { return !m_packQueue.empty(); }
     // Bumped whenever Games() changes (rescan, order) - for anything that
     // keeps per-game data by index.
     int Version() const { return m_version; }
@@ -139,6 +162,17 @@ private:
     std::string m_lastPlayed;
     bool m_sortRecent = false;
     int m_version = 0;
+
+    // Only the games with a pack: the others are sorted after them, past
+    // m_shownCount.
+    bool m_onlyPacks = false;
+    size_t m_shownCount = 0;
+    // Notes what a check found (and keeps it in the file); the order's
+    // fixed at the end of Update (m_resort), as games are found by pointer.
+    void SetHasPack(Game &game, bool hasPack);
+    void CheckPackNext();
+    std::deque<std::string> m_packQueue; // games whose pack is still to check (only while m_onlyPacks)
+    bool m_resort = false;
 
     bool m_boxArt = false;
     std::string m_downloading;            // the game whose box art is downloading

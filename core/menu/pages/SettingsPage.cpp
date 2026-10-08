@@ -163,6 +163,16 @@ void SettingsPage::Init(UiRenderer &ui, const UiMenuResources &resources)
                                  },
                                  nullptr, nullptr, UiIconId::Save);
     boxArt->toggle = [this]() { return m_settings && m_settings->downloadBoxArt; };
+    // (also the library's own filter chip)
+    auto onlyPacks = list->AddEntry("Only games with color packs", [this](MenuItem *)
+                                    {
+                                        m_settings->libraryOnlyPacks = !m_settings->libraryOnlyPacks;
+                                        m_settings->Save(*m_platform);
+                                        if (m_library)
+                                            m_library->SetOnlyPacks(m_settings->libraryOnlyPacks);
+                                    },
+                                    nullptr, nullptr, UiIconId::Palette);
+    onlyPacks->toggle = [this]() { return m_settings && m_settings->libraryOnlyPacks; };
     m_rebuildEntry = list->AddEntry("Make thumbnails again", [this](MenuItem *)
                                     { if (m_library) m_library->RebuildAll(); }, nullptr, nullptr, UiIconId::Reset);
     if (m_platform->SupportsChangeRomsFolder())

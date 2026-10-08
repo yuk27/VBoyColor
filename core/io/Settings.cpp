@@ -13,7 +13,7 @@ namespace
 {
     constexpr const char *kSettingsFileName = "settings.dat";
 
-    // Versions 12 to 16 only appended fields (selectedShadePalette,
+    // Versions 12 to 17 only appended fields (selectedShadePalette,
     // passthrough, then the library's), so an older file's AppSettings bytes are exactly a
     // prefix of today's layout - copying just that much keeps everything the
     // user had set up (button mapping, screen placement, palette) and leaves
@@ -32,6 +32,8 @@ namespace
             return offsetof(AppSettings, librarySortRecent);
         case 15:
             return offsetof(AppSettings, screenLook);
+        case 16:
+            return offsetof(AppSettings, libraryOnlyPacks);
         default:
             return 0;
         }
@@ -71,7 +73,8 @@ bool AppSettings::Load(Platform &platform)
         AppSettings migrated; // fields past the prefix keep their defaults
         std::memcpy(&migrated, bytes.data() + sizeof(version), prefix);
         // Box art became the default in 16 - off was just the old default.
-        migrated.downloadBoxArt = true;
+        if (version < 16)
+            migrated.downloadBoxArt = true;
         *this = migrated;
         return true;
     }

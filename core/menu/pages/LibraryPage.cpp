@@ -11,12 +11,18 @@
 
 namespace
 {
-    // The list/cards switch, top right, and the sort chip left of it.
+    // The list/cards switch, top right, the sort chip left of it, and the
+    // filter (all games / only those with a color pack) left of that.
     constexpr float kChipW = 36.0f, kChipH = 13.0f;
     constexpr float kChipX = kContentRight - kChipW;
     constexpr float kChipY = kPageTitleY + (kPageTitleHeight - kChipH) / 2.0f;
     constexpr float kSortW = 40.0f;
     constexpr float kSortX = kChipX - 4.0f - kSortW;
+    constexpr float kFilterW = 40.0f;
+    constexpr float kFilterX = kSortX - 4.0f - kFilterW;
+    constexpr const char *kFilterAll = "All";
+    constexpr const char *kNoPacks = "None of these games has a color pack";
+    constexpr const char *kLookingForPacks = "Looking for color packs\xE2\x80\xA6";
     constexpr const char *kSortAz = "A\xE2\x80\x93Z";
     constexpr const char *kSortRecent = "Recent";
     constexpr const char *kMakingText = " \xC2\xB7 making thumbnails\xE2\x80\xA6";
@@ -48,7 +54,8 @@ void LibraryPage::Init(UiRenderer &ui, const UiMenuResources &resources)
         m_menu.MenuItems.push_back(m_grid);
         m_menu.YPress = [this]() { ToggleView(); };
         m_menu.XPress = [this]() { ToggleSort(); };
-        ui.EnsureGlyphsForText(resources.cardFont, std::string(kSortAz) + kSortRecent);
+        ui.EnsureGlyphsForText(resources.cardFont, std::string(kSortAz) + kSortRecent + kFilterAll);
+        ui.EnsureGlyphsForText(resources.bodyFont, std::string(kNoPacks) + kLookingForPacks);
     }
     else
     {
@@ -81,14 +88,15 @@ void LibraryPage::Init(UiRenderer &ui, const UiMenuResources &resources)
     m_menu.Init();
 }
 
-bool LibraryPage::HasGames() const { return m_library && !m_library->Games().empty(); }
+bool LibraryPage::HasGames() const { return m_library && m_library->AllCount() > 0; }
 
 std::string LibraryPage::Subtitle() const
 {
     if (!HasGames())
         return "";
-    const size_t count = m_library->Games().size();
-    std::string text = std::to_string(count) + (count == 1 ? " game" : " games");
+    const size_t count = m_library->Games().size(), all = m_library->AllCount();
+    std::string text = m_library->IsOnlyPacks() ? std::to_string(count) + " of " + std::to_string(all) + " games"
+                                                : std::to_string(all) + (all == 1 ? " game" : " games");
     if (m_library->Making())
         text += kMakingText;
     else if (m_library->Downloading())
@@ -151,6 +159,19 @@ void LibraryPage::ToggleView()
     }
 }
 
+void LibraryPage::ToggleFilter()
+{
+    if (!m_grid || !m_library)
+        return;
+    m_library->SetOnlyPacks(!m_library->IsOnlyPacks()); // (the grid keeps its selection if it's still shown)
+    m_grid->RefreshLabels();
+    if (m_settings)
+    {
+        m_settings->libraryOnlyPacks = m_library->IsOnlyPacks();
+        m_settings->Save(*m_platform);
+    }
+}
+
 void LibraryPage::ToggleSort()
 {
     if (!m_grid || !m_library)
@@ -178,6 +199,36 @@ void LibraryPage::Draw(UiRenderer &ui, int transitionDirX, int transitionDirY, f
         return;
     const float ox = transitionDirX * moveProgress * moveDist, oy = transitionDirY * moveProgress * moveDist;
     const float a = fadeProgress;
+    // Filter: all games, or only those with a color pack (the cards' badge).
+    {
+        const bool packs = m_library && m_library->IsOnlyPacks();
+        constexpr float kHalf = kFilterW / 2.0f;
+        ui.DrawQuadRounded(kFilterX + ox, kChipY + oy, kFilterW, kChipH, WithAlpha(kMenuCardColor, a), kChipH / 2.0f);
+        ui.DrawQuadRounded(kFilterX + (packs ? kHalf : 0.0f) + 1.0f + ox, kChipY + 1.0f + oy, kHalf - 2.0f, kChipH - 2.0f,
+                           WithAlpha({1.0f, 0.79f, 0.34f, 0.2f}, a), (kChipH - 2.0f) / 2.0f);
+        const UiFontHandle font = m_resources->cardFont;
+        const float tw = ui.GetTextWidth(font, kFilterAll);
+        ui.DrawText(font, kFilterAll, kFilterX + (kHalf - tw) / 2.0f + ox,
+                    kChipY + kChipH / 2.0f - ui.GetFontPHeight(font) / 2.0f - ui.GetFontPStart(font) + oy, 1.0f,
+                    WithAlpha(packs ? kMenuDimTextColor : kMenuSelectionColor, a));
+        // (three dots, red green blue, as on the cards)
+        constexpr float kDot = 3.4f, kStep = 4.6f;
+        const XrColor4f dots[3] = {{0.95f, 0.3f, 0.3f, 1.0f}, {0.35f, 0.8f, 0.45f, 1.0f}, {0.35f, 0.55f, 1.0f, 1.0f}};
+        const float dx = kFilterX + kHalf + (kHalf - (kStep * 2.0f + kDot)) / 2.0f;
+        for (int i = 0; i < 3; ++i)
+            ui.DrawQuadRounded(dx + i * kStep + ox, kChipY + (kChipH - kDot) / 2.0f + oy, kDot, kDot,
+                               WithAlpha(dots[i], a * (packs ? 1.0f : 0.55f)), kDot / 2.0f);
+    }
+    // Filtered down to nothing.
+    if (m_library && m_library->IsOnlyPacks() && m_library->Games().empty())
+    {
+        const char *text = m_library->CheckingPacks() ? kLookingForPacks : kNoPacks;
+        const UiFontHandle font = m_resources->bodyFont;
+        const float tw = ui.GetTextWidth(font, text);
+        ui.DrawText(font, text, kContentX + (kContentWidth - tw) / 2.0f + ox,
+                    kContentTop + kContentHeight / 2.0f - ui.GetFontPHeight(font) / 2.0f - ui.GetFontPStart(font) + oy, 1.0f,
+                    WithAlpha(kMenuDimTextColor, a));
+    }
     // Sort: A-Z or Recent.
     {
         const char *label = m_library && m_library->IsSortRecent() ? kSortRecent : kSortAz;
@@ -205,6 +256,14 @@ void LibraryPage::Draw(UiRenderer &ui, int transitionDirX, int transitionDirY, f
 
 void LibraryPage::HandlePointer(const MenuPointer &pointer)
 {
+    if (m_grid && pointer.clicked && pointer.x >= kFilterX && pointer.x <= kFilterX + kFilterW && pointer.y >= kChipY &&
+        pointer.y <= kChipY + kChipH)
+    {
+        const bool wantPacks = pointer.x >= kFilterX + kFilterW / 2.0f;
+        if (m_library && wantPacks != m_library->IsOnlyPacks())
+            ToggleFilter();
+        return;
+    }
     if (m_grid && pointer.clicked && pointer.x >= kSortX && pointer.x <= kSortX + kSortW && pointer.y >= kChipY &&
         pointer.y <= kChipY + kChipH)
     {

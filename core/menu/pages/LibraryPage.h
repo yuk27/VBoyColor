@@ -12,8 +12,10 @@ class Platform;
 
 // The library: every ROM in the ROMs folder as a card with its thumbnail
 // (see ThumbnailLibrary, LibraryGrid) - or as a list (Y). Picking one loads
-// it with its colors and starts it. Without a ROMs folder (Android, after
-// "Change ROMs folder") or without ROMs, it says so instead.
+// it with its colors and starts it. The chips at the top: all games or only
+// those with a color pack, A-Z or recent first (X), list or cards (Y).
+// Without a ROMs folder (Android, after "Change ROMs folder") or without
+// ROMs, it says so instead.
 class LibraryPage : public MenuPage
 {
 public:
@@ -32,6 +34,7 @@ private:
     void Play(int game);
     void ToggleView();
     void ToggleSort();
+    void ToggleFilter();
     bool HasGames() const;
 
     std::shared_ptr<LibraryGrid> m_grid;

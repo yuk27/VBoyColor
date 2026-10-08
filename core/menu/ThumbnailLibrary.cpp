@@ -195,6 +195,7 @@ void ThumbnailLibrary::Init(UiRenderer &ui, Platform &platform, Emulator &emulat
     m_settings = &settings;
     m_boxArt = settings.downloadBoxArt;
     m_sortRecent = settings.librarySortRecent;
+    m_onlyPacks = settings.libraryOnlyPacks;
     {
         const std::vector<uint8_t> bytes = platform.ReadRomsFile(kRecentName, true);
         const std::string text(bytes.begin(), bytes.end());
@@ -222,8 +223,12 @@ void ThumbnailLibrary::Sort()
         const auto it = std::find(m_recent.begin(), m_recent.end(), name);
         return it == m_recent.end() ? static_cast<int>(m_recent.size()) : static_cast<int>(it - m_recent.begin());
     };
+    // (with only the games with a pack, the others go last - not shown)
+    auto hidden = [this](const Game &game) { return m_onlyPacks && !game.hasPack; };
     std::stable_sort(m_games.begin(), m_games.end(), [&](const Game &a, const Game &b)
                      {
+                         if (hidden(a) != hidden(b))
+                             return !hidden(a);
                          if (m_sortRecent)
                          {
                              const int ra = recentRank(a.rom.name), rb = recentRank(b.rom.name);
@@ -232,7 +237,62 @@ void ThumbnailLibrary::Sort()
                          }
                          return a.order < b.order;
                      });
+    m_shownCount = static_cast<size_t>(std::count_if(m_games.begin(), m_games.end(),
+                                                     [&](const Game &game) { return !hidden(game); }));
+    m_resort = false;
     ++m_version;
+}
+
+void ThumbnailLibrary::SetOnlyPacks(bool onlyPacks)
+{
+    if (m_onlyPacks == onlyPacks)
+        return;
+    m_onlyPacks = onlyPacks;
+    m_packQueue.clear();
+    if (onlyPacks)
+        for (const Game &game : m_games)
+            if (!game.packChecked)
+                m_packQueue.push_back(game.rom.name);
+    Sort();
+}
+
+void ThumbnailLibrary::SetHasPack(Game &game, bool hasPack)
+{
+    game.packChecked = true;
+    if (game.hasPack != hasPack)
+    {
+        game.hasPack = hasPack;
+        if (m_onlyPacks)
+            m_resort = true;
+    }
+    // Known next time too (the file keeps it with the game's pictures).
+    for (const std::string &key : {game.rom.name, kBoxPrefix + game.rom.name})
+        if (const auto saved = m_saved.find(key); saved != m_saved.end() && saved->second.hasPack != hasPack)
+        {
+            saved->second.hasPack = hasPack;
+            m_archiveDirty = true;
+        }
+}
+
+void ThumbnailLibrary::CheckPackNext()
+{
+    while (!m_packQueue.empty())
+    {
+        const std::string name = m_packQueue.front();
+        m_packQueue.pop_front();
+        Game *game = Find(name);
+        if (!game || game->packChecked)
+            continue;
+        const std::vector<uint8_t> rom = m_platform->ReadRomFile(game->rom.fullPath);
+        if (rom.empty())
+        {
+            game->packChecked = true; // (as last known)
+            return;
+        }
+        const uint32_t crc = TileColorPack::Crc32(rom.data(), rom.size());
+        SetHasPack(*game, !Emulator::FindPackBytes(*m_platform, name, crc, static_cast<uint32_t>(rom.size())).empty());
+        return; // (one a frame)
+    }
 }
 
 void ThumbnailLibrary::SetSortRecent(bool recent)
@@ -267,7 +327,7 @@ ThumbnailLibrary::Game *ThumbnailLibrary::Find(const std::string &name)
 
 int ThumbnailLibrary::IndexOf(const std::string &name) const
 {
-    for (size_t i = 0; i < m_games.size(); ++i)
+    for (size_t i = 0; i < m_shownCount; ++i)
         if (m_games[i].rom.name == name)
             return static_cast<int>(i);
     return -1;
@@ -292,6 +352,7 @@ void ThumbnailLibrary::Rescan()
             if (old.rom.name == rom.name)
             {
                 game.hasPack = old.hasPack;
+                game.packChecked = old.packChecked;
                 game.ready = old.ready;
                 game.failed = old.failed;
                 game.showingBox = old.showingBox;
@@ -299,12 +360,23 @@ void ThumbnailLibrary::Rescan()
                 old.texture = UiImageHandle{};
                 break;
             }
+        // New here: whether it has a pack, as last known.
+        if (!game.packChecked)
+            for (const std::string &key : {rom.name, kBoxPrefix + rom.name})
+                if (const auto saved = m_saved.find(key); saved != m_saved.end())
+                {
+                    game.hasPack = saved->second.hasPack;
+                    break;
+                }
         m_games.push_back(std::move(game));
     }
+    m_packQueue.clear();
     for (const Game &game : m_games)
     {
         m_decodeQueue.push_back(game.rom.name);
         m_checkQueue.push_back(game.rom.name);
+        if (m_onlyPacks && !game.packChecked)
+            m_packQueue.push_back(game.rom.name);
     }
     Sort();
     // Textures of games no longer in the folder are kept for new ones (the
@@ -490,7 +562,8 @@ void ThumbnailLibrary::Update(bool allowed)
         m_archiveDirty = true;
         if (game)
         {
-            game->hasPack = wasMaking && m_makingHasPack;
+            if (wasMaking)
+                SetHasPack(*game, m_makingHasPack);
             bool box = false;
             ShownFor(name, box);
             if (!box) // (its box art stays)
@@ -509,8 +582,12 @@ void ThumbnailLibrary::Update(bool allowed)
         const Saved *saved = ShownFor(next, box);
         if (!game || !saved || (game->ready && game->showingBox == box))
             continue;
-        if (const auto title = m_saved.find(next); title != m_saved.end())
-            game->hasPack = title->second.hasPack;
+        if (const auto title = m_saved.find(next); title != m_saved.end() && !game->packChecked &&
+                                                   game->hasPack != title->second.hasPack)
+        {
+            game->hasPack = title->second.hasPack; // (as last known)
+            m_resort = m_resort || m_onlyPacks;
+        }
         int w = 0, h = 0, channels = 0;
         stbi_uc *pixels = stbi_load_from_memory(saved->png.data(), static_cast<int>(saved->png.size()), &w, &h, &channels, 3);
         if (pixels && w == static_cast<int>(kWidth) && h == static_cast<int>(kHeight))
@@ -545,6 +622,10 @@ void ThumbnailLibrary::Update(bool allowed)
 
     if (allowed && m_making.empty() && !m_checkQueue.empty() && m_emulator->WantsThumbnailInput())
         CheckNext();
+    if (allowed)
+        CheckPackNext();
+    if (m_resort) // (a game's pack turned up or went: the shown games changed)
+        Sort();
 
     // Kept: once everything's done, or now and then while making them - while
     // the menu's open (the file's big enough for a game to stutter).
@@ -579,11 +660,9 @@ void ThumbnailLibrary::CheckNext()
     const uint32_t size = static_cast<uint32_t>(input.rom.size());
     const ThumbnailRecipe &recipe = ThumbnailRecipeFor(crc);
     input.pack = Emulator::FindPackBytes(*m_platform, name, crc, size);
+    SetHasPack(*game, !input.pack.empty());
     if (WantsBoxArt(name)) // (and it has it): no title screen needed
-    {
-        game->hasPack = !input.pack.empty();
         return;
-    }
 
     // The colors it starts with: its own (saved for it in Settings), its
     // suggestion, or Auto - what LibraryPage applies when it loads.

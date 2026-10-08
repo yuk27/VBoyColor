@@ -58,6 +58,7 @@ LibraryGrid::LibraryGrid(UiRenderer &ui, const UiMenuResources &resources, Thumb
     ScrollTimeV = 0.12f;
     ScrollTimeH = 0.09f;
     RefreshLabels();
+    RememberSelected();
 }
 
 int LibraryGrid::Count() const { return static_cast<int>(m_library->Games().size()); }
@@ -102,11 +103,25 @@ std::string LibraryGrid::Fit(UiFontHandle font, const std::string &text, float w
     return kEllipsis;
 }
 
+void LibraryGrid::RememberSelected()
+{
+    const auto games = m_library->Games();
+    m_selectedName = m_selected >= 0 && m_selected < static_cast<int>(games.size()) ? games[m_selected].rom.name : std::string();
+}
+
 void LibraryGrid::RefreshLabels()
 {
-    const auto &games = m_library->Games();
+    const auto games = m_library->Games();
     if (m_labelsFor == m_library->Version() && m_labelsList == m_listView)
         return;
+    if (m_labelsFor != m_library->Version() && m_labelsFor >= 0)
+    {
+        // The games changed: the same one stays selected (if it's still shown).
+        const int index = m_library->IndexOf(m_selectedName);
+        m_selected = index >= 0 ? index : std::clamp(m_selected, 0, std::max(0, Count() - 1));
+        RememberSelected();
+        ScrollToSelected(false);
+    }
     m_labelsFor = m_library->Version();
     m_labelsList = m_listView;
     const UiMenuResources &r = *m_resources;
@@ -140,6 +155,7 @@ void LibraryGrid::SetSelectedGame(int index, bool instant)
     if (Count() == 0)
         return;
     m_selected = std::clamp(index, 0, Count() - 1);
+    RememberSelected();
     ScrollToSelected(instant);
 }
 
@@ -164,6 +180,7 @@ void LibraryGrid::Move(int delta)
     if (next < 0 || next >= Count())
         return;
     m_selected = next;
+    RememberSelected();
     ScrollToSelected(false);
 }
 
@@ -244,8 +261,11 @@ bool LibraryGrid::HandlePointer(const MenuPointer &pointer)
         m_scrollTarget = std::clamp(m_scrollTarget + pointer.scroll * RowHeight() * 0.5f, 0.0f,
                                     std::max(0.0f, ContentHeight() - m_height));
     const int hit = HitTest(pointer.x, pointer.y);
-    if (hit >= 0 && (pointer.moved || pointer.clicked))
+    if (hit >= 0 && (pointer.moved || pointer.clicked) && hit != m_selected)
+    {
         m_selected = hit;
+        RememberSelected();
+    }
     if (hit >= 0 && pointer.clicked && onPlay)
         onPlay(hit);
     return true;
@@ -255,7 +275,7 @@ void LibraryGrid::Draw(UiRenderer &ui, float offsetX, float offsetY, float alpha
 {
     if (!Visible)
         return;
-    const auto &games = m_library->Games();
+    const auto games = m_library->Games();
     const UiMenuResources &r = *m_resources;
     const bool focused = Selected;
     const float x0 = m_x + offsetX, y0 = m_y + offsetY - m_scroll;

@@ -27,7 +27,8 @@ public:
     bool IsListView() const { return m_listView; }
     void SetListView(bool listView);
     // Re-measures the names (call outside a frame - it may bake glyphs)
-    // when the games changed.
+    // when the games changed - and keeps the selection on the same game
+    // (they may have moved: sorted, filtered).
     void RefreshLabels();
 
     int PressedUp() override;
@@ -51,6 +52,7 @@ private:
     void ScrollToSelected(bool instant);
     int HitTest(float x, float y) const;
     std::string Fit(UiFontHandle font, const std::string &text, float width) const;
+    void RememberSelected();
 
     UiRenderer *m_ui;
     const UiMenuResources *m_resources;
@@ -58,6 +60,7 @@ private:
     float m_x, m_y, m_width, m_height;
     bool m_listView = false;
     int m_selected = 0;
+    std::string m_selectedName; // (the selected game's ROM name)
     float m_scroll = 0, m_scrollTarget = 0;
     float m_pulse = 0; // (placeholder cards breathe while thumbnails are made)
 
