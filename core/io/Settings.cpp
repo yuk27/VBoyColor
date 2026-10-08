@@ -107,7 +107,7 @@ namespace
     };
     constexpr Suggestion kSuggestions[] = {
         {0x133e9372, "wario land", kAutoColors, -1}, // its color pack (it started in Gradient, Sunset before it had one)
-        {0xbb71b522, "3-d tetris", kArcade, -1},
+        {0xbb71b522, "3-d tetris", kAutoColors, -1}, // the well by depth (DepthColors.h), menus, HUD and title by its pack
         {0xe81a3703, "bound high", kArcade, -1},
         {0x2199af41, "golf", kFireLeaf, -1}, // green fairways
         {0x6ba07915, "virtual golf", kFireLeaf, -1},
