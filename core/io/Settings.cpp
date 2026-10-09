@@ -125,7 +125,7 @@ namespace
         {0xaa10a7b4, "red alarm", kAutoColors, -1}, // wireframes colored by depth (DepthColors.h), HUD and menus by its pack
         {0x7e85c45d, "red alarm", kAutoColors, -1},
         {0x44788197, "gundam", kOcean, -1},
-        {0xfa44402d, "space invaders", kNeon, -1},
+        {0xfa44402d, "space invaders", kAutoColors, -1}, // its color pack (it started in Neon before it had one)
         {0x60895693, "space squash", kNeon, -1},
         {0x3ccb67ae, "v-tetris", kAutoColors, -1}, // its color pack
         {0x4c32ba5e, "vertical force", kAutoColors, -1}, // its color pack - the Japanese release uses it too

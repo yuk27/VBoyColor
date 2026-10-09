@@ -39,8 +39,9 @@ pack).*
   - **Tint** - the classic look: red, or any color you mix.
 - **Color packs** - hand-painted colors for a game, tile by tile, shown in
   Auto and Multicolor modes. Packs for Galactic Pinball, Innsmouth no
-  Yakata, Jack Bros., Mario Clash, Mario's Tennis, Panic Bomber, Teleroboxer,
-  Vertical Force and Wario Land are built in, plus the menus and HUD of Red Alarm and 3-D Tetris
+  Yakata, Jack Bros., Mario Clash, Mario's Tennis, Panic Bomber, Space
+  Invaders Virtual Collection, Teleroboxer, Vertical Force and Wario Land are
+  built in, plus the menus and HUD of Red Alarm and 3-D Tetris
   (their 3-D worlds are drawn without tiles, so Auto colors them by depth)
   and the scenery of V-Tetris (its characters are still to be painted). Packs hold only colors, no game graphics. A `.vbcp` file next to a ROM overrides the
   built-in one, and you can paint your own on PC: see
