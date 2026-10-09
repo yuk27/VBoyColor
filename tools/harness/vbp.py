@@ -198,9 +198,10 @@ def capture(eye=0):
     return t, c, lvl
 
 
-def write_capture(base, rgb, t, cells, level, scale=3, right_own=None):
+def write_capture(base, rgb, t, cells, level, scale=3, right_own=None, auto=False):
     """The app's F10 files: 3x PNG (rgb: what to paint over, or a painting) + VBGOTIL2 sidecar (records, cells, tile dictionary, palette).
-    right_own: a right-eye capture (Shift+F10) - where the right eye shows a picture of its own (VB.right_own())."""
+    right_own: a right-eye capture (Shift+F10) - where the right eye shows a picture of its own (VB.right_own()).
+    auto: the painting's magenta means "the auto colors, unless a layer paints the pixel" (VBGOAUT1) rather than "uncolored everywhere"."""
     Image.fromarray(np.repeat(np.repeat(rgb, scale, 0), scale, 1)).save(base + ".png")
     lib.vbgo_tiletrack_hash_rows.restype = C.c_uint32
     lib.vbgo_tiletrack_hash_rows.argtypes = [C.c_void_p]
@@ -219,6 +220,8 @@ def write_capture(base, rgb, t, cells, level, scale=3, right_own=None):
                 bytes([level if 0 <= level <= 63 else 255]))
         if right_own is not None:
             f.write(b"VBGOEYE1" + np.ascontiguousarray(right_own, np.uint8).tobytes())
+        if auto:
+            f.write(b"VBGOAUT1")
 
 
 def tag_fields(t):

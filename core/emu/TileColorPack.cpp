@@ -22,14 +22,17 @@ namespace
     constexpr char kLayerBoundWideMagic[8] = {'V', 'B', 'G', 'O', 'C', 'T', 'X', 'W'}; // (the same, past 64 groups)
     constexpr char kAmbiguousMagic[8] = {'V', 'B', 'G', 'O', 'A', 'M', 'B', '1'};
     constexpr char kEyeMagic[8] = {'V', 'B', 'G', 'O', 'E', 'Y', 'E', '1'};      // sidecar: per pixel, 1 = a right picture's own (right-eye capture)
+    constexpr char kAutoMagic[8] = {'V', 'B', 'G', 'O', 'A', 'U', 'T', '1'};     // sidecar flag: this painting's magenta means "auto colors, unless a layer paints it"
     constexpr char kEyeTilesMagic[8] = {'V', 'B', 'G', 'O', 'E', 'Y', 'T', '1'}; // pack: tiles painted in right-eye captures, after those
     constexpr char kRomMagic[8] = {'V', 'B', 'G', 'O', 'R', 'O', 'M', '1'}; // the pack's last 16 bytes: + ROM CRC-32, size   // tiles painted two ways in a frame, after those
 
     constexpr uint32_t kNoColor = 0x01000000;   // a magenta vote: leave uncolored
+    constexpr unsigned kLayerBits = 5;          // a layer vote's key: pixel key << 5 | world
     constexpr uint32_t kBackground = 0x02000000; // a transparent pixel left as the background (fills only)
     constexpr uint32_t kFillVote = 0x100;     // Vote::extra: a transparent pixel painted over
     constexpr uint32_t kFigureVote = 0x200;   // Vote::extra (map cells): on a background figure
     constexpr uint32_t kEyeVote = 0x400;      // Vote::extra (map cells): a right picture's own - its cell keeps every painted pixel
+    constexpr uint32_t kAutoVote = 0x800;     // Vote::extra (tile votes): magenta from a kAutoMagic painting
     // What captures without a palette block were made with: the Ember
     // Multicolor palette (see Settings.h), as 0-255 RGB.
     constexpr uint8_t kDefaultCapturePalette[4][3] = {{8, 3, 0}, {166, 38, 5}, {242, 140, 26}, {255, 242, 191}};
@@ -222,6 +225,7 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
     const uint8_t *shownPixels = nullptr;
     const uint8_t *figureIds = nullptr;
     const uint8_t *rightOwn = nullptr; // (a right-eye capture: its right pictures' own pixels)
+    bool autoMagenta = false;          // (magenta: the auto colors wherever no layer of its own paints the pixel)
     int level = -1;
     size_t offset = headerSize + count * (v2 ? 12 : 8);
     if (sidecar.size() >= offset + 4)
@@ -260,6 +264,11 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
             {
                 rightOwn = &sidecar[offset + 8];
                 offset += 8 + count;
+            }
+            else if (std::memcmp(&sidecar[offset], kAutoMagic, 8) == 0)
+            {
+                autoMagenta = true;
+                offset += 8;
             }
             else
                 break;
@@ -483,7 +492,7 @@ bool TileColorPack::AddPainting(const uint8_t *pixels, int width, int height, in
                 m_sheetVotes.push_back({key, rgb, 0});
                 continue;
             }
-            m_votes.push_back({key, rgb, 0});
+            m_votes.push_back({key, rgb, rgb == kNoColor && autoMagenta ? kAutoVote : 0});
             if (!object.empty() && object[i] >= 0 && rgb < kNoColor)
             {
                 m_contextVotes.push_back({key, rgb, static_cast<uint32_t>(object[i])});
@@ -1131,6 +1140,7 @@ void TileColorPack::FinishImport(ImportStats &stats)
     m_leftUncolored.clear();
     m_cellTiles.clear();
     Chosen chosen;
+    std::vector<uint64_t> autoKeys; // tile pixels left to the auto colors by kAutoMagic paintings alone (ascending)
     ForEachKey(m_votes, [&](auto begin, auto end) {
         uint32_t bestVotes, allVotes;
         size_t distinct;
@@ -1141,6 +1151,11 @@ void TileColorPack::FinishImport(ImportStats &stats)
             ++stats.inconsistent;
         if (best == kNoColor)
         {
+            bool onlyAuto = true;
+            for (auto vote = begin; vote != end && onlyAuto; ++vote)
+                onlyAuto = vote->rgb != kNoColor || (vote->extra & kAutoVote);
+            if (onlyAuto)
+                autoKeys.push_back(key);
             m_leftUncolored[static_cast<uint32_t>(key >> 6)] |= 1ull << (key & 63);
             ++stats.erased;
             return;
@@ -1152,14 +1167,28 @@ void TileColorPack::FinishImport(ImportStats &stats)
     // Cleanup 3: a palette or layer that consistently shows a tile pixel in
     // another color than the overall choice (at least twice, two thirds of
     // its votes) keeps that color for itself - a menu option drawn in its
-    // "not selected" palette, a tile reused in different places.
+    // "not selected" palette, a tile reused in different places. A layer
+    // keeps its own colors where the overall choice is the auto colors too,
+    // when that choice comes from paintings that say so (kAutoMagic) and no
+    // painting left the pixel uncolored on that layer itself: a plain filled
+    // tile most screens leave to the auto colors can still be lava on the
+    // one layer that paints it so. (Not a palette: a palette spans every
+    // layer, so it would undo the overall choice.)
     auto variants = [&](std::vector<Vote> &votes, unsigned bits, std::unordered_map<uint64_t, Tile> &into, size_t &counted,
                         Chosen *record) {
         ForEachKey(votes, [&](auto begin, auto end) {
             const uint64_t key = begin->key >> bits;
             uint32_t overall;
-            if (!chosen.Get(key, overall) || overall == kNoColor)
+            if (!chosen.Get(key, overall))
                 return;
+            if (overall == kNoColor)
+            {
+                if (bits != kLayerBits || !std::binary_search(autoKeys.begin(), autoKeys.end(), key))
+                    return;
+                for (auto vote = begin; vote != end; ++vote)
+                    if (vote->rgb == kNoColor)
+                        return;
+            }
             uint32_t bestVotes, allVotes;
             size_t distinct;
             const uint32_t best = Winner(begin, end, bestVotes, allVotes, distinct);
@@ -1198,7 +1227,7 @@ void TileColorPack::FinishImport(ImportStats &stats)
             vote.rgb = overall;
     }
     std::sort(m_layerVotes.begin(), m_layerVotes.end(), byKeyThenColor);
-    variants(m_layerVotes, 5, m_layerTiles, stats.layerPixels, nullptr);
+    variants(m_layerVotes, kLayerBits, m_layerTiles, stats.layerPixels, nullptr);
 
     // Cleanup 4: shared tiles that objects paint differently (context).
     ResolveContexts(stats);

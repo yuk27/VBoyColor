@@ -181,6 +181,14 @@ public:
     }
 
     bool HasLayerColors() const { return !m_layerTiles.empty(); }
+    // Every tile some layer has its own colors for (with or without colors of
+    // its own: a plain filled tile can be left to the auto colors but lava on
+    // one layer).
+    template <typename Fn> void ForEachLayeredHash(Fn fn) const
+    {
+        for (const auto &entry : m_layerTiles)
+            fn(static_cast<uint32_t>(entry.first >> 5));
+    }
     bool HasPaletteColors() const { return !m_paletteTiles.empty(); }
     const std::unordered_map<uint32_t, Tile> &Tiles() const { return m_tiles; }
     // Sorted by cell, then palette, then hash.

@@ -146,13 +146,7 @@ void ColorPackRenderer::SetPack(const TileColorPack *pack)
                 m_fillCells[cell.cell >> 3] |= static_cast<uint8_t>(1u << (cell.cell & 7));
     }
     if (m_pack->HasLayerColors())
-        for (const auto &tile : m_pack->Tiles())
-            for (unsigned world = 0; world < 32; ++world)
-                if (m_pack->FindLayer(tile.first, world))
-                {
-                    m_layered.insert(tile.first);
-                    break;
-                }
+        m_pack->ForEachLayeredHash([this](uint32_t hash) { m_layered.insert(hash); });
 }
 
 void ColorPackRenderer::SetFadeReference(unsigned level)
