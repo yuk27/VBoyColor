@@ -7,6 +7,9 @@ it shows games the way the Virtual Boy was meant to be seen, in stereoscopic
 3D, but in color instead of red on black. On Windows and Linux it plays them
 in a window, no headset needed.
 
+<p align="center"><a href="https://youtu.be/vsScgEVnbME"><img src="images/demo-video.jpg" alt="VBoy Color demo video: eight Virtual Boy games, the original red next to VBoy Color" width="720"></a><br>
+<a href="https://youtu.be/vsScgEVnbME"><b>▶ Watch the demo</b></a> - eight games, the original red next to VBoy Color (2 min)</p>
+
 > VBoy Color is an independent fan project. It is not affiliated with,
 > endorsed by, or sponsored by Nintendo or Meta. "Virtual Boy" is a trademark
 > of Nintendo. No games are included - use only ROMs you made from cartridges
