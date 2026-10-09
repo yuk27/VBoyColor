@@ -57,7 +57,7 @@ namespace
     }
 } // namespace
 
-DesktopPlatform::DesktopPlatform()
+DesktopPlatform::DesktopPlatform(const char *settingsFileName) : m_settingsFileName(settingsFileName)
 {
 #if defined(_WIN32)
     wchar_t exe[MAX_PATH * 4];

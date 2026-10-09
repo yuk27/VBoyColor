@@ -148,6 +148,13 @@ namespace
     void ApplyDefaultGameplayBindings(AppSettings &settings)
     {
         using namespace ButtonMapper;
+        // Keys can't be pressed here (this app never reads the keyboard): a
+        // key binding is the flat PC app's, from a settings file the two
+        // apps once shared - its place goes to the controller default.
+        for (MappedButtons &buttons : settings.vbButtons)
+            for (MappedButton &b : buttons.Buttons)
+                if (b.IsSet && b.InputDevice == DeviceKeyboard)
+                    b = {};
         auto setDefault = [&](uint32_t vbBit, int device, uint32_t emuButton)
         {
             MappedButton &b = settings.vbButtons[vbBit].Buttons[0];

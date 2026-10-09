@@ -14,7 +14,11 @@ public:
     // Makes the exe's folder the working directory, so the roms folder (and,
     // off Windows, fonts/ and icons/) next to it are found however the app
     // was started (a shortcut, a terminal somewhere else).
-    DesktopPlatform();
+    // settingsFileName: see Platform::SettingsFileName (the VR app passes
+    // "settings-vr.dat").
+    explicit DesktopPlatform(const char *settingsFileName = "settings.dat");
+
+    const char *SettingsFileName() const override { return m_settingsFileName; }
 
     bool HasRomsFolder() const override { return true; } // no picker - always "has" the fixed folder
     bool SupportsChangeRomsFolder() const override { return false; }
@@ -37,6 +41,7 @@ public:
     std::vector<uint8_t> LoadAssetBytes(const std::string &name) override;
 
 private:
+    const char *m_settingsFileName;
     struct Download;
     std::shared_ptr<Download> m_download; // (shared with its thread)
 };

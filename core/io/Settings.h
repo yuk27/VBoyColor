@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 class Platform;
 
@@ -137,8 +138,16 @@ struct AppSettings
     void Save(Platform &platform) const;
 
     // Replaces every field; returns false (self left untouched) if the file
-    // doesn't exist or its version doesn't match kVersion.
+    // doesn't exist or its version doesn't match kVersion. The file is
+    // Platform::SettingsFileName (the PC VR app's own starts from the shared
+    // settings.dat, without its button mapping).
     bool Load(Platform &platform);
+
+private:
+    bool LoadFile(Platform &platform, const char *fileName);
+    bool LoadBytes(const std::vector<uint8_t> &bytes);
+
+public:
 
     // Colors per game: the color settings (Color Mode, its palette, the
     // tint) are remembered for each game - SaveGameColors whenever they

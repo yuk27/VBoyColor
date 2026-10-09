@@ -153,6 +153,13 @@ namespace
     void ApplyDefaultGameplayBindings(AppSettings &settings)
     {
         using namespace ButtonMapper;
+        // No Touch controllers here: a Touch binding is the VR app's, from
+        // when VBoyColorVR.exe shared this settings file (it has its own,
+        // settings-vr.dat, now) - its place goes back to the key default.
+        for (MappedButtons &buttons : settings.vbButtons)
+            for (MappedButton &b : buttons.Buttons)
+                if (b.IsSet && (b.InputDevice == DeviceLeftTouch || b.InputDevice == DeviceRightTouch))
+                    b = {};
         auto setDefault = [&](uint32_t vbBit, uint32_t emuButton)
         {
             MappedButton &b = settings.vbButtons[vbBit].Buttons[0];

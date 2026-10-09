@@ -46,6 +46,12 @@ public:
     // paintings there - finished packs (<rom>.vbcp) still load everywhere.
     virtual std::vector<std::string> ListRomsSubfolder(const std::string & /*subfolder*/) const { return {}; }
 
+    // The settings file in the States folder. The PC VR app keeps its own
+    // (settings-vr.dat): it shares the folder with the flat app, and the two
+    // can't share a button mapping - the first binding of each button is a
+    // key in one and a Touch controller input in the other.
+    virtual const char *SettingsFileName() const { return "settings.dat"; }
+
     // 0-100 device battery level, -1 if unavailable.
     virtual int GetBatteryPercent() const = 0;
 

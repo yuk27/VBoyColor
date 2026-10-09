@@ -59,12 +59,37 @@ void AppSettings::Save(Platform &platform) const
     const int version = kVersion;
     std::memcpy(bytes.data(), &version, sizeof(version));
     std::memcpy(bytes.data() + sizeof(version), this, sizeof(AppSettings));
-    platform.WriteRomsFile(kSettingsFileName, true, bytes.data(), bytes.size());
+    platform.WriteRomsFile(platform.SettingsFileName(), true, bytes.data(), bytes.size());
 }
 
 bool AppSettings::Load(Platform &platform)
 {
-    const std::vector<uint8_t> bytes = platform.ReadRomsFile(kSettingsFileName, true);
+    std::vector<uint8_t> bytes = platform.ReadRomsFile(platform.SettingsFileName(), true);
+    if (bytes.empty() && std::strcmp(platform.SettingsFileName(), kSettingsFileName) != 0)
+    {
+        // An app with a settings file of its own (the PC VR app), first run:
+        // start from the shared file's settings (colors, screen look,
+        // library), but not its button mapping - those are the other app's
+        // keys (and, before the VR app had its own file, whatever it bound
+        // over them). The app's defaults fill the mapping in.
+        AppSettings shared;
+        if (!shared.LoadFile(platform, kSettingsFileName))
+            return false;
+        for (ButtonMapper::MappedButtons &buttons : shared.vbButtons)
+            buttons = {};
+        *this = shared;
+        return true;
+    }
+    return LoadBytes(bytes);
+}
+
+bool AppSettings::LoadFile(Platform &platform, const char *fileName)
+{
+    return LoadBytes(platform.ReadRomsFile(fileName, true));
+}
+
+bool AppSettings::LoadBytes(const std::vector<uint8_t> &bytes)
+{
     if (bytes.size() < sizeof(int))
         return false;
 

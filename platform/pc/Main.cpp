@@ -33,7 +33,9 @@ int main()
 
     std::printf("VBoy Color VR starting...\n");
 
-    DesktopPlatform platform;
+    // Its own settings file: the flat VBoyColor.exe uses the same States
+    // folder, with keys where this app has Touch controller inputs.
+    DesktopPlatform platform("settings-vr.dat");
     OpenXrApp app;
     try
     {
