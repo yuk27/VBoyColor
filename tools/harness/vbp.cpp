@@ -348,6 +348,25 @@ extern "C"
                 g_pal8[i][c] = static_cast<uint8_t>(p[i * 3 + c] * 255.0f + 0.5f);
     }
 
+    // A Multicolor gradient palette (Settings.h kScreenPatterns, 5 stops, RGB 0-1),
+    // as the app sets it: relative to the pack's reference brightness if one is
+    // loaded, else the brightest the game has shown (learnt as frames render).
+    void vbp_gradient(const float *p)
+    {
+        std::array<ShadeRgb, 5> stops;
+        for (int i = 0; i < 5; ++i)
+            stops[i] = ShadeRgb{p[i * 3], p[i * 3 + 1], p[i * 3 + 2]};
+        g_colorizer.SetGradient(stops, g_pack.Empty() ? -1 : g_pack.ReferenceLevel());
+        const auto pal = g_colorizer.Palette();
+        g_bg = pal[0];
+        for (int i = 0; i < 4; ++i)
+        {
+            const float c[3] = {pal[i].r, pal[i].g, pal[i].b};
+            for (int k = 0; k < 3; ++k)
+                g_pal8[i][k] = static_cast<uint8_t>(c[k] * 255.0f + 0.5f);
+        }
+    }
+
     // Left eye as the app shows it in Multicolor mode: Colorize + the pack
     // through ColorPackRenderer. out: 384x224 RGB. painted (optional, 384x224):
     // 1 where the pack changed the pixel.
@@ -356,6 +375,8 @@ extern "C"
         const size_t n = static_cast<size_t>(g_w) * g_h;
         std::vector<uint8_t> raw(n * 4), bgra(n * 4), plain;
         vbp_raw(raw.data());
+        if (g_colorizer.IsGradient())
+            g_colorizer.Observe(raw.data(), g_w, g_h, static_cast<size_t>(g_w) * 4);
         g_colorizer.Colorize(raw.data(), bgra.data(), n);
         if (painted)
             plain = bgra;
@@ -384,6 +405,8 @@ extern "C"
         const size_t n = static_cast<size_t>(g_w) * g_h;
         std::vector<uint8_t> raw(n * 4), bgra(n * 4);
         vbp_raw(raw.data());
+        if (g_colorizer.IsGradient())
+            g_colorizer.Observe(raw.data(), g_w, g_h, static_cast<size_t>(g_w) * 4);
         g_colorizer.Colorize(raw.data(), bgra.data(), n);
         if (usePack && g_renderer.Active())
         {

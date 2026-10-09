@@ -24,7 +24,7 @@ for name, args, res in [
     ("vbp_tiles", [C.c_void_p], None), ("vbp_eyetags", [C.c_void_p], C.c_int), ("vbp_worlds", [C.c_void_p], None),
     ("vbp_tile_rows", [C.c_uint32, C.c_void_p], C.c_int), ("vbp_chr", [C.c_void_p], C.c_int),
     ("vbp_state_size", [], C.c_size_t), ("vbp_save", [C.c_void_p, C.c_size_t], C.c_int), ("vbp_load", [C.c_void_p, C.c_size_t], C.c_int),
-    ("vbp_pack_load", [C.c_void_p, C.c_size_t], C.c_int), ("vbp_palette", [C.c_void_p], None), ("vbp_auto", [C.c_int, C.c_int], None),
+    ("vbp_pack_load", [C.c_void_p, C.c_size_t], C.c_int), ("vbp_palette", [C.c_void_p], None), ("vbp_gradient", [C.c_void_p], None), ("vbp_auto", [C.c_int, C.c_int], None),
     ("vbp_render", [C.c_void_p, C.c_int, C.c_void_p], None), ("vbp_render_full", [C.c_void_p, C.c_int], C.c_int),
     ("vbp_worldinfo", [C.c_void_p], None), ("vbp_right_own", [C.c_void_p], C.c_int),
     ("vbp_block_disparity", [C.c_uint, C.c_int, C.c_void_p], None), ("vbp_time_paint", [C.c_int], C.c_double),
@@ -62,6 +62,11 @@ class VB:
     def palette(self, p):
         p = np.ascontiguousarray(p, np.float32)
         lib.vbp_palette(p.ctypes.data)
+
+    def gradient(self, stops):
+        """A Multicolor gradient palette (5 stops, RGB 0-1), as the app sets it (see vbp_gradient)."""
+        s = np.ascontiguousarray(stops, np.float32)
+        lib.vbp_gradient(s.ctypes.data)
 
     def load_pack(self, path_or_bytes):
         b = open(path_or_bytes, "rb").read() if isinstance(path_or_bytes, str) else path_or_bytes
