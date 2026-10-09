@@ -40,12 +40,10 @@ pack).*
 - **Color packs** - hand-painted colors for a game, tile by tile, shown in
   Auto and Multicolor modes. Packs for Galactic Pinball, Innsmouth no
   Yakata, Jack Bros., Mario Clash, Mario's Tennis, Panic Bomber, Space
-  Invaders Virtual Collection, Teleroboxer, Vertical Force and Wario Land are
-  built in, plus the menus and HUD of Red Alarm and 3-D Tetris
+  Invaders Virtual Collection, Teleroboxer, Vertical Force, V-Tetris and Wario
+  Land are built in, plus the menus and HUD of Red Alarm and 3-D Tetris
   (their 3-D worlds are drawn without tiles, so Auto colors them by depth)
-  and the scenery of V-Tetris (its characters are still to be painted), and
-  Virtual Bowling's pins, HUD and menus over its Sunset lanes (its close-ups
-  are drawn without tiles, so they stay in Sunset). Packs hold only colors, no game graphics. A `.vbcp` file next to a ROM overrides the
+  and Virtual Bowling's HUD, gauges and menus over its Sunset lanes. Packs hold only colors, no game graphics. A `.vbcp` file next to a ROM overrides the
   built-in one, and you can paint your own on PC: see
   [docs/COLOR_PACKS.md](docs/COLOR_PACKS.md).
 - **Colors per game** - every Virtual Boy game starts in the scheme that
