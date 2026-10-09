@@ -130,7 +130,7 @@ namespace
         {0x3ccb67ae, "v-tetris", kAutoColors, -1}, // its color pack
         {0x4c32ba5e, "vertical force", kAutoColors, -1}, // its color pack - the Japanese release uses it too
         {0x9e9b8b92, "vertical force", kAutoColors, -1},
-        {0x20688279, "virtual bowling", kSunsetM, -1}, // wooden lanes
+        {0x20688279, "virtual bowling", kSunsetM, -1}, // wooden lanes - its color pack paints pins, HUD and menus over them (the close-ups are drawn without tiles)
         {0x526cc969, "virtual fishing", kOcean, -1},
         {0x8989fe0a, "virtual lab", kCandy, -1},
         {0x736b40d6, "league baseball", kArcade, -1},
