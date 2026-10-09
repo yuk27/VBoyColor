@@ -29,8 +29,14 @@
 //     block; a score in one shade in front of a block field in others) - and
 //     a pixel that hasn't changed keeps its disparity while it still fits as
 //     well;
-//  4. inside an area of one shade, where any shift lines up, the disparities
-//     at the area's edges, blended across it.
+//  4. inside an area of one shade, where any shift lines up, one surface
+//     for the whole area: a plane through the disparities around it (its
+//     edges, the lines drawn across it - those far off it left out), its
+//     edge band pulled onto it too. (Each row blending its own ends'
+//     disparities streaked: neighbouring rows meet different lines.)
+// Where several shifts line up equally well (a dithered field, a pattern
+// that repeats), the one nearest the screen's plane wins - not the first
+// tried, which painted Golf's fairways in the nearest color.
 // The right picture's pixels take the disparity of the left pixel they show
 // (the same shade where that disparity puts it), so both eyes always show
 // the same colors; the few it doesn't show take their row's neighbours'.
@@ -85,4 +91,11 @@ private:
     std::vector<uint8_t> m_matches, m_inside;             // per disparity, block: matching / countable pixels
     std::vector<int16_t> m_costByDisparity, m_cost, m_sum; // the costs per disparity and block; per block and disparity; smoothed
     std::vector<int32_t> m_blockPixels;                   // per block: pixels in the 3x3 blocks around it
+    struct Sample
+    {
+        int16_t x, y, d;
+    };
+    std::vector<int32_t> m_flatLabel, m_area;             // flat fills: per pixel (-1 not flat), an area's pixels
+    std::vector<Sample> m_samples;                        // ... the disparities around it
+    std::vector<int> m_scratch;
 };

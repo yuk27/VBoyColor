@@ -58,6 +58,7 @@ constexpr int kStep = 30, kJump = 250;   // smoothing: a step of 1 in disparity 
 constexpr int kPlaneBonus = 60;          // the pull of the frame's main depths
 constexpr int kKeepNow = 154, kKeepLast = 102; // (out of 256: this frame's costs, the last frame's - 60 / 40 %)
 constexpr int kSwitch = 2;               // votes a pixel's neighbours' disparity needs over its own block's
+constexpr int kPrior = 6;                // cost per pixel of disparity (ties go to the screen's plane)
 
 // Far to near (indigo, violet, rose, orange, gold); per stop the shade 1, 2
 // and 3 color. Disparity kFar and beyond is the first, kNear and nearer the last.
@@ -157,10 +158,13 @@ void DepthColors::Update(const uint8_t *const shades[2], const uint8_t *const wa
 
     // Flat fills: inside an area of one shade (the whole 7x7 window around a
     // pixel that shade) nothing says how far away it is - any shift lines up
-    // as well. A row's run of such pixels takes the disparities just past
-    // its ends (the area's edges, or a line drawn across it - those do say),
-    // blended across the run; with only one end, that one (not the screen's
-    // edge: what's cut off there says nothing).
+    // as well. Each connected area of such pixels takes one surface from the
+    // disparities around it (its own shade's pixels just outside it, where
+    // its edges or the lines drawn across it say how far away they are): a
+    // plane through them (a floor or a wall in perspective - one level if
+    // they don't spread), fitted leaving out the ones far off it, kept
+    // within the range they span. (Rows taking their own ends' disparities
+    // streaked: neighbouring rows meet different lines.)
     {
         auto flat = [&](int x, int y) {
             const unsigned s = shades[0][static_cast<size_t>(y) * kWidth + x];
@@ -173,31 +177,121 @@ void DepthColors::Update(const uint8_t *const shades[2], const uint8_t *const wa
             return true;
         };
         std::vector<int16_t> &left = m_disparity[0];
+        m_flatLabel.assign(n, -1);
         for (int y = 3; y < kHeight - 3; ++y)
-        {
-            const size_t row = static_cast<size_t>(y) * kWidth;
-            for (int x = 3; x < kWidth - 3;)
+            for (int x = 3; x < kWidth - 3; ++x)
             {
-                if (!want[0][row + x] || !flat(x, y))
-                {
-                    ++x;
-                    continue;
-                }
-                int end = x + 1;
-                while (end < kWidth - 3 && want[0][row + end] && flat(end, y))
-                    ++end;
-                // (the run: x to end - 1 - an end at the screen's edge says nothing)
-                const int a = x > 3 ? left[row + x - 1] : kUnknown, b = end < kWidth - 3 ? left[row + end] : kUnknown;
-                if (a != kUnknown || b != kUnknown)
-                    for (int k = x; k < end; ++k)
-                    {
-                        int d = a != kUnknown ? a : b;
-                        if (a != kUnknown && b != kUnknown)
-                            d = a + ((b - a) * (k - x + 1) * 2 + (end - x + 1)) / (2 * (end - x + 1)); // (rounded)
-                        left[row + k] = static_cast<int16_t>(d);
-                    }
-                x = end;
+                const size_t i = static_cast<size_t>(y) * kWidth + x;
+                if (want[0][i] && flat(x, y))
+                    m_flatLabel[i] = -2; // flat, not yet in an area
             }
+        auto inner = [&](int x, int y) { return x >= 3 && x < kWidth - 3 && y >= 3 && y < kHeight - 3; };
+        for (size_t seed = 0; seed < n; ++seed)
+        {
+            if (m_flatLabel[seed] != -2)
+                continue;
+            // The area (4-connected), and the samples around it.
+            m_area.clear();
+            m_samples.clear();
+            m_area.push_back(static_cast<int32_t>(seed));
+            m_flatLabel[seed] = 0;
+            const uint8_t shade = shades[0][seed];
+            for (size_t k = 0; k < m_area.size(); ++k)
+            {
+                const int i = m_area[k], x = i % kWidth, y = i / kWidth;
+                const int nx[4] = {x - 1, x + 1, x, x}, ny[4] = {y, y, y - 1, y + 1};
+                for (int j = 0; j < 4; ++j)
+                {
+                    if (nx[j] < 0 || nx[j] >= kWidth || ny[j] < 0 || ny[j] >= kHeight)
+                        continue;
+                    const int ni = ny[j] * kWidth + nx[j];
+                    if (m_flatLabel[ni] == -2)
+                    {
+                        m_flatLabel[ni] = 0;
+                        m_area.push_back(ni);
+                    }
+                    else if (m_flatLabel[ni] == -1 && shades[0][ni] == shade && want[0][ni] && left[ni] != kUnknown && inner(nx[j], ny[j]))
+                        m_samples.push_back({static_cast<int16_t>(nx[j]), static_cast<int16_t>(ny[j]), left[ni]});
+                }
+            }
+            if (m_samples.empty())
+                continue; // nothing says - their blocks' disparities stay
+            // A level: the samples' median; then a plane through the ones near it, twice.
+            auto median = [&](std::vector<int> &v) {
+                std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end());
+                return v[v.size() / 2];
+            };
+            std::vector<int> &ds = m_scratch;
+            ds.clear();
+            for (const Sample &p : m_samples)
+                ds.push_back(p.d);
+            const int level = median(ds);
+            for (int &d : ds)
+                d = std::abs(d - level);
+            const int spread = std::max(2, median(ds) * 3);
+            double a = level, b = 0, c = 0, cx = 0, cy = 0;
+            int lo = level, hi = level;
+            for (int round = 0; round < 2; ++round)
+            {
+                // (centred, in units of 64 pixels, the slopes held back a little: samples along one line say nothing across it)
+                double sw = 0, sx = 0, sy = 0;
+                for (const Sample &p : m_samples)
+                    if (std::abs(p.d - (a + b * (p.x - cx) / 64 + c * (p.y - cy) / 64)) <= spread)
+                        sw += 1, sx += p.x, sy += p.y;
+                if (sw < 1)
+                    break;
+                const double mx = sx / sw, my = sy / sw;
+                double xx = 0, xy = 0, yy = 0, xd = 0, yd = 0, sd = 0;
+                int nlo = 999, nhi = -999;
+                for (const Sample &p : m_samples)
+                    if (std::abs(p.d - (a + b * (p.x - cx) / 64 + c * (p.y - cy) / 64)) <= spread)
+                    {
+                        const double u = (p.x - mx) / 64, v = (p.y - my) / 64;
+                        xx += u * u, xy += u * v, yy += v * v, xd += u * p.d, yd += v * p.d, sd += p.d;
+                        nlo = std::min<int>(nlo, p.d), nhi = std::max<int>(nhi, p.d);
+                    }
+                const double ridge = 0.02 * sw;
+                xx += ridge, yy += ridge;
+                const double det = xx * yy - xy * xy;
+                a = sd / sw, cx = mx, cy = my;
+                b = det > 1e-9 ? (xd * yy - yd * xy) / det : 0;
+                c = det > 1e-9 ? (yd * xx - xd * xy) / det : 0;
+                lo = nlo, hi = nhi;
+            }
+            auto surface = [&](int x, int y) {
+                const double d = a + b * (x - cx) / 64 + c * (y - cy) / 64;
+                return std::max(lo, std::min(hi, static_cast<int>(d < 0 ? d - 0.5 : d + 0.5)));
+            };
+            for (const int i : m_area)
+                left[i] = static_cast<int16_t>(surface(i % kWidth, i / kWidth));
+            // Its edge (the 3 pixels its own shade goes on past the flat part,
+            // where their windows see what's beside it): those off the surface
+            // join it (a band of another color around every fill otherwise).
+            size_t from = 0, to = m_area.size();
+            for (int ring = 0; ring < 3; ++ring)
+            {
+                for (size_t k = from; k < to; ++k)
+                {
+                    const int i = m_area[k], x = i % kWidth, y = i / kWidth;
+                    const int nx[4] = {x - 1, x + 1, x, x}, ny[4] = {y, y, y - 1, y + 1};
+                    for (int j = 0; j < 4; ++j)
+                    {
+                        if (nx[j] < 0 || nx[j] >= kWidth || ny[j] < 0 || ny[j] >= kHeight)
+                            continue;
+                        const int ni = ny[j] * kWidth + nx[j];
+                        if (m_flatLabel[ni] != -1 || shades[0][ni] != shade || !want[0][ni])
+                            continue;
+                        m_flatLabel[ni] = -3; // (seen)
+                        m_area.push_back(ni);
+                        const int d = surface(nx[j], ny[j]);
+                        if (left[ni] == kUnknown || std::abs(left[ni] - d) > 2)
+                            left[ni] = static_cast<int16_t>(d);
+                    }
+                }
+                from = to, to = m_area.size();
+            }
+            for (size_t k = m_area.size(); k-- > 0 && m_flatLabel[m_area[k]] == -3;)
+                m_flatLabel[m_area[k]] = -1;
         }
     }
 
@@ -392,6 +486,10 @@ void DepthColors::Estimate(const uint8_t *const shades[2], const uint8_t *const 
                     const int wide = wn ? (ww * (1000 - ((wm * kPerMille[wn]) >> 16)) + (kWideFull - ww) * kNeutral) >> 6 : kNeutral;
                     c = (small + wide) >> 1;
                 }
+                // (and a little for every pixel away from the screen's plane: where several
+                // shifts line up as well - a dithered field, a repeating pattern - the
+                // smallest wins, not the first tried)
+                c += kPrior * std::abs(di - kMaxDisparity);
                 // 3. ... and partly the last frame's (things move a little at a time).
                 if (last)
                     c = (c * kKeepNow + last[b] * kKeepLast) >> 8;
