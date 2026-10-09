@@ -117,7 +117,7 @@ namespace
         {0xe81a3703, "bound high", kArcade, -1},
         {0x2199af41, "golf", kFireLeaf, -1}, // green fairways
         {0x6ba07915, "virtual golf", kFireLeaf, -1},
-        {0x83cb6a00, "innsmouth", kOcean, -1}, // the sea town's deep blue
+        {0x83cb6a00, "innsmouth", kAutoColors, -1}, // its color pack (it started in Ocean before it had one)
         {0xdf4d56b4, "funky bowling", kCandy, -1},
         {0xf3cd40dd, "niko-chan", kArcade, -1},
         {0x19bb2dfb, "panic bomber", kAutoColors, -1}, // its color pack (scenery) - Panibon uses it too
