@@ -85,7 +85,9 @@ void XrInput::Initialize(XrInstance instance, XrSession session)
         // have this on the left hand. Runtimes remapping this profile onto
         // other controllers may route it elsewhere (SteamVR exposes it as
         // left X+Y on PSVR2 Sense, since it keeps the physical button), so
-        // left stick click doubles as a menu toggle.
+        // on PC VR holding the left stick click for a second opens the menu
+        // too (see Sync) - never on the Quest, and never a quick press: a
+        // stick click while playing mustn't pull the menu up.
         {m_menuClickAction, path("/user/hand/left/input/menu/click")},
         {m_thumbstickClickAction, path("/user/hand/left/input/thumbstick/click")},
         {m_aimAction, path("/user/hand/left/input/aim/pose")},
@@ -279,10 +281,18 @@ void XrInput::Sync(XrSession session)
     if (m_yPressed)
         m_buttonStates[ButtonMapper::DeviceLeftTouch] |= ButtonMapper::ButtonMapping[ButtonMapper::EmuButton_Y];
 
-    // Left stick click is a second, always-available way in - runtimes are
-    // free to keep the physical menu button for themselves (SteamVR does),
-    // which would otherwise leave no way to open the menu at all.
-    m_menuButtonPressed = readRawBool(m_menuClickAction) || readRawBool(m_thumbstickClickAction);
+    // On PC VR, holding the left stick click (about a second) is a second way
+    // in - runtimes are free to keep the physical menu button for themselves
+    // (SteamVR does), which would otherwise leave no way to open the menu at
+    // all. Not on the Quest (its Menu button always reaches the app), and
+    // never a quick press there either.
+    m_menuButtonPressed = readRawBool(m_menuClickAction);
+#if !defined(__ANDROID__)
+    constexpr int kStickHoldFrames = 72; // ~1 s at 72-90 Hz
+    m_stickClickFrames = readRawBool(m_thumbstickClickAction) ? m_stickClickFrames + 1 : 0;
+    if (m_stickClickFrames >= kStickHoldFrames)
+        m_menuButtonPressed = true;
+#endif
 }
 
 void XrInput::GetButtonStates(uint32_t buttonStates[3]) const

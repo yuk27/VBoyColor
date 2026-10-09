@@ -18,8 +18,18 @@ struct MenuPointer
 {
     float x = 0, y = 0;
     bool moved = false;   // it moved since last frame: hovering selects
-    bool clicked = false; // pressed this frame
+    bool clicked = false; // a click this frame (the mouse: pressed; a laser: a short press, on release)
     float scroll = 0;     // wheel/stick scroll this frame, in rows (+ = down)
+    // A laser held down and moved: the content under where it was pressed
+    // (pressX, pressY) follows it - dragY is how far it moved this frame
+    // (+ = down), flingY a last push when it's let go mid-drag. Lists and the
+    // library scroll by -dragY / -flingY; hovering doesn't select meanwhile.
+    bool dragging = false;
+    float pressX = 0, pressY = 0;
+    float dragY = 0, flingY = 0;
+    // Where to hit-test which widget gets the pointer: where a drag started.
+    float TargetX() const { return dragging || flingY != 0.0f ? pressX : x; }
+    float TargetY() const { return dragging || flingY != 0.0f ? pressY : y; }
 };
 
 // Ported from FrontendGo's MenuHelper.h/.cpp - the navigation/selection

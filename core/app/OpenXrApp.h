@@ -57,8 +57,9 @@ public:
 
     // Gamepad equivalent of the Touch controllers' dedicated hardware menu
     // button (XrInput::IsMenuButtonPressed) - a physical gamepad has no such
-    // button of its own, so AndroidMain.cpp's HandleInputEvent designates
-    // one (left stick click) for this. Without it there would be no way to
+    // button of its own, so AndroidMain.cpp designates Select + Start held
+    // together (and the Guide button, when the system delivers it) for this -
+    // not the left stick click, pressed while playing. Without it there would be no way to
     // open/close the menu with a gamepad at all.
     void SetGamepadMenuButtonPressed(bool pressed) { m_gamepadMenuButtonPressed = pressed; }
 

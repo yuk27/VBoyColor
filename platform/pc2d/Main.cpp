@@ -596,11 +596,13 @@ int main(int argc, char **argv)
                 ToggleFullscreen(window);
             fullscreenWasPressed = fullscreenPressed;
 
-            // (a gamepad's Guide button or left stick click too, as on the Quest)
+            // (a gamepad's Guide button or Back + Start together too, as on the
+            // Quest - not the left stick click, which happens while playing)
             GLFWgamepadstate menuPad{};
             const bool padMenu = glfwJoystickIsGamepad(GLFW_JOYSTICK_1) && glfwGetGamepadState(GLFW_JOYSTICK_1, &menuPad) &&
                                  (menuPad.buttons[GLFW_GAMEPAD_BUTTON_GUIDE] == GLFW_PRESS ||
-                                  menuPad.buttons[GLFW_GAMEPAD_BUTTON_LEFT_THUMB] == GLFW_PRESS);
+                                  (menuPad.buttons[GLFW_GAMEPAD_BUTTON_BACK] == GLFW_PRESS &&
+                                   menuPad.buttons[GLFW_GAMEPAD_BUTTON_START] == GLFW_PRESS));
             const bool tabPressed = glfwGetKey(window, GLFW_KEY_TAB) == GLFW_PRESS || padMenu;
             if (tabPressed && !tabWasPressed)
                 appMenu.ToggleOpen();

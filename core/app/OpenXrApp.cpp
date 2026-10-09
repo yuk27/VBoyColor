@@ -844,7 +844,7 @@ void OpenXrApp::UpdateMenuPointer(XrTime time)
     m_lastTriggers[1] = triggers[1];
 
     const Hit &hit = hits[m_pointerHand];
-    m_appMenu.SetPointer(hit.onMenu, hit.x, hit.y, triggers[m_pointerHand], 0.0f, true);
+    m_appMenu.SetPointer(hit.onMenu, hit.x, hit.y, triggers[m_pointerHand], 0.0f, true, true); // (press: click, hold: drag)
 }
 
 void OpenXrApp::UpdateBatteryPercent(float deltaSeconds)

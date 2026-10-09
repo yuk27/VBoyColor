@@ -17,7 +17,8 @@ namespace
     // passthrough, then the library's), so an older file's AppSettings bytes are exactly a
     // prefix of today's layout - copying just that much keeps everything the
     // user had set up (button mapping, screen placement, palette) and leaves
-    // the newer fields at their defaults.
+    // the newer fields at their defaults. 18 has 17's layout (only the
+    // screen look's default changed).
     size_t PrefixCompatibleSize(int version)
     {
         switch (version)
@@ -34,6 +35,8 @@ namespace
             return offsetof(AppSettings, screenLook);
         case 16:
             return offsetof(AppSettings, libraryOnlyPacks);
+        case 17:
+            return sizeof(AppSettings);
         default:
             return 0;
         }
@@ -75,6 +78,9 @@ bool AppSettings::Load(Platform &platform)
         // Box art became the default in 16 - off was just the old default.
         if (version < 16)
             migrated.downloadBoxArt = true;
+        // The LED look became the default in 18 - Sharp was just the old one.
+        if (version < 18 && migrated.screenLook == static_cast<int>(ScreenLook::Sharp))
+            migrated.screenLook = static_cast<int>(ScreenLook::Led);
         *this = migrated;
         return true;
     }

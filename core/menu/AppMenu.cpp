@@ -434,7 +434,7 @@ void AppMenu::BackFromPage()
 // -----------------------------------------------------------------------
 // Update
 
-void AppMenu::SetPointer(bool present, float x, float y, bool down, float scroll, bool drawDot)
+void AppMenu::SetPointer(bool present, float x, float y, bool down, float scroll, bool drawDot, bool dragToScroll)
 {
     m_pointer.present = present;
     m_pointer.x = x;
@@ -442,6 +442,7 @@ void AppMenu::SetPointer(bool present, float x, float y, bool down, float scroll
     m_pointer.down = down;
     m_pointer.scroll += scroll;
     m_pointer.drawDot = drawDot;
+    m_pointer.dragToScroll = dragToScroll;
 }
 
 float AppMenu::SidebarItemHeight(int item) const
@@ -460,14 +461,55 @@ float AppMenu::SidebarItemY(int item) const
 void AppMenu::HandlePointer()
 {
     Pointer &p = m_pointer;
-    const bool clicked = p.present && p.down && !p.wasDown;
     // (just arrived - e.g. the app starting under a resting mouse - isn't a move)
     if (p.present && p.lastX < 0.0f)
     {
         p.lastX = p.x;
         p.lastY = p.y;
     }
-    const bool moved = p.present && (std::abs(p.x - p.lastX) > 0.01f || std::abs(p.y - p.lastY) > 0.01f);
+    bool moved = p.present && (std::abs(p.x - p.lastX) > 0.01f || std::abs(p.y - p.lastY) > 0.01f);
+    bool clicked = p.present && p.down && !p.wasDown;
+    float dragY = 0.0f, flingY = 0.0f;
+    if (p.dragToScroll)
+    {
+        // A laser: a press on the menu starts a gesture; let go before it
+        // moved far (about a degree and a half - a trigger pull shakes the
+        // laser a little) it's a click, where it was let go; moved further
+        // while held, a drag - never a click.
+        constexpr float kDragStart = 8.0f; // menu units
+        clicked = false;
+        if (p.present && p.down && !p.wasDown)
+        {
+            p.pressed = true;
+            p.dragging = false;
+            p.pressX = p.x;
+            p.pressY = p.y;
+            p.velocityY = 0.0f;
+        }
+        if (p.pressed && !p.present)
+            p.pressed = p.dragging = false; // (the laser left the menu: cancelled)
+        if (p.pressed && p.down)
+        {
+            if (!p.dragging && std::hypot(p.x - p.pressX, p.y - p.pressY) > kDragStart)
+            {
+                p.dragging = true;
+                dragY = p.y - p.pressY; // (from where it was pressed: no lost motion)
+            }
+            else if (p.dragging)
+                dragY = p.y - p.lastY;
+            p.velocityY = p.velocityY * 0.5f + dragY * 0.5f;
+        }
+        if (p.pressed && !p.down)
+        {
+            if (p.dragging)
+                flingY = p.velocityY * 8.0f; // (a flick keeps it going a little)
+            else
+                clicked = true;
+            p.pressed = p.dragging = false;
+        }
+        if (p.dragging)
+            moved = false; // (hovering doesn't select while dragging)
+    }
     const float scroll = p.scroll;
     p.wasDown = p.down;
     p.lastX = p.x;
@@ -479,13 +521,16 @@ void AppMenu::HandlePointer()
         p.lastX = p.lastY = -1.0f;
         return;
     }
+    // Which part of the menu a drag (or its fling) belongs to: where it started.
+    const bool fromPress = p.dragging || flingY != 0.0f;
+    const float px = fromPress ? p.pressX : p.x, py = fromPress ? p.pressY : p.y;
 
-    if (p.x < kSidebarWidth)
+    if (px < kSidebarWidth)
     {
         for (int i = 0; i < SidebarCount; ++i)
         {
             const float y = SidebarItemY(i) - 3.0f;
-            if (SidebarEnabled(i) && p.y >= y && p.y < y + SidebarItemHeight(i) - 2.0f)
+            if (SidebarEnabled(i) && !fromPress && p.y >= y && p.y < y + SidebarItemHeight(i) - 2.0f)
                 m_sidebarHover = i;
         }
         if (clicked && m_sidebarHover >= 0)
@@ -497,7 +542,7 @@ void AppMenu::HandlePointer()
         return;
     }
 
-    if (p.y >= kMenuHeight - kHintsHeight)
+    if (py >= kMenuHeight - kHintsHeight)
     {
         // The hints are buttons too: B, Y and X.
         for (const HintRect &hint : m_hintRects)
@@ -533,6 +578,11 @@ void AppMenu::HandlePointer()
     pointer.moved = moved;
     pointer.clicked = clicked;
     pointer.scroll = scroll;
+    pointer.dragging = p.dragging;
+    pointer.pressX = px;
+    pointer.pressY = py;
+    pointer.dragY = dragY;
+    pointer.flingY = flingY;
     page->HandlePointer(pointer);
 }
 
@@ -574,6 +624,7 @@ void AppMenu::Update(uint32_t buttonStates[3], uint32_t lastButtonStates[3], flo
     {
         m_pointer.wasDown = m_pointer.down;
         m_pointer.scroll = 0.0f;
+        m_pointer.pressed = m_pointer.dragging = false;
         return; // closed - no page should react to input meant for gameplay
     }
 

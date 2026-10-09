@@ -29,14 +29,14 @@ namespace
         // hat), since motion events carry absolute axis values, not deltas.
         uint32_t gamepadKeyBits = 0;
         uint32_t gamepadAxisBits = 0;
-        // Left stick click (L3) and the Xbox/Guide button (AKEYCODE_BUTTON_MODE,
-        // if it reaches the app at all - many systems, quite possibly Horizon OS
-        // too, reserve it for their own system menu and never deliver it here;
-        // L3 is the reliable fallback) - see
-        // OpenXrApp::SetGamepadMenuButtonPressed's doc comment for why this
+        // Select + Start held together and the Xbox/Guide button
+        // (AKEYCODE_BUTTON_MODE, if it reaches the app at all - many systems,
+        // quite possibly Horizon OS too, reserve it for their own system menu
+        // and never deliver it here; Select + Start is the reliable fallback) -
+        // see OpenXrApp::SetGamepadMenuButtonPressed's doc comment for why this
         // exists at all: a gamepad has no dedicated menu button like the Touch
-        // controllers do, so these stand in for it.
-        bool gamepadMenuButtonHeld = false;
+        // controllers do, so these stand in for it. (Not the left stick click:
+        // pressing it while playing mustn't pull the menu up.)
         bool gamepadGuideButtonHeld = false;
     };
 
@@ -55,7 +55,6 @@ namespace
             // event to clear a held button - don't let it get stuck on.
             state->gamepadKeyBits = 0;
             state->gamepadAxisBits = 0;
-            state->gamepadMenuButtonHeld = false;
             state->gamepadGuideButtonHeld = false;
             break;
         default:
@@ -112,11 +111,6 @@ namespace
         {
             const int32_t keyCode = AKeyEvent_getKeyCode(event);
             const int32_t action = AKeyEvent_getAction(event);
-            if (keyCode == AKEYCODE_BUTTON_THUMBL)
-            {
-                state->gamepadMenuButtonHeld = (action == AKEY_EVENT_ACTION_DOWN);
-                return 1;
-            }
             if (keyCode == AKEYCODE_BUTTON_MODE)
             {
                 state->gamepadGuideButtonHeld = (action == AKEY_EVENT_ACTION_DOWN);
@@ -275,7 +269,9 @@ void android_main(struct android_app *app)
         if (xrApp.IsSessionRunning())
         {
             xrApp.SetGamepadButtonState(state.gamepadKeyBits | state.gamepadAxisBits);
-            xrApp.SetGamepadMenuButtonPressed(state.gamepadMenuButtonHeld || state.gamepadGuideButtonHeld);
+            const uint32_t selectStart = ButtonMapper::ButtonMapping[ButtonMapper::EmuButton_Back] |
+                                         ButtonMapper::ButtonMapping[ButtonMapper::EmuButton_Enter];
+            xrApp.SetGamepadMenuButtonPressed((state.gamepadKeyBits & selectStart) == selectStart || state.gamepadGuideButtonHeld);
             xrApp.RenderFrame();
         }
     }

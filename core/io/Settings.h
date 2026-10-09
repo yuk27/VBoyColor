@@ -48,7 +48,7 @@ struct AppSettings
     // defaults in place) on a mismatch rather than attempting migration,
     // except from version 11, whose layout is an exact prefix of this one
     // (12 only appended selectedShadePalette) - see Settings.cpp.
-    static constexpr int kVersion = 17;
+    static constexpr int kVersion = 18;
 
     // Move Screen / Follow Head. Only OpenXrApp's quad-layer pose consumes
     // these - meaningless on the flat pc2d debug build.
@@ -105,8 +105,10 @@ struct AppSettings
 
     // Version 16 (appended): how the game screen is drawn - ScreenLook - and,
     // in the PC window, how big: as big as fits (false) or the biggest whole
-    // multiple of its pixels (true).
-    int screenLook = 0;
+    // multiple of its pixels (true). LED by default since version 18 (the
+    // layout didn't change; an older file still on Sharp, the old default,
+    // gets LED once - see Settings.cpp).
+    int screenLook = static_cast<int>(ScreenLook::Led);
     bool screenWholePixels = false;
 
     // Version 17 (appended): the library shows only the games with a color

@@ -255,11 +255,20 @@ int LibraryGrid::HitTest(float x, float y) const
 
 bool LibraryGrid::HandlePointer(const MenuPointer &pointer)
 {
-    if (pointer.x < m_x - 2.0f || pointer.x > m_x + m_width + 6.0f || pointer.y < m_y || pointer.y > m_y + m_height)
+    const float tx = pointer.TargetX(), ty = pointer.TargetY();
+    if (tx < m_x - 2.0f || tx > m_x + m_width + 6.0f || ty < m_y || ty > m_y + m_height)
         return false;
+    const float maxScroll = std::max(0.0f, ContentHeight() - m_height);
     if (pointer.scroll != 0.0f)
-        m_scrollTarget = std::clamp(m_scrollTarget + pointer.scroll * RowHeight() * 0.5f, 0.0f,
-                                    std::max(0.0f, ContentHeight() - m_height));
+        m_scrollTarget = std::clamp(m_scrollTarget + pointer.scroll * RowHeight() * 0.5f, 0.0f, maxScroll);
+    if (pointer.dragging)
+    {
+        // The cards follow the laser (no easing while it's held).
+        m_scrollTarget = m_scroll = std::clamp(m_scroll - pointer.dragY, 0.0f, maxScroll);
+        return true;
+    }
+    if (pointer.flingY != 0.0f)
+        m_scrollTarget = std::clamp(m_scrollTarget - pointer.flingY, 0.0f, maxScroll);
     const int hit = HitTest(pointer.x, pointer.y);
     if (hit >= 0 && (pointer.moved || pointer.clicked) && hit != m_selected)
     {

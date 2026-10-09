@@ -20,6 +20,11 @@ namespace
     constexpr float kSortX = kChipX - 4.0f - kSortW;
     constexpr float kFilterW = 40.0f;
     constexpr float kFilterX = kSortX - 4.0f - kFilterW;
+    // On headsets with passthrough: AR (the room around the screen) on/off,
+    // left of the filter.
+    constexpr float kArW = 32.0f;
+    constexpr float kArX = kFilterX - 4.0f - kArW;
+    constexpr const char *kArLabel = "AR";
     constexpr const char *kFilterAll = "All";
     constexpr const char *kNoPacks = "None of these games has a color pack";
     constexpr const char *kLookingForPacks = "Looking for color packs\xE2\x80\xA6";
@@ -54,7 +59,7 @@ void LibraryPage::Init(UiRenderer &ui, const UiMenuResources &resources)
         m_menu.MenuItems.push_back(m_grid);
         m_menu.YPress = [this]() { ToggleView(); };
         m_menu.XPress = [this]() { ToggleSort(); };
-        ui.EnsureGlyphsForText(resources.cardFont, std::string(kSortAz) + kSortRecent + kFilterAll);
+        ui.EnsureGlyphsForText(resources.cardFont, std::string(kSortAz) + kSortRecent + kFilterAll + kArLabel);
         ui.EnsureGlyphsForText(resources.bodyFont, std::string(kNoPacks) + kLookingForPacks);
     }
     else
@@ -172,6 +177,16 @@ void LibraryPage::ToggleFilter()
     }
 }
 
+bool LibraryPage::ShowsArChip() const { return m_grid && m_settings && m_resources && m_resources->passthroughSupported; }
+
+void LibraryPage::ToggleAr()
+{
+    if (!ShowsArChip())
+        return;
+    m_settings->passthrough = !m_settings->passthrough;
+    m_settings->Save(*m_platform);
+}
+
 void LibraryPage::ToggleSort()
 {
     if (!m_grid || !m_library)
@@ -199,6 +214,30 @@ void LibraryPage::Draw(UiRenderer &ui, int transitionDirX, int transitionDirY, f
         return;
     const float ox = transitionDirX * moveProgress * moveDist, oy = transitionDirY * moveProgress * moveDist;
     const float a = fadeProgress;
+    // AR: the room around the screen (passthrough) - a headset icon whose
+    // lenses light up, and "AR".
+    if (ShowsArChip())
+    {
+        const bool on = m_settings->passthrough;
+        const float x = kArX + ox, y = kChipY + oy;
+        ui.DrawQuadRounded(x, y, kArW, kChipH, WithAlpha(kMenuCardColor, a), kChipH / 2.0f);
+        if (on)
+            ui.DrawQuadRounded(x + 1.0f, y + 1.0f, kArW - 2.0f, kChipH - 2.0f, WithAlpha({1.0f, 0.79f, 0.34f, 0.2f}, a),
+                               (kChipH - 2.0f) / 2.0f);
+        const XrColor4f ink = WithAlpha(on ? kMenuSelectionColor : kMenuDimTextColor, a);
+        constexpr float kBodyW = 11.0f, kBodyH = 6.4f;
+        const float bx = x + 5.0f, by = y + (kChipH - kBodyH) / 2.0f;
+        ui.DrawQuadRounded(bx - 1.6f, by + 2.0f, kBodyW + 3.2f, 1.3f, ink, 0.65f); // (the strap)
+        ui.DrawQuadRounded(bx, by, kBodyW, kBodyH, ink, 2.4f);
+        // Lenses: the room's colors when it shows, dark when it doesn't.
+        const XrColor4f lensOn[2] = {{0.42f, 0.86f, 0.95f, 1.0f}, {0.55f, 0.95f, 0.7f, 1.0f}};
+        for (int i = 0; i < 2; ++i)
+            ui.DrawQuadRounded(bx + 1.1f + i * 4.8f, by + 1.1f, 4.0f, 3.5f, WithAlpha(on ? lensOn[i] : kMenuCardColor, a), 1.5f);
+        ui.DrawQuadRounded(bx + kBodyW / 2.0f - 1.2f, by + kBodyH - 1.8f, 2.4f, 2.2f, WithAlpha(kMenuCardColor, a), 1.1f); // (the nose)
+        const UiFontHandle font = m_resources->cardFont;
+        ui.DrawText(font, kArLabel, bx + kBodyW + 3.0f,
+                    y + kChipH / 2.0f - ui.GetFontPHeight(font) / 2.0f - ui.GetFontPStart(font), 1.0f, ink);
+    }
     // Filter: all games, or only those with a color pack (the cards' badge).
     {
         const bool packs = m_library && m_library->IsOnlyPacks();
@@ -256,6 +295,12 @@ void LibraryPage::Draw(UiRenderer &ui, int transitionDirX, int transitionDirY, f
 
 void LibraryPage::HandlePointer(const MenuPointer &pointer)
 {
+    if (ShowsArChip() && pointer.clicked && pointer.x >= kArX && pointer.x <= kArX + kArW && pointer.y >= kChipY &&
+        pointer.y <= kChipY + kChipH)
+    {
+        ToggleAr();
+        return;
+    }
     if (m_grid && pointer.clicked && pointer.x >= kFilterX && pointer.x <= kFilterX + kFilterW && pointer.y >= kChipY &&
         pointer.y <= kChipY + kChipH)
     {

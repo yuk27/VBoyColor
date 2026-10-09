@@ -934,15 +934,22 @@ void MenuList::Draw(UiRenderer &ui, float offsetX, float offsetY, float alpha)
 
 bool MenuList::HandlePointer(const MenuPointer &pointer)
 {
-    if (!Visible || m_entries.empty() || pointer.x < m_posX - 2.0f || pointer.x > m_posX + m_width + 4.0f ||
-        pointer.y < m_posY || pointer.y > m_posY + m_height)
+    const float tx = pointer.TargetX(), ty = pointer.TargetY();
+    if (!Visible || m_entries.empty() || tx < m_posX - 2.0f || tx > m_posX + m_width + 4.0f || ty < m_posY ||
+        ty > m_posY + m_height)
         return false;
     Layout();
+    const float maxScroll = std::max(0.0f, m_contentHeight - m_height);
     if (pointer.scroll != 0.0f)
+        m_scrollTarget = std::clamp(m_scrollTarget + pointer.scroll * m_itemHeight, 0.0f, maxScroll);
+    if (pointer.dragging)
     {
-        m_scrollTarget = std::clamp(m_scrollTarget + pointer.scroll * m_itemHeight, 0.0f,
-                                    std::max(0.0f, m_contentHeight - m_height));
+        // The rows follow the laser (no easing while it's held).
+        m_scrollTarget = m_scroll = std::clamp(m_scroll - pointer.dragY, 0.0f, maxScroll);
+        return true;
     }
+    if (pointer.flingY != 0.0f)
+        m_scrollTarget = std::clamp(m_scrollTarget - pointer.flingY, 0.0f, maxScroll);
     int hit = -1;
     for (int i = 0; i < (int)m_entries.size(); ++i)
     {

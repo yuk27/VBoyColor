@@ -65,8 +65,11 @@ public:
     // logical units (kMenuWidth x kMenuHeight); down: its button (mouse
     // button, trigger) is held; scroll: wheel/stick scroll this frame, in
     // rows (+ = down). drawDot: draw where it points (the laser's end -
-    // a mouse has its own cursor).
-    void SetPointer(bool present, float x, float y, bool down, float scroll = 0.0f, bool drawDot = false);
+    // a mouse has its own cursor). dragToScroll (the lasers): a quick press
+    // clicks (on release); held and moved, it drags - lists and the library
+    // follow it - and doesn't click. Without it (the mouse) a press clicks.
+    void SetPointer(bool present, float x, float y, bool down, float scroll = 0.0f, bool drawDot = false,
+                    bool dragToScroll = false);
 
     // Changes the logical-to-physical scale (see AppMenuLayout.h's
     // kMenuScale doc comment) at runtime - e.g. a resizable window
@@ -190,6 +193,10 @@ private:
     {
         bool present = false, down = false, wasDown = false, drawDot = false;
         float x = 0, y = 0, lastX = -1, lastY = -1, scroll = 0;
+        // dragToScroll's gesture: pressed on the menu (not yet a click or a
+        // drag), where, and whether it moved far enough to be a drag.
+        bool dragToScroll = false, pressed = false, dragging = false;
+        float pressX = 0, pressY = 0, velocityY = 0;
     } m_pointer;
     int m_sidebarHover = -1;
     // The hints row's hints, where they were last drawn (clickable).

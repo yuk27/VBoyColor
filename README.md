@@ -112,12 +112,13 @@ Download `VBoyColor-linux-<version>.tar.gz`, unpack it, put your ROMs in
 
 ## Controls
 
-**Menu:** left stick click (Quest controllers and gamepads), the left
-controller's Menu button, or **Tab** or **Esc** on PC (gamepad: Guide or
-left stick click). Some PC VR runtimes keep the Menu button for themselves - the stick
-click always works. In the menu: sticks / D-pad / arrow keys move, A (Enter)
-picks, B (Esc) goes back - out to the sidebar, or back to the game. The
-mouse and the Quest controllers' lasers (trigger) work too.
+**Menu:** the left controller's Menu button, a gamepad's Select + Start
+held together (or Guide), or **Tab** or **Esc** on PC. Some PC VR runtimes
+keep the Menu button for themselves - there, hold the left stick click for a
+second. In the menu: sticks / D-pad / arrow keys move, A (Enter) picks, B
+(Esc) goes back - out to the sidebar, or back to the game. The mouse and the
+Quest controllers' lasers work too: a quick trigger press clicks, holding the
+trigger and moving drags (scrolls lists and the library).
 
 | Virtual Boy | Quest controllers | Keyboard | Gamepad (PC) |
 |---|---|---|---|

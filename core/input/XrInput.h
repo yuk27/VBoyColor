@@ -23,8 +23,9 @@ public:
 
     void GetButtonStates(uint32_t buttonStates[3]) const;
 
-    // Left controller's dedicated menu ("hamburger") button, or left stick
-    // click as a runtime-independent alternative - separate from
+    // Left controller's dedicated menu ("hamburger") button (on PC VR also
+    // the left stick click held for about a second, for runtimes that keep
+    // the Menu button - see Sync) - separate from
     // buttonStates (the menu-navigation/emulator button set) since this is
     // an app-level "show the menu" gesture, not something any MenuPage
     // reacts to. Instantaneous state (not edge-detected) - callers wanting a
@@ -75,6 +76,7 @@ private:
     // queries need) and simply copied out by GetButtonStates().
     uint32_t m_buttonStates[3]{};
     bool m_menuButtonPressed{false};
+    int m_stickClickFrames{0}; // (PC VR: frames the left stick click has been held)
     XrVector2f m_rightThumbstick{0.0f, 0.0f};
     bool m_aPressed{false};
     bool m_bPressed{false};
