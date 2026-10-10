@@ -367,6 +367,9 @@ public:
     // audio playback - call once on app exit (LoadRom already flushes SRAM
     // on every ROM switch).
     void Shutdown();
+    // Saves cart SRAM now if the game changed it - when the app goes to the
+    // background (a phone may close it there without a word).
+    void SaveRamNow();
 
 private:
     // <m_romBaseName>.<ext><suffix>; suffix empty for uiSlot==0, else uiSlot.

@@ -115,6 +115,17 @@ pack).*
 4. Open VBoy Color from **Unknown Sources** in the app library and pick that
    folder when it asks.
 
+### Android phones and tablets
+
+The same `VBoyColor-<version>.apk` works on phones and tablets (Android 10 or
+newer, with Vulkan - nearly every phone from the last several years).
+Install it, open VBoy Color and pick the folder with your `.vb` ROMs when it
+asks. The Virtual Boy controller is on the screen: the left D-pad with
+Select and Start, B and A with the right D-pad above them (only in the games
+that use it - Red Alarm, Teleroboxer, 3-D Tetris and Golf), L and R on top,
+and the menu button at the top. Connect a gamepad and the on-screen buttons
+step aside until you touch the screen again. Back opens the menu.
+
 ### Windows
 
 Download `VBoyColor-windows-<version>.zip` from

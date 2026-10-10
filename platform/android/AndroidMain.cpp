@@ -3,6 +3,7 @@
 // event pump and OpenXR's Android-specific loader/instance init.
 #include "app/OpenXrApp.h"
 #include "android/AndroidPlatform.h"
+#include "android/PhoneMain.h"
 #include "input/ButtonMapping.h"
 
 #include <openxr/openxr_platform.h>
@@ -182,12 +183,26 @@ void android_main(struct android_app *app)
     JNIEnv *env = nullptr;
     app->activity->vm->AttachCurrentThread(&env, nullptr);
 
+    AndroidPlatform platform(app->activity->vm, app->activity->clazz, app->activity->assetManager);
+
+    // A phone or tablet: the flat app with touch controls (PhoneMain.cpp).
+    {
+        jclass activityClass = env->GetObjectClass(app->activity->clazz);
+        jmethodID isHeadset = env->GetMethodID(activityClass, "isHeadset", "()Z");
+        env->DeleteLocalRef(activityClass);
+        if (isHeadset && !env->CallBooleanMethod(app->activity->clazz, isHeadset))
+        {
+            LOGI("Not a headset - the phone app");
+            RunPhoneApp(app, platform);
+            app->activity->vm->DetachCurrentThread();
+            return;
+        }
+    }
+
     AppState state;
     app->userData = &state;
     app->onAppCmd = HandleAppCmd;
     app->onInputEvent = HandleInputEvent;
-
-    AndroidPlatform platform(app->activity->vm, app->activity->clazz, app->activity->assetManager);
 
     // OpenXR's Android loader needs explicit init before xrCreateInstance.
     PFN_xrInitializeLoaderKHR initializeLoader = nullptr;

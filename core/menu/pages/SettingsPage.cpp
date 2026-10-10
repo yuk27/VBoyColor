@@ -108,8 +108,8 @@ void SettingsPage::Init(UiRenderer &ui, const UiMenuResources &resources)
     list->AddEntry("Button mapping", [this](MenuItem *)
                    { if (emulatorButtonMapPage) Navigate(emulatorButtonMapPage, 1); }, nullptr, nullptr, UiIconId::Mapping)
         ->opensPage = true;
-    // (the flat desktop window has no screen to place)
-    if (resources.buttonMappingProfile != ButtonMappingProfile::Desktop)
+    // (a flat window or phone has no screen to place)
+    if (resources.buttonMappingProfile == ButtonMappingProfile::Vr)
         list->AddEntry("Adjust screen", [this](MenuItem *)
                        { if (moveScreenPage) Navigate(moveScreenPage, 1); }, nullptr, nullptr, UiIconId::Move)
             ->opensPage = true;
@@ -141,9 +141,9 @@ void SettingsPage::Init(UiRenderer &ui, const UiMenuResources &resources)
     list->AddHeader("Screen");
     m_lookEntry = list->AddEntry("Look", [this](MenuItem *) { ChangeLook(1); }, [this](MenuItem *) { ChangeLook(-1); },
                                  [this](MenuItem *) { ChangeLook(1); }, UiIconId::FlatScreen);
-    if (resources.buttonMappingProfile == ButtonMappingProfile::Desktop)
+    if (resources.buttonMappingProfile != ButtonMappingProfile::Vr)
     {
-        // The PC window: as big as fits, or whole multiples of the pixels.
+        // The PC window or the phone: as big as fits, or whole multiples of the pixels.
         auto toggleSize = [this](MenuItem *)
         {
             m_settings->screenWholePixels = !m_settings->screenWholePixels;

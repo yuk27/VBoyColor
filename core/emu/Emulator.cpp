@@ -1498,6 +1498,12 @@ void Emulator::FlushRamIfChanged()
     SaveRam();
 }
 
+void Emulator::SaveRamNow()
+{
+    std::lock_guard<std::recursive_mutex> emu(m_emuMutex);
+    FlushRamIfChanged();
+}
+
 void Emulator::LoadRam()
 {
     if (!m_romLoaded)

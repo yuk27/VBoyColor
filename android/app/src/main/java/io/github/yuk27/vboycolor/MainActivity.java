@@ -14,6 +14,8 @@ import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
 import android.provider.DocumentsContract;
 import android.util.Log;
+import android.view.HapticFeedbackConstants;
+import android.view.View;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -98,7 +100,31 @@ public class MainActivity extends NativeActivity {
         startActivityForResult(intent, REQUEST_PICK_ROMS_FOLDER);
     }
 
+    // A phone or tablet: the game full screen, the system's bars out of the
+    // way (a swipe from the edge brings them back for a moment).
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus && !isHeadset()) {
+            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                    | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
+        }
+    }
+
     // ---- Called from native code (platform/android/AndroidPlatform.h) via JNI ----
+
+    // A light tap of the phone's vibration motor (an on-screen button pressed).
+    public void haptic() {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                getWindow().getDecorView().performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY,
+                        HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING);
+            }
+        });
+    }
 
     // 0-100 device battery level, for the in-menu battery indicator.
     public int getBatteryLevel() {
@@ -375,7 +401,9 @@ public class MainActivity extends NativeActivity {
         return status == null ? "" : status;
     }
 
-    private boolean isHeadset() {
+    // A headset (the VR app) or a phone/tablet (the flat app with touch
+    // controls - see platform/android/PhoneMain.cpp).
+    public boolean isHeadset() {
         return getPackageManager().hasSystemFeature("android.hardware.vr.headtracking")
                 || "Oculus".equalsIgnoreCase(Build.MANUFACTURER) || "Meta".equalsIgnoreCase(Build.MANUFACTURER);
     }

@@ -269,6 +269,7 @@ add_library(vbgo_app STATIC
     core/input/ButtonMapping.cpp
     core/io/Settings.cpp
     core/io/DataFolders.cpp
+    core/input/TouchControls.cpp
 )
 target_include_directories(vbgo_app PUBLIC core ${CMAKE_SOURCE_DIR}/third_party ${CMAKE_SOURCE_DIR}/platform)
 target_link_libraries(vbgo_app PUBLIC openxr_loader volk freetype vb_core)
@@ -312,6 +313,7 @@ if(ANDROID)
 
     add_library(vboycolor SHARED
         platform/android/AndroidMain.cpp
+        platform/android/PhoneMain.cpp
     )
     target_link_libraries(vboycolor PRIVATE vbgo_app android_native_app_glue ${ANDROID_LIB} ${LOG_LIB})
     target_include_directories(vboycolor PRIVATE ${ANDROID_NDK}/sources/android/native_app_glue)

@@ -12,6 +12,7 @@
 #include "input/ButtonMapping.h"
 #include "gfx/UiRenderer.h"
 #include "desktop/DesktopPlatform.h"
+#include "input/TouchControls.h"
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -247,6 +248,9 @@ namespace
     // F5: the left eye's picture (as normal), both eyes side by side, or the
     // right eye's - for checking how the two differ (e.g. with a Look).
     int g_eyeView = 0; // 0 left, 1 both, 2 right
+    // F4 (dev): the phone app's touch controls over the window, the mouse
+    // as a finger - for trying their layout without a phone.
+    bool g_touchPreview = false;
 
     std::string g_droppedRom;
     std::string g_droppedMovie; // (a TAS run - .bk2)
@@ -531,6 +535,9 @@ int main(int argc, char **argv)
         emulator.SetTileTracking(true); // see the F9/F10 tools below
         emulator.SetAuthoring(true);    // captures know every fill a painter can paint
         appMenu.Initialize(uiRenderer, chosen.format, emulator, settings, platform, ButtonMappingProfile::Desktop);
+        TouchControls touch;
+        touch.Initialize(uiRenderer, platform);
+        bool f4WasPressed = false;
 
         VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
         CheckVk(vkCreateFence(renderer.GetDevice(), &fenceInfo, nullptr, &acquireFence), "vkCreateFence");
@@ -660,6 +667,33 @@ int main(int argc, char **argv)
                 std::printf("Showing %s\n", kViews[g_eyeView]);
             }
             f5WasPressed = f5Pressed;
+            const bool f4Pressed = glfwGetKey(window, GLFW_KEY_F4) == GLFW_PRESS;
+            if (f4Pressed && !f4WasPressed)
+            {
+                g_touchPreview = !g_touchPreview;
+                std::printf("Touch controls preview %s\n", g_touchPreview ? "on (the mouse is a finger)" : "off");
+            }
+            f4WasPressed = f4Pressed;
+            // (a phone's density: the window's height as a phone's ~400 dp)
+            touch.Layout(static_cast<float>(fbWidth), static_cast<float>(fbHeight), fbHeight / 400.0f,
+                         TouchControls::UsesRightDpad(emulator.RomName()));
+            uint32_t touchBits = 0;
+            if (g_touchPreview && !appMenu.IsVisible())
+            {
+                std::vector<TouchControls::Touch> touches;
+                if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS)
+                {
+                    double cx = 0, cy = 0;
+                    int ww = 1, wh = 1;
+                    glfwGetCursorPos(window, &cx, &cy);
+                    glfwGetWindowSize(window, &ww, &wh);
+                    touches.push_back({0, static_cast<float>(cx) * fbWidth / std::max(1, ww), static_cast<float>(cy) * fbHeight / std::max(1, wh)});
+                }
+                bool menuPressed = false;
+                touchBits = touch.Update(touches, menuPressed);
+                if (menuPressed && emulator.HasGame())
+                    appMenu.Show();
+            }
             const bool f9Pressed = glfwGetKey(window, GLFW_KEY_F9) == GLFW_PRESS;
             if (f9Pressed && !f9WasPressed)
             {
@@ -793,7 +827,7 @@ int main(int argc, char **argv)
             if (!appMenu.IsOpen())
             {
                 // (no game input while Alt is held: Alt+Enter toggles fullscreen, not Start)
-                emulator.SetGameplayInput(altDown ? 0 : PollGameplayInput(window, settings, appMenu));
+                emulator.SetGameplayInput(altDown ? 0 : PollGameplayInput(window, settings, appMenu) | touchBits);
                 emulator.RunFrame(deltaSeconds);
             }
 
@@ -848,7 +882,9 @@ int main(int argc, char **argv)
                     {
                         const Pane &p = panes[i];
                         ScreenRect(static_cast<int>(p.vw), static_cast<int>(p.vh), settings.screenWholePixels, sx, sy, sw, sh);
-                        const float x = p.ox + sx * p.qx, y = p.oy + sy * p.qy, w = sw * p.qx, h = sh * p.qy;
+                        float x = p.ox + sx * p.qx, y = p.oy + sy * p.qy, w = sw * p.qx, h = sh * p.qy;
+                        if (g_touchPreview && paneCount == 1)
+                            touch.ScreenArea(x, y, w, h); // (between the touch controls)
                         if (anaglyph > 0)
                             emulator.DrawAnaglyph(uiRenderer, x, y, w, h, anaglyph, settings.screenLook);
                         else
@@ -857,6 +893,8 @@ int main(int argc, char **argv)
                     }
                 }
             }
+            if (g_touchPreview && !appMenu.IsVisible())
+                touch.Draw(uiRenderer);
             if (appMenu.IsVisible())
                 for (int i = 0; i < paneCount; ++i)
                     appMenu.Draw(uiRenderer, panes[i].ox + menuX * panes[i].qx, panes[i].oy + menuY * panes[i].qy, panes[i].qx,

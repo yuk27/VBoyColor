@@ -12,7 +12,8 @@ class ThumbnailLibrary;
 enum class ButtonMappingProfile
 {
     Vr,
-    Desktop
+    Desktop,
+    Phone // (a flat touch screen - platform/android/PhoneMain.cpp)
 };
 
 // Shared read-only resources every menu page needs, loaded once by
