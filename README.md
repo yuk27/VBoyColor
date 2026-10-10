@@ -86,6 +86,12 @@ pack).*
 - **Your room as the background** (Quest) - Settings → Adjust screen →
   Show your room around it: the game floats in your room (passthrough)
   instead of in the dark.
+- **Your own folders** - Settings → Folders: choose where your games,
+  saved games, save states and settings go (a synced folder, say). On PC
+  you pick them right in the menu, with the mouse, a gamepad or in VR; on
+  Android with the system's folder picker (on the Quest, when the app next
+  starts). The files already there are copied over - newer ones win, the
+  one replaced is kept as `.bak`, and the originals stay where they were.
 - **Video recording** (PC) - F12 records the original red and the colored
   version side by side, frame for frame, for comparison videos (F12 again
   to stop; it stops on its own after ten minutes).

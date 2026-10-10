@@ -255,6 +255,7 @@ add_library(vbgo_app STATIC
     core/menu/pages/AboutPage.cpp
     core/menu/pages/EmulatorButtonMapPage.cpp
     core/menu/pages/MoveScreenPage.cpp
+    core/menu/pages/FolderPage.cpp
     core/emu/Emulator.cpp
     core/emu/ShadeColorizer.cpp
     core/emu/TileColorPack.cpp
@@ -267,6 +268,7 @@ add_library(vbgo_app STATIC
     core/input/XrInput.cpp
     core/input/ButtonMapping.cpp
     core/io/Settings.cpp
+    core/io/DataFolders.cpp
 )
 target_include_directories(vbgo_app PUBLIC core ${CMAKE_SOURCE_DIR}/third_party ${CMAKE_SOURCE_DIR}/platform)
 target_link_libraries(vbgo_app PUBLIC openxr_loader volk freetype vb_core)

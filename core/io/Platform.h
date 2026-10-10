@@ -1,7 +1,10 @@
 #pragma once
 
+#include "io/DataFolders.h"
+
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 struct RomEntry
@@ -51,6 +54,40 @@ public:
     // can't share a button mapping - the first binding of each button is a
     // key in one and a Touch controller input in the other.
     virtual const char *SettingsFileName() const { return "settings.dat"; }
+
+    // ---- Settings > Folders (see io/DataFolders.h): a folder of the
+    // player's choice for each kind of file. Read/WriteRomsFile go wherever
+    // a file's kind lives. ----
+
+    // Whether this platform lets the player choose them.
+    virtual bool SupportsDataFolders() const { return false; }
+    // What the menu shows for a kind's folder: its path or name, or "" for
+    // the default place (inside the games folder).
+    virtual std::string DataFolderLabel(DataKind /*kind*/) const { return ""; }
+    // True: folders are picked in the app's own folder browser (the desktop
+    // apps - a mouse, a gamepad or a headset) with the calls below; false:
+    // with the system's picker (PickDataFolder - Android).
+    virtual bool BrowsesDataFolders() const { return false; }
+    // (Browser) the kind's folder now, as an absolute path (UTF-8).
+    virtual std::string DataFolderPath(DataKind /*kind*/) const { return ""; }
+    // (Browser) where browsing can start: drives, home, the app's folder -
+    // pairs of (label, path).
+    virtual std::vector<std::pair<std::string, std::string>> FolderPlaces() const { return {}; }
+    // (Browser) the folders directly inside path, sorted (names only).
+    virtual std::vector<std::string> ListFolders(const std::string & /*path*/) const { return {}; }
+    // (Browser) points a kind at path ("" = back to its default place),
+    // first copying over that kind's files the new folder doesn't have, or
+    // has older copies of (kept as "<name>.bak"); the originals stay where
+    // they were. Returns what happened, for the
+    // menu ("" if nothing changed); on failure the folder stays as it was.
+    virtual std::string SetDataFolder(DataKind /*kind*/, const std::string & /*path*/) { return ""; }
+    // (System picker) asks the player for a kind's folder - right away, or
+    // where that isn't possible (a headset: the picker would take VR focus)
+    // the next time the app starts. Returns a line for the menu.
+    virtual std::string PickDataFolder(DataKind /*kind*/) { return ""; }
+    // (System picker) how the last change went, once it's done (the copying
+    // runs in the background) - "" until then, and after it's been taken.
+    virtual std::string TakeDataFolderStatus() { return ""; }
 
     // 0-100 device battery level, -1 if unavailable.
     virtual int GetBatteryPercent() const = 0;

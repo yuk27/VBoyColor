@@ -9,6 +9,7 @@ import android.content.UriPermission;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.BatteryManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
 import android.provider.DocumentsContract;
@@ -16,6 +17,8 @@ import android.util.Log;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.util.Arrays;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayList;
@@ -32,18 +35,41 @@ public class MainActivity extends NativeActivity {
     private static final String PREFS_NAME = "vboycolor";
     private static final String PREF_ROMS_TREE_URI = "roms_tree_uri";
     private static final int REQUEST_PICK_ROMS_FOLDER = 1001;
+    // Settings > Folders (core/io/DataFolders.h): a folder per kind of file -
+    // 0 games (the ROMs folder above), 1 saved games, 2 save states,
+    // 3 settings. Unset = the default place inside the games folder (the
+    // root for saved games, its "States" subfolder for the other two).
+    private static final int KIND_GAMES = 0, KIND_SAVES = 1, KIND_STATES = 2, KIND_SETTINGS = 3;
+    private static final String PREF_FOLDER_URI = "folder_uri_"; // + kind (1-3)
+    // A folder to pick when the app next starts (a headset can't show the
+    // picker mid-session - see requestPickRomsFolder).
+    private static final String PREF_PICK_PENDING = "pick_pending";
+    private static final int REQUEST_PICK_FOLDER = 1100; // + kind
+    private final Object folderLock = new Object();
+    private volatile String folderStatus = null;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+        int pending = prefs.getInt(PREF_PICK_PENDING, -1);
         if (getRomsTreeUriString() == null) {
             requestPickRomsFolder();
+        } else if (pending >= 0) {
+            prefs.edit().remove(PREF_PICK_PENDING).apply();
+            launchFolderPicker(pending);
         }
     }
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode >= REQUEST_PICK_FOLDER && requestCode < REQUEST_PICK_FOLDER + 4) {
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                folderPicked(requestCode - REQUEST_PICK_FOLDER, data.getData());
+            }
+            return;
+        }
         if (requestCode != REQUEST_PICK_ROMS_FOLDER || resultCode != RESULT_OK || data == null) {
             return;
         }
@@ -219,36 +245,42 @@ public class MainActivity extends NativeActivity {
         }
     }
 
-    // documentId of fileName's parent within the ROMs tree - the "States"
-    // subfolder if inStatesDir, else the tree root. createIfMissing only
-    // matters for the States subfolder (the root always exists); null if
-    // it doesn't exist and wasn't created.
-    private String getParentDocumentId(Uri treeUri, boolean inStatesDir, boolean createIfMissing) {
-        if (!inStatesDir) {
-            return DocumentsContract.getTreeDocumentId(treeUri);
+    // Where a kind of file lives: its own folder if one is chosen, else the
+    // games folder (its root for games and saved games, "States" for the
+    // rest). {treeUri, parentDocumentId}, or null (createIfMissing: make
+    // the "States" subfolder if needed).
+    private Object[] locate(int kind, boolean createIfMissing) {
+        String custom = kind == KIND_GAMES ? null : getFolderUriString(kind);
+        if (custom != null) {
+            Uri tree = Uri.parse(custom);
+            return new Object[]{tree, DocumentsContract.getTreeDocumentId(tree)};
         }
-        if (createIfMissing) {
-            return getOrCreateStatesDirDocumentId(treeUri);
+        String games = getRomsTreeUriString();
+        if (games == null) {
+            return null;
         }
-        return findChildDocumentId(treeUri, DocumentsContract.getTreeDocumentId(treeUri), "States");
+        Uri tree = Uri.parse(games);
+        if (kind == KIND_GAMES || kind == KIND_SAVES) {
+            return new Object[]{tree, DocumentsContract.getTreeDocumentId(tree)};
+        }
+        String states = createIfMissing ? getOrCreateStatesDirDocumentId(tree)
+                : findChildDocumentId(tree, DocumentsContract.getTreeDocumentId(tree), "States");
+        return states == null ? null : new Object[]{tree, states};
     }
 
-    // Opens (creating fileName - and its parent "States" subfolder, if
-    // inStatesDir - if they don't exist yet) a writable fd, truncating any
-    // existing content. Returns a detached raw fd (caller/native owns it
-    // and must close() it), or -1 on failure or if no folder is picked.
-    public int openRomsFileForWrite(String fileName, boolean inStatesDir) {
-        String treeUriString = getRomsTreeUriString();
-        if (treeUriString == null) {
-            return -1;
-        }
-        Uri treeUri = Uri.parse(treeUriString);
+    // Opens (creating fileName - and the games folder's "States" subfolder,
+    // where it goes there - if they don't exist yet) a writable fd for a
+    // kind's file, truncating any existing content. Returns a detached raw
+    // fd (caller/native owns it and must close() it), or -1 on failure or
+    // if no folder is picked.
+    public int openDataFileForWrite(int kind, String fileName) {
         try {
-            String parentDocId = getParentDocumentId(treeUri, inStatesDir, true);
-            if (parentDocId == null) {
+            Object[] where = locate(kind, true);
+            if (where == null) {
                 return -1;
             }
-
+            Uri treeUri = (Uri) where[0];
+            String parentDocId = (String) where[1];
             String fileDocId = findChildDocumentId(treeUri, parentDocId, fileName);
             Uri fileUri;
             if (fileDocId != null) {
@@ -260,60 +292,296 @@ public class MainActivity extends NativeActivity {
                     return -1;
                 }
             }
-
             ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(fileUri, "wt");
-            if (pfd == null) {
-                return -1;
-            }
-            return pfd.detachFd();
+            return pfd == null ? -1 : pfd.detachFd();
         } catch (Exception e) {
-            Log.e(TAG, "openRomsFileForWrite failed: " + fileName, e);
+            Log.e(TAG, "openDataFileForWrite failed: " + fileName, e);
             return -1;
         }
     }
 
-    // Read counterpart to openRomsFileForWrite - -1 if fileName doesn't
+    // Read counterpart to openDataFileForWrite - -1 if fileName doesn't
     // exist or no folder is picked.
-    public int openRomsFileForRead(String fileName, boolean inStatesDir) {
-        String treeUriString = getRomsTreeUriString();
-        if (treeUriString == null) {
-            return -1;
-        }
-        Uri treeUri = Uri.parse(treeUriString);
+    public int openDataFileForRead(int kind, String fileName) {
         try {
-            String parentDocId = getParentDocumentId(treeUri, inStatesDir, false);
-            if (parentDocId == null) {
+            Object[] where = locate(kind, false);
+            if (where == null) {
                 return -1;
             }
-            String fileDocId = findChildDocumentId(treeUri, parentDocId, fileName);
+            Uri treeUri = (Uri) where[0];
+            String fileDocId = findChildDocumentId(treeUri, (String) where[1], fileName);
             if (fileDocId == null) {
                 return -1;
             }
-            Uri fileUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, fileDocId);
-            ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(fileUri, "r");
-            if (pfd == null) {
-                return -1;
-            }
-            return pfd.detachFd();
+            ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(
+                    DocumentsContract.buildDocumentUriUsingTree(treeUri, fileDocId), "r");
+            return pfd == null ? -1 : pfd.detachFd();
         } catch (Exception e) {
-            Log.e(TAG, "openRomsFileForRead failed: " + fileName, e);
+            Log.e(TAG, "openDataFileForRead failed: " + fileName, e);
             return -1;
         }
     }
 
-    // true if fileName exists inside the picked ROMs folder (root or
-    // "States" subfolder, per inStatesDir).
-    public boolean romsFileExists(String fileName, boolean inStatesDir) {
-        String treeUriString = getRomsTreeUriString();
-        if (treeUriString == null) {
-            return false;
+    public boolean dataFileExists(int kind, String fileName) {
+        Object[] where = locate(kind, false);
+        return where != null && findChildDocumentId((Uri) where[0], (String) where[1], fileName) != null;
+    }
+
+    // ---- Settings > Folders ----
+
+    // null if none is chosen or it's no longer accessible.
+    private String getFolderUriString(int kind) {
+        String saved = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(PREF_FOLDER_URI + kind, null);
+        if (saved == null) {
+            return null;
         }
-        Uri treeUri = Uri.parse(treeUriString);
-        String parentDocId = getParentDocumentId(treeUri, inStatesDir, false);
-        if (parentDocId == null) {
-            return false;
+        Uri treeUri = Uri.parse(saved);
+        for (UriPermission perm : getContentResolver().getPersistedUriPermissions()) {
+            if (perm.getUri().equals(treeUri) && perm.isWritePermission()) {
+                return saved;
+            }
         }
-        return findChildDocumentId(treeUri, parentDocId, fileName) != null;
+        return null;
+    }
+
+    // A tree's own name ("VB games"), or its URI's last part.
+    private String folderName(String treeUriString) {
+        Uri tree = Uri.parse(treeUriString);
+        try (Cursor cursor = getContentResolver().query(
+                DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree)),
+                new String[]{DocumentsContract.Document.COLUMN_DISPLAY_NAME}, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst() && cursor.getString(0) != null) {
+                return cursor.getString(0);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "folderName failed", e);
+        }
+        String id = DocumentsContract.getTreeDocumentId(tree);
+        int at = Math.max(id.lastIndexOf('/'), id.lastIndexOf(':'));
+        return at >= 0 && at + 1 < id.length() ? id.substring(at + 1) : id;
+    }
+
+    // What the menu shows for a kind's folder: its name, "" for the default
+    // place.
+    public String getFolderLabel(int kind) {
+        String uri = kind == KIND_GAMES ? getRomsTreeUriString() : getFolderUriString(kind);
+        return uri == null ? "" : folderName(uri);
+    }
+
+    // The last change's outcome, once ("" if none).
+    public String takeFolderStatus() {
+        String status = folderStatus;
+        folderStatus = null;
+        return status == null ? "" : status;
+    }
+
+    private boolean isHeadset() {
+        return getPackageManager().hasSystemFeature("android.hardware.vr.headtracking")
+                || "Oculus".equalsIgnoreCase(Build.MANUFACTURER) || "Meta".equalsIgnoreCase(Build.MANUFACTURER);
+    }
+
+    // Asks for a kind's folder: the system's picker now, or on a headset the
+    // next time the app starts (see requestPickRomsFolder). Returns a line
+    // for the menu.
+    public String pickFolder(final int kind) {
+        if (isHeadset()) {
+            getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putInt(PREF_PICK_PENDING, kind).apply();
+            return "Restart VBoy Color to choose it";
+        }
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                launchFolderPicker(kind);
+            }
+        });
+        return "";
+    }
+
+    private void launchFolderPicker(int kind) {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        startActivityForResult(intent, REQUEST_PICK_FOLDER + kind);
+    }
+
+    // The picker's answer: copy the kind's files over (on a thread of its
+    // own), then switch to the new folder.
+    private void folderPicked(final int kind, final Uri treeUri) {
+        try {
+            getContentResolver().takePersistableUriPermission(treeUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        } catch (Exception e) {
+            Log.e(TAG, "takePersistableUriPermission failed", e);
+            folderStatus = "Can't use that folder - nothing changed";
+            return;
+        }
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                changeFolder(kind, treeUri.toString());
+            }
+        }).start();
+    }
+
+    // Back to the default place (kinds 1-3), copying the kind's files there.
+    public String resetFolder(final int kind) {
+        if (kind == KIND_GAMES || getFolderUriString(kind) == null) {
+            return "";
+        }
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                changeFolder(kind, null);
+            }
+        }).start();
+        return "Copying...";
+    }
+
+    // Points a kind at newTree (null: back to the default place) after
+    // copying its files over - and, for the games folder, those of the
+    // kinds that live in it by default. The originals stay.
+    private void changeFolder(int kind, String newTree) {
+        synchronized (folderLock) {
+            SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+            Object[][] before = new Object[4][];
+            for (int k = 0; k < 4; k++) {
+                before[k] = locate(k, false);
+            }
+            String oldTree = kind == KIND_GAMES ? getRomsTreeUriString() : getFolderUriString(kind);
+            SharedPreferences.Editor edit = prefs.edit();
+            String key = kind == KIND_GAMES ? PREF_ROMS_TREE_URI : PREF_FOLDER_URI + kind;
+            if (newTree == null) {
+                edit.remove(key);
+            } else {
+                edit.putString(key, newTree);
+            }
+            edit.commit();
+            int copied = 0;
+            for (int k = 1; k < 4; k++) {
+                if (k != kind && kind != KIND_GAMES) {
+                    continue;
+                }
+                if (kind == KIND_GAMES && getFolderUriString(k) != null) {
+                    continue; // (has a folder of its own)
+                }
+                Object[] after = locate(k, true);
+                if (before[k] == null || after == null) {
+                    continue;
+                }
+                copied += copyKind((Uri) before[k][0], (String) before[k][1], (Uri) after[0], (String) after[1], k);
+            }
+            // The old folder's permission, if nothing else uses it.
+            if (oldTree != null && !oldTree.equals(newTree)) {
+                boolean used = oldTree.equals(getRomsTreeUriString());
+                for (int k = 1; k < 4; k++) {
+                    used |= oldTree.equals(getFolderUriString(k));
+                }
+                if (!used) {
+                    try {
+                        getContentResolver().releasePersistableUriPermission(Uri.parse(oldTree),
+                                Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                    } catch (Exception e) {
+                        Log.w(TAG, "releasePersistableUriPermission failed", e);
+                    }
+                }
+            }
+            String[] names = {"Games", "Saved games", "Save states", "Settings"};
+            folderStatus = copied > 0 ? names[kind] + ": copied " + copied + (copied == 1 ? " file" : " files") + " - the originals stay"
+                    : names[kind] + " folder changed";
+        }
+    }
+
+    // core/io/DataFolders.cpp's DataKindOf: which kind a file is, by its
+    // name and whether it's in (the default) "States".
+    private static int kindOf(String name, boolean inStates) {
+        int dot = name.lastIndexOf('.');
+        String ext = dot >= 0 ? name.substring(dot + 1).toLowerCase() : "";
+        if (!inStates) {
+            return ext.equals("srm") ? KIND_SAVES : KIND_GAMES;
+        }
+        return ext.startsWith("state") ? KIND_STATES : KIND_SETTINGS;
+    }
+
+    private byte[] readAll(Uri uri) {
+        try (InputStream in = getContentResolver().openInputStream(uri)) {
+            if (in == null) {
+                return null;
+            }
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buffer = new byte[65536];
+            int read;
+            while ((read = in.read(buffer)) > 0) {
+                out.write(buffer, 0, read);
+            }
+            return out.toByteArray();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    // Copies a kind's files from one folder to another: those it doesn't
+    // have, and those newer than its own (unless the same) - the one replaced
+    // is kept as "<name>.bak". Returns how many.
+    private int copyKind(Uri fromTree, String fromDoc, Uri toTree, String toDoc, int kind) {
+        if (fromTree.equals(toTree) && fromDoc.equals(toDoc)) {
+            return 0;
+        }
+        boolean inStates = kind == KIND_STATES || kind == KIND_SETTINGS;
+        ContentResolver resolver = getContentResolver();
+        int copied = 0;
+        try (Cursor cursor = resolver.query(DocumentsContract.buildChildDocumentsUriUsingTree(fromTree, fromDoc), new String[]{
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_MIME_TYPE,
+                DocumentsContract.Document.COLUMN_LAST_MODIFIED
+        }, null, null, null)) {
+            while (cursor != null && cursor.moveToNext()) {
+                String name = cursor.getString(1);
+                if (name == null || DocumentsContract.Document.MIME_TYPE_DIR.equals(cursor.getString(2))
+                        || kindOf(name, inStates) != kind) {
+                    continue;
+                }
+                Uri source = DocumentsContract.buildDocumentUriUsingTree(fromTree, cursor.getString(0));
+                byte[] bytes = readAll(source);
+                if (bytes == null) {
+                    continue;
+                }
+                String existing = findChildDocumentId(toTree, toDoc, name);
+                if (existing != null) {
+                    Uri target = DocumentsContract.buildDocumentUriUsingTree(toTree, existing);
+                    long sourceTime = cursor.getLong(3), targetTime = 0;
+                    try (Cursor t = resolver.query(target, new String[]{DocumentsContract.Document.COLUMN_LAST_MODIFIED}, null, null, null)) {
+                        if (t != null && t.moveToFirst()) {
+                            targetTime = t.getLong(0);
+                        }
+                    }
+                    if (sourceTime <= targetTime || Arrays.equals(bytes, readAll(target))) {
+                        continue;
+                    }
+                    String backup = findChildDocumentId(toTree, toDoc, name + ".bak");
+                    if (backup != null) {
+                        DocumentsContract.deleteDocument(resolver, DocumentsContract.buildDocumentUriUsingTree(toTree, backup));
+                    }
+                    if (DocumentsContract.renameDocument(resolver, target, name + ".bak") == null) {
+                        continue;
+                    }
+                }
+                Uri created = DocumentsContract.createDocument(resolver, DocumentsContract.buildDocumentUriUsingTree(toTree, toDoc),
+                        "application/octet-stream", name);
+                if (created == null) {
+                    continue;
+                }
+                try (OutputStream out = resolver.openOutputStream(created, "wt")) {
+                    if (out != null) {
+                        out.write(bytes);
+                        copied++;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "copyKind failed", e);
+        }
+        return copied;
     }
 
     // ---- Downloads (the library's optional box art): one at a time, on a

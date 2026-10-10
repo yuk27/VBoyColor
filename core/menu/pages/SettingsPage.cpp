@@ -1,4 +1,5 @@
 #include "menu/pages/SettingsPage.h"
+#include "menu/pages/FolderPage.h"
 #include "emu/AutoColors.h"
 #include "emu/Emulator.h"
 #include "io/Platform.h"
@@ -178,7 +179,25 @@ void SettingsPage::Init(UiRenderer &ui, const UiMenuResources &resources)
     onlyPacks->toggle = [this]() { return m_settings && m_settings->libraryOnlyPacks; };
     m_rebuildEntry = list->AddEntry("Make thumbnails again", [this](MenuItem *)
                                     { if (m_library) m_library->RebuildAll(); }, nullptr, nullptr, UiIconId::Reset);
-    if (m_platform->SupportsChangeRomsFolder())
+    // Where each kind of file goes (see io/DataFolders.h, FolderPage).
+    if (m_platform->SupportsDataFolders())
+    {
+        list->AddHeader("Folders");
+        for (int i = 0; i < kDataKindCount; ++i)
+        {
+            const DataKind kind = static_cast<DataKind>(i);
+            m_folderEntries[i] = list->AddEntry(DataKindName(kind), [this, kind](MenuItem *)
+                                                {
+                                                    if (!folderPage)
+                                                        return;
+                                                    folderPage->Open(kind);
+                                                    Navigate(folderPage, 1);
+                                                },
+                                                nullptr, nullptr, i == 0 ? UiIconId::RomList : i == 1 ? UiIconId::Save : i == 2 ? UiIconId::SaveSlot : UiIconId::Settings);
+            m_folderEntries[i]->opensPage = true;
+        }
+    }
+    else if (m_platform->SupportsChangeRomsFolder())
     {
         // Way back into the ROMs-folder picker (SAF, on Android). Clears the
         // folder and asks for a restart rather than re-popping the picker
@@ -334,6 +353,16 @@ void SettingsPage::RefreshLabels(bool save)
     m_lookEntry->SetValue(kLookNames[std::clamp(m_settings->screenLook, 0, kScreenLookCount - 1)]);
     if (m_sizeEntry)
         m_sizeEntry->SetValue(m_settings->screenWholePixels ? "Whole pixels" : "Fit");
+    for (int i = 0; i < kDataKindCount; ++i)
+        if (m_folderEntries[i])
+        {
+            const std::string label = m_platform->DataFolderLabel(static_cast<DataKind>(i));
+            const size_t at = label.find_last_of("/\\", label.size() > 1 ? label.size() - 2 : 0);
+            std::string shown = at == std::string::npos ? label : label.substr(at + 1);
+            if (!shown.empty() && (shown.back() == '/' || shown.back() == '\\') && shown.size() > 1)
+                shown.pop_back();
+            m_folderEntries[i]->SetValue(shown.empty() ? (i == 0 ? "Not chosen" : "In the games folder") : shown);
+        }
     if (m_threeDEntry)
     {
         static constexpr const char *k3DNames[kScreen3DCount] = {

@@ -29,6 +29,14 @@ public:
     std::vector<uint8_t> ReadRomsFile(const std::string &fileName, bool inStatesDir) override;
     bool RomsFileExists(const std::string &fileName, bool inStatesDir) const override;
 
+    // Settings > Folders, with the system's folder picker (MainActivity's
+    // pickFolder: right away on a phone, at the next start on a headset).
+    bool SupportsDataFolders() const override { return true; }
+    std::string DataFolderLabel(DataKind kind) const override;
+    std::string SetDataFolder(DataKind kind, const std::string &path) override; // ("" only: back to the default)
+    std::string PickDataFolder(DataKind kind) override;
+    std::string TakeDataFolderStatus() override;
+
     int GetBatteryPercent() const override;
 
     // MainActivity's download thread (startDownload/pollDownload/takeDownload).
@@ -38,6 +46,8 @@ public:
     std::vector<uint8_t> LoadAssetBytes(const std::string &name) override;
 
 private:
+    // Calls a MainActivity method taking (int kind) and returning a String.
+    std::string CallKindString(const char *method, DataKind kind) const;
     // Shared by ReadRomFile/ReadRomsFile - fd < 0 returns empty.
     static std::vector<uint8_t> ReadAllFromFd(int fd);
 

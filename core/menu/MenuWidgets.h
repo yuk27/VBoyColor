@@ -341,6 +341,9 @@ public:
     std::shared_ptr<Entry> AddSpacer(float height);
     // Adds a small header above the next card of rows.
     std::shared_ptr<Entry> AddHeader(const std::string &text);
+    // Removes every row (a page that rebuilds its list - not from inside one
+    // of the rows' own callbacks).
+    void Clear();
 
     // Which column (0 or 1) is highlighted on the current two-column row -
     // read by a twoColumn entry's pressFunction to know which slot to act on.

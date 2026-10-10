@@ -124,9 +124,9 @@ bool AndroidPlatform::WriteRomsFile(const std::string &fileName, bool inStatesDi
     m_vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6);
 
     jclass activityClass = env->GetObjectClass(m_activity);
-    jmethodID openMethod = env->GetMethodID(activityClass, "openRomsFileForWrite", "(Ljava/lang/String;Z)I");
+    jmethodID openMethod = env->GetMethodID(activityClass, "openDataFileForWrite", "(ILjava/lang/String;)I");
     jstring nameJString = env->NewStringUTF(fileName.c_str());
-    const jint fd = env->CallIntMethod(m_activity, openMethod, nameJString, static_cast<jboolean>(inStatesDir));
+    const jint fd = env->CallIntMethod(m_activity, openMethod, static_cast<jint>(DataKindOf(fileName, inStatesDir)), nameJString);
     env->DeleteLocalRef(activityClass);
     env->DeleteLocalRef(nameJString);
 
@@ -150,9 +150,9 @@ std::vector<uint8_t> AndroidPlatform::ReadRomsFile(const std::string &fileName, 
     m_vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6);
 
     jclass activityClass = env->GetObjectClass(m_activity);
-    jmethodID openMethod = env->GetMethodID(activityClass, "openRomsFileForRead", "(Ljava/lang/String;Z)I");
+    jmethodID openMethod = env->GetMethodID(activityClass, "openDataFileForRead", "(ILjava/lang/String;)I");
     jstring nameJString = env->NewStringUTF(fileName.c_str());
-    const jint fd = env->CallIntMethod(m_activity, openMethod, nameJString, static_cast<jboolean>(inStatesDir));
+    const jint fd = env->CallIntMethod(m_activity, openMethod, static_cast<jint>(DataKindOf(fileName, inStatesDir)), nameJString);
     env->DeleteLocalRef(activityClass);
     env->DeleteLocalRef(nameJString);
 
@@ -165,12 +165,66 @@ bool AndroidPlatform::RomsFileExists(const std::string &fileName, bool inStatesD
     m_vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6);
 
     jclass activityClass = env->GetObjectClass(m_activity);
-    jmethodID existsMethod = env->GetMethodID(activityClass, "romsFileExists", "(Ljava/lang/String;Z)Z");
+    jmethodID existsMethod = env->GetMethodID(activityClass, "dataFileExists", "(ILjava/lang/String;)Z");
     jstring nameJString = env->NewStringUTF(fileName.c_str());
-    const bool exists = env->CallBooleanMethod(m_activity, existsMethod, nameJString, static_cast<jboolean>(inStatesDir));
+    const bool exists = env->CallBooleanMethod(m_activity, existsMethod, static_cast<jint>(DataKindOf(fileName, inStatesDir)), nameJString);
     env->DeleteLocalRef(activityClass);
     env->DeleteLocalRef(nameJString);
     return exists;
+}
+
+std::string AndroidPlatform::CallKindString(const char *method, DataKind kind) const
+{
+    JNIEnv *env = nullptr;
+    m_vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6);
+    jclass activityClass = env->GetObjectClass(m_activity);
+    jmethodID id = env->GetMethodID(activityClass, method, "(I)Ljava/lang/String;");
+    env->DeleteLocalRef(activityClass);
+    auto result = static_cast<jstring>(env->CallObjectMethod(m_activity, id, static_cast<jint>(kind)));
+    std::string text;
+    if (result)
+    {
+        const char *chars = env->GetStringUTFChars(result, nullptr);
+        text = chars;
+        env->ReleaseStringUTFChars(result, chars);
+        env->DeleteLocalRef(result);
+    }
+    return text;
+}
+
+std::string AndroidPlatform::DataFolderLabel(DataKind kind) const
+{
+    return CallKindString("getFolderLabel", kind);
+}
+
+std::string AndroidPlatform::SetDataFolder(DataKind kind, const std::string &path)
+{
+    // (only back to the default place - other folders come from the picker)
+    return path.empty() ? CallKindString("resetFolder", kind) : "";
+}
+
+std::string AndroidPlatform::PickDataFolder(DataKind kind)
+{
+    return CallKindString("pickFolder", kind);
+}
+
+std::string AndroidPlatform::TakeDataFolderStatus()
+{
+    JNIEnv *env = nullptr;
+    m_vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6);
+    jclass activityClass = env->GetObjectClass(m_activity);
+    jmethodID id = env->GetMethodID(activityClass, "takeFolderStatus", "()Ljava/lang/String;");
+    env->DeleteLocalRef(activityClass);
+    auto result = static_cast<jstring>(env->CallObjectMethod(m_activity, id));
+    std::string text;
+    if (result)
+    {
+        const char *chars = env->GetStringUTFChars(result, nullptr);
+        text = chars;
+        env->ReleaseStringUTFChars(result, chars);
+        env->DeleteLocalRef(result);
+    }
+    return text;
 }
 
 int AndroidPlatform::GetBatteryPercent() const

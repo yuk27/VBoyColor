@@ -8,6 +8,7 @@
 #include "menu/pages/SettingsPage.h"
 #include "menu/pages/EmulatorButtonMapPage.h"
 #include "menu/pages/MoveScreenPage.h"
+#include "menu/pages/FolderPage.h"
 #include "menu/pages/AboutPage.h"
 #include "gfx/UiRenderer.h"
 
@@ -173,6 +174,7 @@ private:
     SettingsPage m_settingsPage;
     EmulatorButtonMapPage m_emulatorButtonMapPage;
     MoveScreenPage m_moveScreenPage;
+    FolderPage m_folderPage;
     AboutPage m_aboutPage;
 
     ThumbnailLibrary m_thumbnails;

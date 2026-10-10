@@ -32,6 +32,17 @@ public:
     bool RomsFileExists(const std::string &fileName, bool inStatesDir) const override;
     std::vector<std::string> ListRomsSubfolder(const std::string &subfolder) const override;
 
+    // Settings > Folders: in the app's own folder browser; the choices are
+    // kept in folders.txt next to the exe (shared by the flat and VR apps,
+    // and outside the folders themselves, so the settings folder can move).
+    bool SupportsDataFolders() const override { return true; }
+    std::string DataFolderLabel(DataKind kind) const override;
+    bool BrowsesDataFolders() const override { return true; }
+    std::string DataFolderPath(DataKind kind) const override;
+    std::vector<std::pair<std::string, std::string>> FolderPlaces() const override;
+    std::vector<std::string> ListFolders(const std::string &path) const override;
+    std::string SetDataFolder(DataKind kind, const std::string &path) override;
+
     int GetBatteryPercent() const override { return -1; } // no real battery to read off Android
 
     // On a thread of its own: WinHTTP on Windows, curl elsewhere.
@@ -41,7 +52,15 @@ public:
     std::vector<uint8_t> LoadAssetBytes(const std::string &name) override;
 
 private:
+    // A kind's folder (UTF-8; relative ones are to the exe's folder).
+    std::string FolderOf(DataKind kind) const;
+    std::string PathFor(const std::string &fileName, bool inStatesDir) const;
+    void LoadFolders();
+    bool SaveFolders() const;
+
     const char *m_settingsFileName;
+    std::string m_appFolder;                 // the exe's (UTF-8)
+    std::string m_folders[kDataKindCount];   // chosen ones, "" = default
     struct Download;
     std::shared_ptr<Download> m_download; // (shared with its thread)
 };

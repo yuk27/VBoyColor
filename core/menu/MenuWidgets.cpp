@@ -659,6 +659,16 @@ void MenuList::Update(uint32_t *buttonState, uint32_t *lastButtonState, float de
         m_scroll = m_scrollTarget;
 }
 
+void MenuList::Clear()
+{
+    m_entries.clear();
+    m_top.clear();
+    m_contentHeight = 0;
+    m_selectedIndex = 0;
+    m_activeColumn = 0;
+    m_scroll = m_scrollTarget = 0;
+}
+
 void MenuList::ResetSelection()
 {
     m_selectedIndex = 0;

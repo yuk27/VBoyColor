@@ -1,4 +1,5 @@
 #pragma once
+#include "io/DataFolders.h"
 #include "menu/MenuPage.h"
 
 #include <memory>
@@ -8,6 +9,7 @@ struct AppSettings;
 class Platform;
 class Emulator;
 class ThumbnailLibrary;
+class FolderPage;
 
 // Settings, in groups: Controls (Button mapping, and Adjust screen in the
 // headset), Colors (the VB screen colors - a Color mode (tint / gradient /
@@ -20,6 +22,7 @@ class SettingsPage : public MenuPage
 public:
     MenuPage *emulatorButtonMapPage = nullptr;
     MenuPage *moveScreenPage = nullptr;
+    FolderPage *folderPage = nullptr;
 
     void Init(UiRenderer &ui, const UiMenuResources &resources) override;
     void OnShow() override;
@@ -59,6 +62,7 @@ private:
     std::shared_ptr<MenuList::Entry> m_lookEntry;
     std::shared_ptr<MenuList::Entry> m_sizeEntry; // (the PC window only)
     std::shared_ptr<MenuList::Entry> m_threeDEntry; // (flat screens only)
+    std::shared_ptr<MenuList::Entry> m_folderEntries[kDataKindCount]; // (where Platform::SupportsDataFolders)
     std::shared_ptr<MenuList::Entry> m_colorREntry;
     std::shared_ptr<MenuList::Entry> m_colorGEntry;
     std::shared_ptr<MenuList::Entry> m_colorBEntry;

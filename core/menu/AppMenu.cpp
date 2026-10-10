@@ -282,7 +282,7 @@ void AppMenu::RebuildLogo(UiRenderer &ui)
 void AppMenu::InitPages(UiRenderer &ui)
 {
     MenuPage *pages[] = {&m_libraryPage, &m_saveStatesPage, &m_settingsPage, &m_emulatorButtonMapPage, &m_moveScreenPage,
-                         &m_aboutPage};
+                         &m_folderPage, &m_aboutPage};
     for (MenuPage *page : pages)
     {
         page->Navigate = [this](MenuPage *target, int dir) { StartTransition(target, dir); };
@@ -294,6 +294,7 @@ void AppMenu::InitPages(UiRenderer &ui)
     m_settingsPage.sidebarItem = SidebarSettings;
     m_emulatorButtonMapPage.sidebarItem = SidebarSettings;
     m_moveScreenPage.sidebarItem = SidebarSettings;
+    m_folderPage.sidebarItem = SidebarSettings;
     m_aboutPage.sidebarItem = SidebarAbout;
 
     // Cross-page links
@@ -301,6 +302,17 @@ void AppMenu::InitPages(UiRenderer &ui)
     m_settingsPage.moveScreenPage = &m_moveScreenPage;
     m_emulatorButtonMapPage.settingsPage = &m_settingsPage;
     m_moveScreenPage.settingsPage = &m_settingsPage;
+    m_settingsPage.folderPage = &m_folderPage;
+    m_folderPage.settingsPage = &m_settingsPage;
+    // A kind's folder changed: the games folder's games, and the settings
+    // written where they now live.
+    m_folderPage.onChanged = [this](DataKind kind)
+    {
+        if (kind == DataKind::Games && m_resources.thumbnails)
+            m_resources.thumbnails->Rescan();
+        if ((kind == DataKind::Games || kind == DataKind::Settings) && m_resources.settings && m_resources.platform)
+            m_resources.settings->Save(*m_resources.platform);
+    };
 
     for (MenuPage *page : pages)
     {

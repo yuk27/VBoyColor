@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -42,7 +43,7 @@ namespace
     }
 #endif
 
-    std::string RomDirectory()
+    std::string DefaultGamesFolder()
     {
 #if defined(_DEBUG)
         return DebugSdRomsDir(); // repo's checked-in sample ROMs
@@ -51,10 +52,23 @@ namespace
 #endif
     }
 
-    std::string RomsPath(const std::string &fileName, bool inStatesDir)
+    // UTF-8 <-> paths (Windows' narrow strings aren't UTF-8).
+    std::filesystem::path U8(const std::string &s)
     {
-        return RomDirectory() + (inStatesDir ? "/States/" : "/") + fileName;
+#if defined(__cpp_char8_t)
+        return std::filesystem::path(reinterpret_cast<const char8_t *>(s.c_str()));
+#else
+        return std::filesystem::u8path(s);
+#endif
     }
+    std::string ToU8(const std::filesystem::path &p)
+    {
+        const auto u = p.u8string();
+        return std::string(u.begin(), u.end());
+    }
+
+    constexpr const char *kFoldersFile = "folders.txt";
+    constexpr const char *kFolderKeys[kDataKindCount] = {"games", "saves", "states", "settings"};
 } // namespace
 
 DesktopPlatform::DesktopPlatform(const char *settingsFileName) : m_settingsFileName(settingsFileName)
@@ -73,16 +87,16 @@ DesktopPlatform::DesktopPlatform(const char *settingsFileName) : m_settingsFileN
     if (!ec)
         std::filesystem::current_path(exe.parent_path(), ec);
 #endif
+    std::error_code cwdEc;
+    m_appFolder = ToU8(std::filesystem::current_path(cwdEc));
+    LoadFolders();
 }
 
 std::vector<RomEntry> DesktopPlatform::ScanRoms()
 {
     std::vector<RomEntry> roms;
 
-    const std::string dir = RomDirectory();
-    if (dir.empty())
-        return roms;
-
+    const std::filesystem::path dir = U8(FolderOf(DataKind::Games));
     std::error_code ec;
     if (!std::filesystem::is_directory(dir, ec) || ec)
         return roms;
@@ -98,7 +112,7 @@ std::vector<RomEntry> DesktopPlatform::ScanRoms()
         if (ToLower(path.extension().string()) != ".vb")
             continue;
 
-        roms.push_back({path.stem().string(), path.string()});
+        roms.push_back({ToU8(path.stem()), ToU8(path)});
     }
 
     std::sort(roms.begin(), roms.end(),
@@ -110,17 +124,36 @@ std::vector<RomEntry> DesktopPlatform::ScanRoms()
 
 std::vector<uint8_t> DesktopPlatform::ReadRomFile(const std::string &path)
 {
-    std::ifstream in(path, std::ios::binary);
+    // (ScanRoms' paths are UTF-8; one named on the command line or dropped
+    // on the window may come in the system's own encoding)
+    std::ifstream in(U8(path), std::ios::binary);
+    if (!in)
+        in.open(path, std::ios::binary);
     if (!in)
         return {};
     return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 }
 
+std::string DesktopPlatform::FolderOf(DataKind kind) const
+{
+    const std::string &chosen = m_folders[static_cast<int>(kind)];
+    if (!chosen.empty())
+        return chosen;
+    const std::string &games = m_folders[0].empty() ? DefaultGamesFolder() : m_folders[0];
+    const char *sub = DefaultSubfolder(kind);
+    return *sub ? games + "/" + sub : games;
+}
+
+std::string DesktopPlatform::PathFor(const std::string &fileName, bool inStatesDir) const
+{
+    return FolderOf(DataKindOf(fileName, inStatesDir)) + "/" + fileName;
+}
+
 bool DesktopPlatform::WriteRomsFile(const std::string &fileName, bool inStatesDir, const void *data, size_t size)
 {
-    const std::string path = RomsPath(fileName, inStatesDir);
+    const std::filesystem::path path = U8(PathFor(fileName, inStatesDir));
     std::error_code ec;
-    std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
+    std::filesystem::create_directories(path.parent_path(), ec);
 
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out)
@@ -131,7 +164,7 @@ bool DesktopPlatform::WriteRomsFile(const std::string &fileName, bool inStatesDi
 
 std::vector<uint8_t> DesktopPlatform::ReadRomsFile(const std::string &fileName, bool inStatesDir)
 {
-    std::ifstream in(RomsPath(fileName, inStatesDir), std::ios::binary);
+    std::ifstream in(U8(PathFor(fileName, inStatesDir)), std::ios::binary);
     if (!in)
         return {};
     return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -140,14 +173,14 @@ std::vector<uint8_t> DesktopPlatform::ReadRomsFile(const std::string &fileName, 
 bool DesktopPlatform::RomsFileExists(const std::string &fileName, bool inStatesDir) const
 {
     std::error_code ec;
-    return std::filesystem::exists(RomsPath(fileName, inStatesDir), ec) && !ec;
+    return std::filesystem::exists(U8(PathFor(fileName, inStatesDir)), ec) && !ec;
 }
 
 std::vector<std::string> DesktopPlatform::ListRomsSubfolder(const std::string &subfolder) const
 {
     std::vector<std::string> names;
     std::error_code ec;
-    const std::filesystem::path dir = std::filesystem::path(RomDirectory()) / subfolder;
+    const std::filesystem::path dir = U8(FolderOf(DataKind::Games)) / U8(subfolder);
     if (!std::filesystem::is_directory(dir, ec) || ec)
         return names;
     for (const auto &entry : std::filesystem::directory_iterator(dir, ec))
@@ -155,10 +188,227 @@ std::vector<std::string> DesktopPlatform::ListRomsSubfolder(const std::string &s
         if (ec)
             break;
         if (entry.is_regular_file(ec))
-            names.push_back(entry.path().filename().string());
+            names.push_back(ToU8(entry.path().filename()));
     }
     std::sort(names.begin(), names.end());
     return names;
+}
+
+// ---------------------------------------------------------------------------
+// Settings > Folders
+
+void DesktopPlatform::LoadFolders()
+{
+    std::ifstream in(U8(m_appFolder) / kFoldersFile);
+    std::string line;
+    while (std::getline(in, line))
+    {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        const size_t eq = line.find('=');
+        if (eq == std::string::npos)
+            continue;
+        const std::string key = line.substr(0, eq), value = line.substr(eq + 1);
+        for (int i = 0; i < kDataKindCount; ++i)
+            if (key == kFolderKeys[i])
+                m_folders[i] = value;
+    }
+}
+
+bool DesktopPlatform::SaveFolders() const
+{
+    std::string text = "# VBoy Color's folders (Settings > Folders) - empty: the default place\n";
+    for (int i = 0; i < kDataKindCount; ++i)
+        text += std::string(kFolderKeys[i]) + "=" + m_folders[i] + "\n";
+    std::ofstream out(U8(m_appFolder) / kFoldersFile, std::ios::binary | std::ios::trunc);
+    out << text;
+    return static_cast<bool>(out);
+}
+
+std::string DesktopPlatform::DataFolderLabel(DataKind kind) const
+{
+    if (kind == DataKind::Games)
+        return m_folders[0].empty() ? "roms" : m_folders[0];
+    return m_folders[static_cast<int>(kind)];
+}
+
+std::string DesktopPlatform::DataFolderPath(DataKind kind) const
+{
+    std::error_code ec;
+    std::filesystem::path path = U8(FolderOf(kind));
+    if (path.is_relative())
+        path = U8(m_appFolder) / path;
+    const std::filesystem::path normal = std::filesystem::weakly_canonical(path, ec);
+    return ToU8(ec ? path.lexically_normal() : normal);
+}
+
+std::vector<std::pair<std::string, std::string>> DesktopPlatform::FolderPlaces() const
+{
+    std::vector<std::pair<std::string, std::string>> places;
+#if defined(_WIN32)
+    const DWORD drives = GetLogicalDrives();
+    for (int i = 0; i < 26; ++i)
+        if (drives & (1u << i))
+        {
+            const std::string root = std::string(1, static_cast<char>('A' + i)) + ":\\";
+            places.push_back({"Drive " + root.substr(0, 2), root});
+        }
+    if (const wchar_t *home = _wgetenv(L"USERPROFILE"))
+        places.push_back({"Your user folder", ToU8(std::filesystem::path(home))});
+#else
+    places.push_back({"The whole computer (/)", "/"});
+    if (const char *home = std::getenv("HOME"))
+        places.push_back({"Your home folder", home});
+#endif
+    places.push_back({"VBoy Color's folder", m_appFolder});
+    return places;
+}
+
+std::vector<std::string> DesktopPlatform::ListFolders(const std::string &path) const
+{
+    std::vector<std::string> names;
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(U8(path), std::filesystem::directory_options::skip_permission_denied, ec), end;
+         !ec && it != end; it.increment(ec))
+    {
+        std::error_code typeEc;
+        if (!it->is_directory(typeEc) || typeEc)
+            continue;
+        const std::string name = ToU8(it->path().filename());
+        if (name.empty() || name[0] == '.' || name[0] == '$') // (hidden, and Windows' $Recycle.Bin and such)
+            continue;
+        names.push_back(name);
+    }
+    std::sort(names.begin(), names.end(), [](const std::string &a, const std::string &b) { return ToLower(a) < ToLower(b); });
+    return names;
+}
+
+namespace
+{
+    // Copies from's files of a kind (and only those - States and Settings
+    // share the games folder's "States" by default) to to: those to doesn't
+    // have, and those newer than to's. Returns how many, -1 if to can't be
+    // written.
+    int CopyKind(const std::filesystem::path &from, const std::filesystem::path &to, DataKind kind)
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(to, ec);
+        if (!std::filesystem::is_directory(to, ec))
+            return -1;
+        {
+            // (can it be written?)
+            const std::filesystem::path probe = to / ".vboycolor-write-test";
+            std::ofstream out(probe, std::ios::binary);
+            if (!out)
+                return -1;
+            out.close();
+            std::filesystem::remove(probe, ec);
+        }
+        if (std::filesystem::equivalent(from, to, ec) && !ec)
+            return 0;
+        const bool inStatesDir = kind == DataKind::States || kind == DataKind::Settings;
+        int copied = 0;
+        ec.clear();
+        for (std::filesystem::directory_iterator it(from, ec), end; !ec && it != end; it.increment(ec))
+        {
+            std::error_code fileEc;
+            if (!it->is_regular_file(fileEc))
+                continue;
+            const std::string name = ToU8(it->path().filename());
+            if (DataKindOf(name, inStatesDir) != kind)
+                continue;
+            const std::filesystem::path target = to / it->path().filename();
+            if (std::filesystem::exists(target, fileEc))
+            {
+                // Both have it: the newer one wins - the one it replaces is
+                // kept beside it as "<name>.bak".
+                const auto source = std::filesystem::last_write_time(it->path(), fileEc);
+                const auto existing = std::filesystem::last_write_time(target, fileEc);
+                if (fileEc || !(source > existing))
+                    continue;
+                std::filesystem::path backup = target;
+                backup += ".bak";
+                std::filesystem::remove(backup, fileEc);
+                std::filesystem::rename(target, backup, fileEc);
+                if (fileEc)
+                    continue;
+            }
+            if (std::filesystem::copy_file(it->path(), target, fileEc))
+            {
+                // (with the original's time, so the copy isn't "newer" than it)
+                std::error_code timeEc;
+                std::filesystem::last_write_time(target, std::filesystem::last_write_time(it->path(), timeEc), timeEc);
+                ++copied;
+            }
+        }
+        return copied;
+    }
+
+    std::string Copied(int count, DataKind kind)
+    {
+        if (count <= 0)
+            return std::string(DataKindName(kind)) + " folder changed";
+        return std::string(DataKindName(kind)) + ": copied " + std::to_string(count) + (count == 1 ? " file" : " files") +
+               " - the originals stay";
+    }
+} // namespace
+
+std::string DesktopPlatform::SetDataFolder(DataKind kind, const std::string &path)
+{
+    const int k = static_cast<int>(kind);
+    if (m_folders[k] == path)
+        return "";
+    auto absolute = [this](const std::string &folder)
+    {
+        std::filesystem::path p = U8(folder);
+        return p.is_relative() ? U8(m_appFolder) / p : p;
+    };
+
+    // Where each kind lives now - and after the change.
+    std::string before[kDataKindCount];
+    for (int i = 0; i < kDataKindCount; ++i)
+        before[i] = FolderOf(static_cast<DataKind>(i));
+    const std::string old = m_folders[k];
+    m_folders[k] = path;
+    std::string after[kDataKindCount];
+    for (int i = 0; i < kDataKindCount; ++i)
+        after[i] = FolderOf(static_cast<DataKind>(i));
+
+    if (kind == DataKind::Games)
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(absolute(after[0]), ec); // (back to the default "roms")
+        if (!std::filesystem::is_directory(absolute(after[0]), ec))
+        {
+            m_folders[k] = old;
+            return "That folder doesn't exist - nothing changed";
+        }
+    }
+
+    // The kind's files go along - and when the games folder moves, so do
+    // those of the kinds that live in it by default (not the ROMs: the new
+    // games folder is where the player keeps them).
+    int copied = 0;
+    for (int i = 1; i < kDataKindCount; ++i)
+    {
+        if (i != k && kind != DataKind::Games)
+            continue;
+        if (before[i] == after[i])
+            continue;
+        const int n = CopyKind(absolute(before[i]), absolute(after[i]), static_cast<DataKind>(i));
+        if (n < 0)
+        {
+            m_folders[k] = old;
+            return "Can't write to that folder - nothing changed";
+        }
+        copied += n;
+    }
+    if (!SaveFolders())
+    {
+        m_folders[k] = old;
+        return "Couldn't save the choice next to VBoy Color - nothing changed";
+    }
+    return Copied(copied, kind);
 }
 
 #if defined(_WIN32)
