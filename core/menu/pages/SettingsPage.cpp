@@ -149,6 +149,9 @@ void SettingsPage::Init(UiRenderer &ui, const UiMenuResources &resources)
             RefreshLabels();
         };
         m_sizeEntry = list->AddEntry("Size", toggleSize, toggleSize, toggleSize, UiIconId::Scale);
+        // A flat screen's 3D (see Screen3D): 3D TVs and monitors, colored glasses.
+        m_threeDEntry = list->AddEntry("3D", [this](MenuItem *) { Change3D(1); }, [this](MenuItem *) { Change3D(-1); },
+                                       [this](MenuItem *) { Change3D(1); }, UiIconId::ThreeD);
     }
 
     list->AddHeader("Library");
@@ -298,6 +301,14 @@ void SettingsPage::ChangeLook(int delta)
     RefreshLabels();
 }
 
+void SettingsPage::Change3D(int delta)
+{
+    if (!m_settings)
+        return;
+    m_settings->screen3D = (m_settings->screen3D + delta + kScreen3DCount) % kScreen3DCount;
+    RefreshLabels();
+}
+
 void SettingsPage::RequestChangeRomsFolder()
 {
     m_platform->RequestChangeRomsFolder();
@@ -323,6 +334,13 @@ void SettingsPage::RefreshLabels(bool save)
     m_lookEntry->SetValue(kLookNames[std::clamp(m_settings->screenLook, 0, kScreenLookCount - 1)]);
     if (m_sizeEntry)
         m_sizeEntry->SetValue(m_settings->screenWholePixels ? "Whole pixels" : "Fit");
+    if (m_threeDEntry)
+    {
+        static constexpr const char *k3DNames[kScreen3DCount] = {
+            "Off", "Side by side (3D TV)", "Side by side (full)", "Cross-eyed", "Top and bottom",
+            "Red / cyan glasses", "Green / magenta glasses", "Amber / blue glasses"};
+        m_threeDEntry->SetValue(k3DNames[std::clamp(m_settings->screen3D, 0, kScreen3DCount - 1)]);
+    }
     // 2 decimals, not 3 - kColorStep is 0.05, so the third decimal is always
     // 0 and never actually reachable by adjusting the value.
     m_colorREntry->SetValue(FormatFloat("", m_settings->colorR, 2));

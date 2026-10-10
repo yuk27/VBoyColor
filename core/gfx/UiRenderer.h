@@ -160,6 +160,13 @@ public:
     // screen layer) - 0 when the target is what's shown (a window).
     void DrawScreenFiltered(UiImageHandle image, float x, float y, float w, float h, float u0, float v0, float u1,
                             float v1, int look, float shownPixelSize = 0.0f);
+    // Both eyes' pictures as one for colored 3D glasses (shaders/anaglyph.frag):
+    // image holds them side by side, read as stored (sRGB-encoded, like
+    // DrawScreenFiltered's); [u0,u1]x[v0,v1] is the left eye's part, the
+    // right eye's is the same shifted by rightOffsetU. glasses: 1 red/cyan,
+    // 2 green/magenta, 3 amber/blue.
+    void DrawAnaglyph(UiImageHandle image, float x, float y, float w, float h, float u0, float v0, float u1, float v1,
+                      float rightOffsetU, int glasses);
     // Like DrawImage, but masks the sampled texture to rounded corners - the
     // intended way to composite a whole pre-rendered buffer (e.g. an
     // offscreen-rendered AppMenu) as a single rounded panel, instead of
@@ -309,6 +316,7 @@ private:
     // sampler at binding 0), so it also reuses m_textPipelineLayout.
     VkPipeline m_screenPatternPipeline{VK_NULL_HANDLE};
     VkPipeline m_screenFilterPipeline{VK_NULL_HANDLE}; // screen_filter.frag - same layout as the pattern one
+    VkPipeline m_anaglyphPipeline{VK_NULL_HANDLE};     // anaglyph.frag - same layout
     VkDescriptorPool m_descriptorPool{VK_NULL_HANDLE};
 
     UiFontManager m_fontManager;

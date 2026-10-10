@@ -869,7 +869,7 @@ void AppMenu::RenderToBuffer(UiRenderer &ui)
     ui.EndFrame();
 }
 
-void AppMenu::Draw(UiRenderer &ui, float x, float y)
+void AppMenu::Draw(UiRenderer &ui, float x, float y, float squeezeX, float squeezeY)
 {
     if (m_visibility <= 0.0f)
         return; // fully closed - nothing to composite
@@ -891,6 +891,7 @@ void AppMenu::Draw(UiRenderer &ui, float x, float y)
     const float fullH = kMenuHeight * m_menuScale;
     const float w = fullW * scale;
     const float h = fullH * scale;
-    ui.DrawImageRounded(m_offscreenTexture, x + (fullW - w) / 2.0f, y + (fullH - h) / 2.0f, w, h,
-                        kPanelCornerRadiusPx * m_menuScale, eased);
+    ui.DrawImageRounded(m_offscreenTexture, x + (fullW - w) / 2.0f * squeezeX, y + (fullH - h) / 2.0f * squeezeY,
+                        w * squeezeX, h * squeezeY, kPanelCornerRadiusPx * m_menuScale * std::min(squeezeX, squeezeY),
+                        eased);
 }

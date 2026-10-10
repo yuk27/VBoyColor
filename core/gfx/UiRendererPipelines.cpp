@@ -12,6 +12,7 @@
 #include "gfx/generated_shaders/ui_image_rounded.frag.h"
 #include "gfx/generated_shaders/screen_pattern.frag.h"
 #include "gfx/generated_shaders/screen_filter.frag.h"
+#include "gfx/generated_shaders/anaglyph.frag.h"
 
 #include <stdexcept>
 
@@ -427,6 +428,46 @@ void UiRenderer::EnsurePipelines(VkFormat format)
         pipelineInfo.subpass = 0;
         CheckVk(vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_screenFilterPipeline),
                 "vkCreateGraphicsPipelines (screen filter)");
+        vkDestroyShaderModule(m_device, fragModule, nullptr);
+    }
+
+    // --- Anaglyph pipeline (Settings > Screen > 3D, colored glasses - see
+    // anaglyph.frag) ---
+    // Reuses m_textPipelineLayout - same descriptor shape as the image
+    // pipeline above (one sampler at binding 0).
+    {
+        VkShaderModuleCreateInfo fragModuleInfo{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        fragModuleInfo.codeSize = g_anaglyph_frag_size;
+        fragModuleInfo.pCode = g_anaglyph_frag;
+        VkShaderModule fragModule;
+        CheckVk(vkCreateShaderModule(m_device, &fragModuleInfo, nullptr, &fragModule),
+                "vkCreateShaderModule (anaglyph.frag)");
+
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+        stages[0].module = vertModule;
+        stages[0].pName = "main";
+        stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        stages[1].module = fragModule;
+        stages[1].pName = "main";
+
+        VkGraphicsPipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        pipelineInfo.stageCount = 2;
+        pipelineInfo.pStages = stages;
+        pipelineInfo.pVertexInputState = &vertexInput;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterizer;
+        pipelineInfo.pMultisampleState = &multisample;
+        pipelineInfo.pColorBlendState = &colorBlend;
+        pipelineInfo.pDynamicState = &dynamicState;
+        pipelineInfo.layout = m_textPipelineLayout;
+        pipelineInfo.renderPass = m_renderPass;
+        pipelineInfo.subpass = 0;
+        CheckVk(vkCreateGraphicsPipelines(m_device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_anaglyphPipeline),
+                "vkCreateGraphicsPipelines (anaglyph)");
         vkDestroyShaderModule(m_device, fragModule, nullptr);
     }
 

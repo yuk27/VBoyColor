@@ -77,6 +77,12 @@ pack).*
 - **Screen placement** - size and distance of the screen in VR; on PC,
   Settings → Screen → Size: as big as the window allows (*Fit*) or *Whole
   pixels*.
+- **3D on a normal screen** (PC) - Settings → Screen → 3D: *side by side*
+  for 3D TVs and monitors (squeezed, as their Side-by-Side mode expects),
+  *side by side (full)* or *cross-eyed* for viewing without a TV's help,
+  *top and bottom*, or one picture for colored glasses - *red / cyan*,
+  *green / magenta* or *amber / blue* (mixed with Dubois' method, which keeps
+  the games' colors as true as the glasses allow).
 - **Your room as the background** (Quest) - Settings → Adjust screen →
   Show your room around it: the game floats in your room (passthrough)
   instead of in the dark.

@@ -56,7 +56,10 @@ public:
     void Update(uint32_t buttonStates[3], uint32_t lastButtonStates[3], float deltaSeconds);
     void SubmitRawMappingInput(const ButtonMapper::MappedButton &button);
     void RenderToBuffer(UiRenderer &ui);
-    void Draw(UiRenderer &ui, float x, float y);
+    // squeezeX/Y: drawn that much narrower/shorter from (x, y) - once per eye's
+    // half of a 3D TV picture (Settings > Screen > 3D, side by side or top
+    // and bottom), which the TV stretches back.
+    void Draw(UiRenderer &ui, float x, float y, float squeezeX = 1.0f, float squeezeY = 1.0f);
 
     XrColor4f GetBackgroundColor() const;
 

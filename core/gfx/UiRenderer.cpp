@@ -129,6 +129,8 @@ void UiRenderer::Shutdown()
         vkDestroyPipeline(m_device, m_screenPatternPipeline, nullptr);
     if (m_screenFilterPipeline != VK_NULL_HANDLE)
         vkDestroyPipeline(m_device, m_screenFilterPipeline, nullptr);
+    if (m_anaglyphPipeline != VK_NULL_HANDLE)
+        vkDestroyPipeline(m_device, m_anaglyphPipeline, nullptr);
     if (m_imageRoundedPipeline != VK_NULL_HANDLE)
         vkDestroyPipeline(m_device, m_imageRoundedPipeline, nullptr);
     if (m_imagePipeline != VK_NULL_HANDLE)
@@ -879,6 +881,18 @@ void UiRenderer::DrawScreenFiltered(UiImageHandle imageHandle, float x, float y,
     // (cornerRadiusPx carries shownPixelSize - this shader rounds nothing)
     DrawUnitQuad(m_screenFilterPipeline, m_textPipelineLayout, img.descriptorSet, x, y, w, h, u0, v0, u1, v1,
                  XrColor4f{1.0f, 1.0f, 1.0f, 1.0f}, shownPixelSize, nullptr, static_cast<float>(look));
+}
+
+void UiRenderer::DrawAnaglyph(UiImageHandle imageHandle, float x, float y, float w, float h, float u0, float v0,
+                              float u1, float v1, float rightOffsetU, int glasses)
+{
+    if (!imageHandle.IsValid())
+        return;
+    const Image &img = m_images[imageHandle.id];
+    float packed[15]{};
+    packed[0] = rightOffsetU;
+    DrawUnitQuad(m_anaglyphPipeline, m_textPipelineLayout, img.descriptorSet, x, y, w, h, u0, v0, u1, v1,
+                 XrColor4f{1.0f, 1.0f, 1.0f, 1.0f}, 0.0f, packed, static_cast<float>(glasses));
 }
 
 void UiRenderer::DrawImageRounded(UiImageHandle imageHandle, float x, float y, float w, float h, float cornerRadiusPx, float alpha)

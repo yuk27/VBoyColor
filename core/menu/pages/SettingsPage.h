@@ -51,12 +51,14 @@ private:
     void RefreshLabels(bool save = true);
     void RequestChangeRomsFolder();
     void ChangeLook(int delta);
+    void Change3D(int delta);
 
     std::shared_ptr<MenuList::Entry> m_colorModeEntry;
     std::shared_ptr<MenuList::Entry> m_paletteEntry;
     std::shared_ptr<MenuList::Entry> m_rebuildEntry;
     std::shared_ptr<MenuList::Entry> m_lookEntry;
     std::shared_ptr<MenuList::Entry> m_sizeEntry; // (the PC window only)
+    std::shared_ptr<MenuList::Entry> m_threeDEntry; // (flat screens only)
     std::shared_ptr<MenuList::Entry> m_colorREntry;
     std::shared_ptr<MenuList::Entry> m_colorGEntry;
     std::shared_ptr<MenuList::Entry> m_colorBEntry;

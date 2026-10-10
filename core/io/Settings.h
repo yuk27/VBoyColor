@@ -43,13 +43,34 @@ enum class ScreenLook
 };
 inline constexpr int kScreenLookCount = 3;
 
+// How a flat screen shows the Virtual Boy's two pictures (Settings > Screen >
+// 3D - the PC window and the phone; a headset always shows them in 3D):
+// one eye's, both side by side or one above the other for 3D TVs and
+// monitors (half: squeezed, as the TV stretches each back to full size),
+// or one picture for colored glasses (anaglyph - see shaders/anaglyph.frag).
+enum class Screen3D
+{
+    Off = 0,
+    SideBySideHalf = 1, // 3D TVs and monitors (Side-by-Side mode)
+    SideBySideFull = 2, // each eye at its own shape (phone viewers, parallel viewing)
+    CrossEyed = 3,      // full side by side, the right eye's picture on the left
+    TopBottom = 4,      // 3D TVs' Top-and-Bottom mode
+    RedCyan = 5,
+    GreenMagenta = 6,
+    AmberBlue = 7,
+};
+inline constexpr int kScreen3DCount = 8;
+// The anaglyph glasses (1 red/cyan, 2 green/magenta, 3 amber/blue - see
+// shaders/anaglyph.frag), 0 for the other modes.
+constexpr int AnaglyphOf(int screen3D) { return screen3D >= 5 && screen3D < kScreen3DCount ? screen3D - 4 : 0; }
+
 struct AppSettings
 {
     // Bumped whenever the on-disk layout changes - Load() refuses (leaves
     // defaults in place) on a mismatch rather than attempting migration,
     // except from version 11, whose layout is an exact prefix of this one
     // (12 only appended selectedShadePalette) - see Settings.cpp.
-    static constexpr int kVersion = 18;
+    static constexpr int kVersion = 19;
 
     // Move Screen / Follow Head. Only OpenXrApp's quad-layer pose consumes
     // these - meaningless on the flat pc2d debug build.
@@ -115,6 +136,10 @@ struct AppSettings
     // Version 17 (appended): the library shows only the games with a color
     // pack.
     bool libraryOnlyPacks = false;
+
+    // Version 19 (appended): Screen3D - the flat apps' 3D (off: the left
+    // eye's picture).
+    int screen3D = static_cast<int>(Screen3D::Off);
 
     // What the screen should be drawn with (Emulator::DrawScreen's tint/
     // patternIndex) - neutral while a shade palette is active, since its

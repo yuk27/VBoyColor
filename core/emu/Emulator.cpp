@@ -1244,9 +1244,11 @@ void Emulator::DrawScreen(UiRenderer &ui, float x, float y, float w, float h, Ey
         ui.DrawImageRegion(m_screenTexture, x, y, w, h, u0, 0.0f, u1, v1, 1.0f, tint);
 }
 
-void Emulator::PrepareScreen(UiRenderer &ui, VkFormat format, const XrColor4f &tint, int patternIndex, int look)
+void Emulator::PrepareScreen(UiRenderer &ui, VkFormat format, const XrColor4f &tint, int patternIndex, int look,
+                             int anaglyph)
 {
-    if (look <= 0 || look >= kScreenLookCount || !m_screenTexture.IsValid())
+    const bool filtered = look > 0 && look < kScreenLookCount;
+    if ((!filtered && anaglyph <= 0) || !m_screenTexture.IsValid())
         return;
     if (!m_coloredTexture.IsValid())
         // (read back as stored - sRGB-encoded - see screen_filter.frag)
@@ -1255,20 +1257,46 @@ void Emulator::PrepareScreen(UiRenderer &ui, VkFormat format, const XrColor4f &t
     ColoredKey key{m_screenVersion, tint.r, tint.g, tint.b, pattern ? patternIndex : -1, m_shownWidth, m_shownHeight};
     if (pattern)
         key.r = key.g = key.b = 0.0f; // (the tint isn't used)
-    if (m_coloredReady && key == m_coloredKey)
-        return;
-    m_coloredKey = key;
-    m_coloredReady = true;
-
-    // The picture 1:1 into the same corner, colored exactly as Sharp draws it.
     const float w = static_cast<float>(m_shownWidth), h = static_cast<float>(m_shownHeight);
     const float u1 = w / static_cast<float>(kFbWidth), v1 = h / static_cast<float>(kFbHeight);
-    ui.BeginOffscreenFrame(m_coloredTexture, XrColor4f{0.0f, 0.0f, 0.0f, 1.0f});
-    if (pattern)
-        ui.DrawImageRegionPattern(m_screenTexture, 0.0f, 0.0f, w, h, 0.0f, 0.0f, u1, v1, kScreenPatterns[patternIndex]);
+    if (!m_coloredReady || !(key == m_coloredKey))
+    {
+        m_coloredKey = key;
+        m_coloredReady = true;
+        m_anaglyphMade = 0;
+
+        // The picture 1:1 into the same corner, colored exactly as Sharp draws it.
+        ui.BeginOffscreenFrame(m_coloredTexture, XrColor4f{0.0f, 0.0f, 0.0f, 1.0f});
+        if (pattern)
+            ui.DrawImageRegionPattern(m_screenTexture, 0.0f, 0.0f, w, h, 0.0f, 0.0f, u1, v1, kScreenPatterns[patternIndex]);
+        else
+            ui.DrawImageRegion(m_screenTexture, 0.0f, 0.0f, w, h, 0.0f, 0.0f, u1, v1, 1.0f, tint);
+        ui.EndFrame();
+    }
+
+    // Colored glasses with a look: their picture 1:1, for the look to draw.
+    if (anaglyph > 0 && filtered && m_anaglyphMade != anaglyph)
+    {
+        if (!m_anaglyphTexture.IsValid())
+            m_anaglyphTexture = ui.CreateRenderTexture(kFbWidth, kFbHeight, format, true);
+        m_anaglyphMade = anaglyph;
+        ui.BeginOffscreenFrame(m_anaglyphTexture, XrColor4f{0.0f, 0.0f, 0.0f, 1.0f});
+        ui.DrawAnaglyph(m_coloredTexture, 0.0f, 0.0f, w / 2.0f, h, 0.0f, 0.0f, u1 / 2.0f, v1, u1 / 2.0f, anaglyph);
+        ui.EndFrame();
+    }
+}
+
+void Emulator::DrawAnaglyph(UiRenderer &ui, float x, float y, float w, float h, int anaglyph, int look,
+                            float shownPixelSize) const
+{
+    if (!m_coloredReady || anaglyph <= 0)
+        return;
+    const float u1 = static_cast<float>(m_shownWidth) / static_cast<float>(kFbWidth) / 2.0f; // (the left eye)
+    const float v1 = static_cast<float>(m_shownHeight) / static_cast<float>(kFbHeight);
+    if (look > 0 && look < kScreenLookCount && m_anaglyphMade == anaglyph)
+        ui.DrawScreenFiltered(m_anaglyphTexture, x, y, w, h, 0.0f, 0.0f, u1, v1, look, shownPixelSize);
     else
-        ui.DrawImageRegion(m_screenTexture, 0.0f, 0.0f, w, h, 0.0f, 0.0f, u1, v1, 1.0f, tint);
-    ui.EndFrame();
+        ui.DrawAnaglyph(m_coloredTexture, x, y, w, h, 0.0f, 0.0f, u1, v1, u1, anaglyph);
 }
 
 std::string Emulator::StateFileName(int uiSlot, const char *ext) const

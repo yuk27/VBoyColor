@@ -140,9 +140,10 @@ if(NOT ANDROID)
     vbgo_add_shader(UI_IMAGE_ROUNDED_FRAG_HEADER ${CMAKE_SOURCE_DIR}/shaders/ui_image_rounded.frag)
     vbgo_add_shader(SCREEN_PATTERN_FRAG_HEADER ${CMAKE_SOURCE_DIR}/shaders/screen_pattern.frag)
     vbgo_add_shader(SCREEN_FILTER_FRAG_HEADER ${CMAKE_SOURCE_DIR}/shaders/screen_filter.frag)
+    vbgo_add_shader(ANAGLYPH_FRAG_HEADER ${CMAKE_SOURCE_DIR}/shaders/anaglyph.frag)
     add_custom_target(vbgo_shaders DEPENDS ${UI_VERT_HEADER} ${UI_SOLID_FRAG_HEADER}
                                             ${UI_TEXT_FRAG_HEADER} ${UI_IMAGE_FRAG_HEADER} ${UI_IMAGE_ROUNDED_FRAG_HEADER}
-                                            ${SCREEN_PATTERN_FRAG_HEADER} ${SCREEN_FILTER_FRAG_HEADER})
+                                            ${SCREEN_PATTERN_FRAG_HEADER} ${SCREEN_FILTER_FRAG_HEADER} ${ANAGLYPH_FRAG_HEADER})
 
 endif()
 

@@ -195,7 +195,17 @@ public:
     // for every pixel it draws, again and again. Only does anything when the
     // picture or its colors changed. Outside BeginFrame/EndFrame; format:
     // the format the frame's target (and so every UI pipeline) uses.
-    void PrepareScreen(UiRenderer &ui, VkFormat format, const XrColor4f &tint, int patternIndex, int look);
+    // anaglyph (1-3, AnaglyphOf in Settings.h; 0 none): the colored glasses
+    // DrawAnaglyph will draw for - prepares the colored picture whatever the
+    // look, and with a look other than Sharp also the glasses' picture the
+    // look then draws.
+    void PrepareScreen(UiRenderer &ui, VkFormat format, const XrColor4f &tint, int patternIndex, int look,
+                       int anaglyph = 0);
+    // Both eyes as one picture for colored 3D glasses (see shaders/
+    // anaglyph.frag) into the given rect - after PrepareScreen with the same
+    // anaglyph and look.
+    void DrawAnaglyph(UiRenderer &ui, float x, float y, float w, float h, int anaglyph, int look,
+                      float shownPixelSize = 0.0f) const;
     // Bumped whenever a new picture reaches the screen texture - a caller
     // can skip redrawing what hasn't changed (see OpenXrApp::RenderScreenLayer).
     uint64_t ScreenVersion() const { return m_screenVersion; }
@@ -433,6 +443,11 @@ private:
     };
     ColoredKey m_coloredKey;
     bool m_coloredReady = false;
+    // The colored glasses' picture (left eye's size, in the texture's
+    // top-left) for a look to draw - see PrepareScreen; the glasses it was
+    // made for, 0 when it's out of date.
+    UiImageHandle m_anaglyphTexture;
+    int m_anaglyphMade = 0;
     bool m_coreInitialized = false;
     bool m_romLoaded = false;
     uint64_t m_screenVersion = 0; // see ScreenVersion

@@ -201,6 +201,43 @@ namespace
         y = std::floor((h - sh) / 2.0f);
     }
 
+    // Settings > Screen > 3D: where each eye's picture (and a copy of the
+    // menu) goes in the window. A pane is drawn as if it were a window of
+    // its own (vw x vh), placed at (ox, oy) and squeezed by (qx, qy) - a
+    // 3D TV's half side by side / top and bottom, stretched back by the TV.
+    struct Pane
+    {
+        float ox, oy, vw, vh, qx, qy;
+        Emulator::Eye eye;
+    };
+    int ScreenPanes(int screen3D, int w, int h, Pane panes[2])
+    {
+        const float fw = static_cast<float>(w), fh = static_cast<float>(h);
+        const float halfW = std::floor(fw / 2.0f), halfH = std::floor(fh / 2.0f);
+        switch (static_cast<Screen3D>(screen3D))
+        {
+        case Screen3D::SideBySideHalf:
+            panes[0] = {0.0f, 0.0f, fw, fh, 0.5f, 1.0f, Emulator::Eye::Left};
+            panes[1] = {halfW, 0.0f, fw, fh, 0.5f, 1.0f, Emulator::Eye::Right};
+            return 2;
+        case Screen3D::SideBySideFull:
+        case Screen3D::CrossEyed:
+        {
+            const bool cross = static_cast<Screen3D>(screen3D) == Screen3D::CrossEyed;
+            panes[0] = {0.0f, 0.0f, halfW, fh, 1.0f, 1.0f, cross ? Emulator::Eye::Right : Emulator::Eye::Left};
+            panes[1] = {halfW, 0.0f, halfW, fh, 1.0f, 1.0f, cross ? Emulator::Eye::Left : Emulator::Eye::Right};
+            return 2;
+        }
+        case Screen3D::TopBottom:
+            panes[0] = {0.0f, 0.0f, fw, fh, 1.0f, 0.5f, Emulator::Eye::Left};
+            panes[1] = {0.0f, halfH, fw, fh, 1.0f, 0.5f, Emulator::Eye::Right};
+            return 2;
+        default: // off, or colored glasses (one picture of both)
+            panes[0] = {0.0f, 0.0f, fw, fh, 1.0f, 1.0f, Emulator::Eye::Left};
+            return 1;
+        }
+    }
+
     // A ROM dropped on the window (GLFW hands over UTF-8 paths), loaded by
     // the render loop.
     // Mouse wheel since last frame (the menu scrolls with it).
@@ -676,18 +713,24 @@ int main(int argc, char **argv)
             }
             f12WasPressed = f12Pressed;
 
+            // Settings > Screen > 3D: one pane, or one per eye (see ScreenPanes) -
+            // the menu shows in each, as big as fits a pane.
+            Pane panes[2];
+            const int paneCount = ScreenPanes(settings.screen3D, fbWidth, fbHeight, panes);
+
             // The menu renders at the largest integer logical-to-physical
             // scale (see AppMenuLayout.h's kMenuScale) that still fits the
-            // current window, so it's always as big as possible without
+            // current window (pane), so it's always as big as possible without
             // ever needing to upscale (and blur) its offscreen texture.
-            const int scaleX = static_cast<int>(fbWidth / kMenuWidth);
-            const int scaleY = static_cast<int>(fbHeight / kMenuHeight);
+            const int scaleX = static_cast<int>(panes[0].vw / kMenuWidth);
+            const int scaleY = static_cast<int>(panes[0].vh / kMenuHeight);
             const float menuScale = static_cast<float>(std::max(1, std::min(scaleX, scaleY)));
             appMenu.SetMenuScale(uiRenderer, menuScale);
-            const float menuX = (static_cast<float>(fbWidth) - kMenuWidth * menuScale) / 2.0f;
-            const float menuY = (static_cast<float>(fbHeight) - kMenuHeight * menuScale) / 2.0f;
+            const float menuX = std::floor((panes[0].vw - kMenuWidth * menuScale) / 2.0f);
+            const float menuY = std::floor((panes[0].vh - kMenuHeight * menuScale) / 2.0f);
 
-            // The mouse, in the menu's own units: hover, click, wheel.
+            // The mouse, in the menu's own units: hover, click, wheel (over
+            // whichever pane's copy of the menu it is).
             {
                 double cursorX = 0, cursorY = 0;
                 int windowW = 1, windowH = 1;
@@ -695,7 +738,12 @@ int main(int argc, char **argv)
                 glfwGetWindowSize(window, &windowW, &windowH);
                 const float px = static_cast<float>(cursorX) * fbWidth / std::max(1, windowW);
                 const float py = static_cast<float>(cursorY) * fbHeight / std::max(1, windowH);
-                const float mx = (px - menuX) / menuScale, my = (py - menuY) / menuScale;
+                const Pane *over = &panes[0];
+                for (int i = 1; i < paneCount; ++i)
+                    if (px >= panes[i].ox && py >= panes[i].oy)
+                        over = &panes[i];
+                const float vx = (px - over->ox) / over->qx, vy = (py - over->oy) / over->qy;
+                const float mx = (vx - menuX) / menuScale, my = (vy - menuY) / menuScale;
                 const bool inside = glfwGetWindowAttrib(window, GLFW_HOVERED) && mx >= 0 && my >= 0 && mx < kMenuWidth &&
                                     my < kMenuHeight;
                 appMenu.SetPointer(inside, mx, my, glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS,
@@ -751,8 +799,9 @@ int main(int argc, char **argv)
 
             if (appMenu.IsVisible())
                 appMenu.RenderToBuffer(uiRenderer);
+            const int anaglyph = g_eyeView == 0 ? AnaglyphOf(settings.screen3D) : 0;
             emulator.PrepareScreen(uiRenderer, chosen.format, settings.ScreenTint(), settings.ScreenPattern(),
-                                   settings.screenLook);
+                                   settings.screenLook, anaglyph);
 
             vkResetFences(renderer.GetDevice(), 1, &acquireFence);
             uint32_t imageIndex = 0;
@@ -777,7 +826,7 @@ int main(int argc, char **argv)
                 float sx = 0, sy = 0, sw = 0, sh = 0;
                 if (g_eyeView == 1)
                 {
-                    // Each eye in its half of the window.
+                    // (F5) Each eye in its half of the window.
                     const int half = static_cast<int>(extent.width) / 2;
                     ScreenRect(half, static_cast<int>(extent.height), settings.screenWholePixels, sx, sy, sw, sh);
                     emulator.DrawScreen(uiRenderer, sx, sy, sw, sh, Emulator::Eye::Left, settings.ScreenTint(),
@@ -785,16 +834,33 @@ int main(int argc, char **argv)
                     emulator.DrawScreen(uiRenderer, sx + half, sy, sw, sh, Emulator::Eye::Right, settings.ScreenTint(),
                                         settings.ScreenPattern(), settings.screenLook);
                 }
+                else if (g_eyeView == 2)
+                {
+                    // (F5) The right eye's picture.
+                    ScreenRect(static_cast<int>(extent.width), static_cast<int>(extent.height), settings.screenWholePixels,
+                               sx, sy, sw, sh);
+                    emulator.DrawScreen(uiRenderer, sx, sy, sw, sh, Emulator::Eye::Right, settings.ScreenTint(),
+                                        settings.ScreenPattern(), settings.screenLook);
+                }
                 else
                 {
-                    ScreenRect(static_cast<int>(extent.width), static_cast<int>(extent.height), settings.screenWholePixels, sx, sy,
-                               sw, sh);
-                    emulator.DrawScreen(uiRenderer, sx, sy, sw, sh, g_eyeView == 2 ? Emulator::Eye::Right : Emulator::Eye::Left,
-                                        settings.ScreenTint(), settings.ScreenPattern(), settings.screenLook);
+                    for (int i = 0; i < paneCount; ++i)
+                    {
+                        const Pane &p = panes[i];
+                        ScreenRect(static_cast<int>(p.vw), static_cast<int>(p.vh), settings.screenWholePixels, sx, sy, sw, sh);
+                        const float x = p.ox + sx * p.qx, y = p.oy + sy * p.qy, w = sw * p.qx, h = sh * p.qy;
+                        if (anaglyph > 0)
+                            emulator.DrawAnaglyph(uiRenderer, x, y, w, h, anaglyph, settings.screenLook);
+                        else
+                            emulator.DrawScreen(uiRenderer, x, y, w, h, p.eye, settings.ScreenTint(), settings.ScreenPattern(),
+                                                settings.screenLook);
+                    }
                 }
             }
             if (appMenu.IsVisible())
-                appMenu.Draw(uiRenderer, menuX, menuY);
+                for (int i = 0; i < paneCount; ++i)
+                    appMenu.Draw(uiRenderer, panes[i].ox + menuX * panes[i].qx, panes[i].oy + menuY * panes[i].qy, panes[i].qx,
+                                 panes[i].qy);
             uiRenderer.EndFrame();
 
             VkPresentInfoKHR presentInfo{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
