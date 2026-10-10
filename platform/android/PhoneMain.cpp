@@ -23,6 +23,7 @@
 #include <android/input.h>
 #include <android/log.h>
 #include <android/native_window.h>
+#include <android/window.h>
 #include <android_native_app_glue.h>
 
 #include <algorithm>
