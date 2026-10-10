@@ -41,7 +41,7 @@ pack).*
     (Jade, Ocean, Sunset, Ember, Frost, Toxic).
   - **Tint** - the classic look: red, or any color you mix.
 - **Color packs** - hand-painted colors for a game, tile by tile, shown in
-  Auto and Multicolor modes. Packs for Galactic Pinball, Innsmouth no
+  Auto and Multicolor modes. Packs for Bound High, Galactic Pinball, Innsmouth no
   Yakata, Jack Bros., Mario Clash, Mario's Tennis, Panic Bomber, Space
   Invaders Virtual Collection, Teleroboxer, Vertical Force, V-Tetris and Wario
   Land are built in, plus the menus and HUD of Red Alarm and 3-D Tetris
