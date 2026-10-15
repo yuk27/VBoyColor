@@ -1,13 +1,13 @@
 <h1 align="center"><img src="assets/logo/vboycolor-logo.png" alt="VBoy Color" width="380"></h1>
 
-<p align="center"><b>Virtual Boy games in color - in 3D on Meta Quest, on PC, and on Android phones and handhelds.</b></p>
+<p align="center"><b>Virtual Boy games in color - in 3D on Meta Quest and Steam Frame, on PC, and on Android phones and handhelds.</b></p>
 
-VBoy Color is a free, open-source Virtual Boy emulator. On a Quest headset
-it shows games the way the Virtual Boy was meant to be seen, in stereoscopic
-3D, but in color instead of red on black. On Windows and Linux it plays them
-in a window, no headset needed, and on Android phones, tablets and handhelds
-with touch controls or a gamepad. It is also a RetroArch core, for Windows,
-Linux, macOS, Android and the Nintendo Switch (homebrew).
+VBoy Color is a free, open-source Virtual Boy emulator. On a Quest or Frame
+headset it shows games the way the Virtual Boy was meant to be seen, in
+stereoscopic 3D, but in color instead of red on black. On Windows and Linux
+it plays them in a window, no headset needed, and on Android phones, tablets
+and handhelds with touch controls or a gamepad. It is also a RetroArch core,
+for Windows, Linux, macOS, Android and the Nintendo Switch (homebrew).
 
 <p align="center"><a href="https://youtu.be/vsScgEVnbME"><img src="images/demo-video.jpg" alt="VBoy Color demo video: eight Virtual Boy games, the original red next to VBoy Color" width="720"></a><br>
 <a href="https://youtu.be/vsScgEVnbME"><b>▶ Watch the demo</b></a> - eight games, the original red next to VBoy Color (2 min)</p>
@@ -82,11 +82,13 @@ pack).*
   screens for all. As a list (Y) or last played first (X), and all games
   or only those with a color pack (the chip at the top, or Settings → Only
   games with color packs). Pick with the
-  sticks, a gamepad, the mouse, or by pointing a Quest controller and
-  pulling its trigger.
-- **Real 3D on Quest** - each eye gets its own picture, as on the hardware,
-  and both eyes always show the same colors. The display runs at the
-  headset's highest refresh rate, so scrolling stays smooth.
+  sticks, a gamepad, the mouse, or by pointing a Quest or Frame controller
+  and pulling its trigger.
+- **Real 3D on Quest and Frame** - each eye gets its own
+  picture, as on the hardware, and both eyes always show the same colors.
+  On Quest the display runs at the headset's highest refresh rate, so
+  scrolling stays smooth; on Frame, SteamVR picks the rate (set it
+  per app in SteamVR's settings - 100 or 120 Hz).
 - **Save states** - several slots per game, with thumbnails in color.
 - **RetroAchievements** - log in with your
   [RetroAchievements](https://retroachievements.org) account (Achievements in
@@ -103,7 +105,7 @@ pack).*
   the usual emulator layout (the Virtual Boy's A and B where they are on its
   controller: right and bottom); every pad connected works, and pads plugged
   in later are picked up.
-- **Button mapping** - Quest controllers, gamepads and keyboard, all
+- **Button mapping** - Quest and Frame controllers, gamepads and keyboard, all
   remappable - for all games, or per game (hold a game's card in the
   library).
 - **Screen looks** - Settings → Screen → Look: *Sharp* pixels, *Smooth*
@@ -181,6 +183,23 @@ allowed to pick that rate itself. [Quest Games Optimizer](https://anagan79.itch.
 can, or `adb shell setprop debug.oculus.refreshRate 100` (until the headset
 restarts); VBoy Color then keeps it instead of asking for 120 Hz.
 
+### Frame (Steam Frame)
+
+1. Download `VBoyColor-<version>-linux-arm64.tar.gz` from
+   [Releases](https://github.com/yuk27/VBoyColor/releases) and unpack it in
+   your home folder on the Frame.
+2. Put your `.vb` ROMs in its `roms` folder.
+3. Run `./install-to-steam.py` in that folder: it adds VBoy Color to
+   Steam with its icon and library artwork (Steam closes for a moment while
+   it does). Start it from the library - started from Steam, SteamVR hands
+   it the controllers.
+
+The buttons are the Quest's - A and B, Y for Start, X for Select, Menu for
+the menu - plus the D-pad as the left D-pad, the bumpers as L and R and View
+as Select. SteamVR picks the refresh rate: set VBoyColorVR to 100 Hz (or
+120 Hz) in its per-app settings for the smoothest scrolling. More in
+[docs/STEAM_FRAME.md](docs/STEAM_FRAME.md).
+
 ### Android phones and tablets
 
 The same `VBoyColor-<version>-quest-android-arm64.apk` works on phones, tablets
@@ -224,6 +243,8 @@ VR version for a PC headset (Quest Link, Virtual Desktop or SteamVR).
 
 Download `VBoyColor-<version>-linux-x64.tar.gz`, unpack it, put your ROMs in
 `roms` and run `./VBoyColor` from that folder. Needs a Vulkan driver.
+`./VBoyColorVR` is the VR version, for a PC headset on SteamVR. For an ARM64
+machine, download `VBoyColor-<version>-linux-arm64.tar.gz` instead.
 
 ### RetroArch
 
@@ -263,26 +284,26 @@ Switch). A Switch running Android or Linux uses the `android-arm64` or
 
 ## Controls
 
-**Menu:** the left controller's Menu button, a gamepad's Select + Start
-held together (or Guide), or **Tab** or **Esc** on PC. Some PC VR runtimes
+**Menu:** the left controller's Menu button (the right one's on the Frame),
+a gamepad's Select + Start held together (or Guide), or **Tab** or **Esc** on PC. Some PC VR runtimes
 keep the Menu button for themselves - there, hold the left stick click for a
 second. In the menu: sticks / D-pad / arrow keys move, A (Enter) picks, B
 (Esc) goes back - out to the sidebar, or back to the game. The mouse and the
-Quest controllers' lasers work too: a quick trigger press clicks, holding the
+Quest and Frame controllers' lasers work too: a quick trigger press clicks, holding the
 trigger and moving drags (scrolls lists and the library).
 
-| Virtual Boy | Quest controllers | Keyboard | Gamepad |
-|---|---|---|---|
-| Left D-pad | left stick | arrow keys | D-pad or left stick |
-| Right D-pad | right stick | W A S D | right stick |
-| A / B | A / B | X / Z | B / A - where the Virtual Boy has them (right and bottom face buttons) |
-| L / R | left / right trigger | Q / E | LB / RB (or LT / RT) |
-| Start / Select | Y / X | Enter / Backspace | Start / Back (View) |
+| Virtual Boy | Quest controllers | Frame controllers | Keyboard | Gamepad |
+|---|---|---|---|---|
+| Left D-pad | left stick | left stick or D-pad | arrow keys | D-pad or left stick |
+| Right D-pad | right stick | right stick | W A S D | right stick |
+| A / B | A / B | A / B | X / Z | B / A - where the Virtual Boy has them (right and bottom face buttons) |
+| L / R | left / right trigger | left / right trigger or bumper | Q / E | LB / RB (or LT / RT) |
+| Start / Select | Y / X | Y / X (or View for Select) | Enter / Backspace | Start / Back (View) |
 
 The gamepad column is the PC window's and the phone's. With a gamepad in VR
 (VBoyColorVR.exe, or a pad paired with the Quest), A is on A and B on B.
 Everything can be remapped in Settings → Button mapping - and per game:
-hold a game's card in the library (a finger or a Quest laser held still on
+hold a game's card in the library (a finger or a Quest or Frame laser held still on
 it; right-click with a mouse) for its own button mapping and, on a phone,
 its own touch controls. On PC, **Alt+Enter** toggles fullscreen, and the
 other keys are in Settings → Controls → Hotkeys: by default F2 saves a

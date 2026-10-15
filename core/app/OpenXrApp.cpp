@@ -57,6 +57,8 @@ namespace
 namespace
 {
     constexpr int32_t kMaxMenuRenderScale = 6;
+    // (not in every OpenXR SDK's headers yet)
+    constexpr const char *kFrameControllerExtensionName = "XR_VALVE_frame_controller_interaction";
     // The screen's swapchains hold the picture at this many pixels per
     // Virtual Boy pixel (5x: 1920x1120 per eye) - about what Quest 3 shows
     // of the screen at its default size, so the compositor barely resamples
@@ -252,7 +254,7 @@ void OpenXrApp::Initialize(const InitInfo &info)
     m_appMenu.Initialize(m_uiRenderer, static_cast<VkFormat>(m_colorFormat), m_emulator, m_settings, *m_platform,
                          ButtonMappingProfile::Vr, m_passthroughExtAvailable);
 
-    m_input.Initialize(m_instance, m_session);
+    m_input.Initialize(m_instance, m_session, m_frameControllerExtAvailable);
 }
 
 void OpenXrApp::CreateInstance(const InitInfo &info)
@@ -268,8 +270,9 @@ void OpenXrApp::CreateInstance(const InitInfo &info)
     // Optional extensions, enabled only if the runtime actually offers them:
     // XR_FB_display_refresh_rate (Quest; see RequestMaxDisplayRefreshRate),
     // XR_KHR_composition_layer_cylinder (curved screen; see
-    // RenderScreenLayer) and XR_FB_passthrough (see UpdatePassthrough).
-    // SteamVR doesn't offer them as of writing.
+    // RenderScreenLayer), XR_FB_passthrough (see UpdatePassthrough) and
+    // XR_VALVE_frame_controller_interaction (the Steam Frame's controllers;
+    // see XrInput::Initialize).
     uint32_t availableCount = 0;
     CheckXr(xrEnumerateInstanceExtensionProperties(nullptr, 0, &availableCount, nullptr),
             "xrEnumerateInstanceExtensionProperties (count)");
@@ -293,6 +296,11 @@ void OpenXrApp::CreateInstance(const InitInfo &info)
             extensions.push_back(XR_FB_PASSTHROUGH_EXTENSION_NAME);
             m_passthroughExtAvailable = true;
         }
+        else if (std::strcmp(ext.extensionName, kFrameControllerExtensionName) == 0)
+        {
+            extensions.push_back(kFrameControllerExtensionName);
+            m_frameControllerExtAvailable = true;
+        }
     }
 
     XrInstanceCreateInfo createInfo{XR_TYPE_INSTANCE_CREATE_INFO};
@@ -309,6 +317,8 @@ void OpenXrApp::CreateInstance(const InitInfo &info)
     CheckXr(xrGetInstanceProperties(m_instance, &instanceProperties), "xrGetInstanceProperties");
     m_runtimeName = instanceProperties.runtimeName;
     XrLogLine("[OpenXR] Runtime: %s", m_runtimeName.c_str());
+    // See RenderScreenProjection.
+    m_screenAsProjection = m_runtimeName.find("SteamVR") != std::string::npos;
 }
 
 void OpenXrApp::InitializeSystem()
@@ -786,6 +796,45 @@ bool OpenXrApp::RenderScreenLayer(XrCompositionLayerQuad &leftQuadLayer, XrCompo
     return true;
 }
 
+// SteamVR shows a layer whose eyeVisibility is LEFT or RIGHT to both eyes
+// (seen on the Steam Frame: both eyes got one picture, so the 3D was gone),
+// so there the screen goes out as a projection layer instead, which is per
+// eye by definition: each eye's view looks from that eye straight at its
+// quad (the view turned like the screen), with the field of view the quad's
+// corners make from there. The compositor then draws each picture exactly
+// where the quad would have been, at the same sharpness. False (keep the
+// quads) when an eye isn't in front of its screen.
+bool OpenXrApp::RenderScreenProjection(const XrCompositionLayerQuad &leftQuad, const XrCompositionLayerQuad &rightQuad,
+                                       XrCompositionLayerProjectionView (&views)[2]) const
+{
+    if (m_views.size() < 2)
+        return false;
+    const XrCompositionLayerQuad *quads[2] = {&leftQuad, &rightQuad};
+    for (int eye = 0; eye < 2; ++eye)
+    {
+        const XrCompositionLayerQuad &quad = *quads[eye];
+        const XrQuaternionf &q = quad.pose.orientation;
+        const XrVector3f &eyePosition = m_views[eye].pose.position;
+        // The eye in the quad's own frame (the quad faces +Z there).
+        const XrVector3f offset{eyePosition.x - quad.pose.position.x, eyePosition.y - quad.pose.position.y,
+                                eyePosition.z - quad.pose.position.z};
+        const XrVector3f local = QuatRotateVector(XrQuaternionf{-q.x, -q.y, -q.z, q.w}, offset);
+        if (local.z < 0.05f)
+            return false;
+        const float halfWidth = 0.5f * quad.size.width;
+        const float halfHeight = 0.5f * quad.size.height;
+        views[eye] = XrCompositionLayerProjectionView{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW};
+        views[eye].pose.orientation = q;
+        views[eye].pose.position = eyePosition;
+        views[eye].fov.angleLeft = std::atan2(-halfWidth - local.x, local.z);
+        views[eye].fov.angleRight = std::atan2(halfWidth - local.x, local.z);
+        views[eye].fov.angleDown = std::atan2(-halfHeight - local.y, local.z);
+        views[eye].fov.angleUp = std::atan2(halfHeight - local.y, local.z);
+        views[eye].subImage = quad.subImage;
+    }
+    return true;
+}
+
 bool OpenXrApp::RenderMenuLayer(XrCompositionLayerQuad &quadLayer)
 {
     // (the menu - or, while it's closed, a notice over the game: an achievement unlocked)
@@ -945,9 +994,10 @@ void OpenXrApp::RenderFrame()
     std::memcpy(m_lastButtonStates, m_buttonStates, sizeof(m_buttonStates));
     m_input.Sync(m_session);
     m_input.GetButtonStates(m_buttonStates);
-    // XrInput always zeroes this slot (see its class comment) - a physical
-    // gamepad isn't an OpenXR device, so it's fed in separately.
-    m_buttonStates[ButtonMapper::DeviceGamepad] = m_gamepadButtonState;
+    // XrInput fills this slot only with the Steam Frame's gamepad-only
+    // controls (see its class comment) - a physical gamepad isn't an OpenXR
+    // device, so it's fed in separately and merged.
+    m_buttonStates[ButtonMapper::DeviceGamepad] |= m_gamepadButtonState;
 
     const bool menuButtonPressed = m_input.IsMenuButtonPressed() || m_gamepadMenuButtonPressed;
     if (menuButtonPressed && !m_lastMenuButtonPressed)
@@ -1113,11 +1163,22 @@ void OpenXrApp::RenderFrame()
     XrCompositionLayerQuad screenQuadRight{XR_TYPE_COMPOSITION_LAYER_QUAD};
     XrCompositionLayerCylinderKHR screenCylinderLeft{XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR};
     XrCompositionLayerCylinderKHR screenCylinderRight{XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR};
+    XrCompositionLayerProjection screenProjection{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+    XrCompositionLayerProjectionView screenViews[2];
     bool screenIsCylinder = false;
     if (frameState.shouldRender && RenderScreenLayer(screenQuadLeft, screenQuadRight, screenCylinderLeft,
                                                      screenCylinderRight, screenIsCylinder))
     {
-        if (screenIsCylinder)
+        // (with this frame's eye poses only - see RenderScreenProjection)
+        if (m_screenAsProjection && !screenIsCylinder && m_headPoseValid &&
+            RenderScreenProjection(screenQuadLeft, screenQuadRight, screenViews))
+        {
+            screenProjection.space = m_appSpace;
+            screenProjection.viewCount = 2;
+            screenProjection.views = screenViews;
+            layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader *>(&screenProjection));
+        }
+        else if (screenIsCylinder)
         {
             layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader *>(&screenCylinderLeft));
             layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader *>(&screenCylinderRight));

@@ -122,3 +122,6 @@ __pycache__/
 
 # tools\android_debug.bat / android_build.bat log
 tools/vboycolor-log.txt
+
+# Steam Frame (Linux ARM64) build dir - tools/steam_frame/
+build-frame/

@@ -11,11 +11,15 @@
 // IsAPressed, etc.) that OpenXrApp maps to VB gameplay buttons (see
 // Emulator.h's VBButtonBit) - two different semantics from the same Quest
 // Touch controller profile, so this class exposes both rather than picking
-// one. The DeviceGamepad slot (menu-nav bitmask) is left unused for now.
+// one. The DeviceGamepad slot carries what only the Steam Frame's
+// controllers have (see Initialize).
 class XrInput
 {
 public:
-    void Initialize(XrInstance instance, XrSession session);
+    // frameControllers: the runtime offers XR_VALVE_frame_controller_interaction
+    // (enabled at instance creation) - the Steam Frame's controllers get
+    // their own bindings, D-pad, bumpers and View included.
+    void Initialize(XrInstance instance, XrSession session, bool frameControllers = false);
     void Shutdown();
 
     // Must be called once per frame (after xrWaitFrame) before reading state.
@@ -68,6 +72,11 @@ private:
     XrAction m_menuClickAction{XR_NULL_HANDLE};
     XrAction m_thumbstickClickAction{XR_NULL_HANDLE};
     XrAction m_aimAction{XR_NULL_HANDLE};
+    // Steam Frame only: the controls Touch doesn't have, read into the
+    // DeviceGamepad slot as a gamepad's (see Sync).
+    XrAction m_dpadActions[4]{XR_NULL_HANDLE, XR_NULL_HANDLE, XR_NULL_HANDLE, XR_NULL_HANDLE}; // up, down, left, right
+    XrAction m_bumperAction{XR_NULL_HANDLE};
+    XrAction m_viewClickAction{XR_NULL_HANDLE};
     XrSpace m_aimSpaces[2]{XR_NULL_HANDLE, XR_NULL_HANDLE}; // left, right
     XrPath m_leftHandPath{XR_NULL_PATH};
     XrPath m_rightHandPath{XR_NULL_PATH};

@@ -110,8 +110,18 @@ jobs:
           tail -n 60 build.log | sed 's/%/%25/g; s/\r//g' | awk 'BEGIN{ORS="%0A"} {print}' | sed 's/^/::error title=windows::/'
           echo
 
+  # x86-64, and ARM64 for the Steam Frame (its SteamOS is ARM64 Linux) and
+  # other ARM64 Linux boxes. Both the window app and the VR app.
   linux:
-    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            os: ubuntu-22.04
+          - arch: arm64
+            os: ubuntu-22.04-arm
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -131,18 +141,20 @@ jobs:
       - name: Build
         run: |
           set -o pipefail
-          cmake --build build-pc --target VBoyColor 2>&1 | tee build.log
+          cmake --build build-pc --target VBoyColor VBoyColorVR 2>&1 | tee build.log
 
       - name: Package
         run: |
           set -e
           version=$(sed -n 's/.*kGeneratedVersionString = "\([^"]*\)".*/\1/p' build-pc/generated/Version.h)
-          dir=VBoyColor-$version-linux-x64
+          dir=VBoyColor-$version-linux-${{ matrix.arch }}
           mkdir -p "$dir/roms"
-          cp build-pc/VBoyColor "$dir/"
-          strip "$dir/VBoyColor"
+          cp build-pc/VBoyColor build-pc/VBoyColorVR "$dir/"
+          strip "$dir/VBoyColor" "$dir/VBoyColorVR"
           cp -r build-pc/fonts build-pc/icons build-pc/logo build-pc/colorpacks build-pc/icon.png "$dir/"
           cp assets/PlaceRomsHere.txt "$dir/roms/"
+          cp -r assets/steam "$dir/steam" # (library artwork for adding it to Steam)
+          cp platform/desktop/install-to-steam.py "$dir/"
           cp -r README.md LICENSE THIRD-PARTY-NOTICES.md licenses "$dir/"
           tar czf "$dir.tar.gz" "$dir"
           echo "PACKAGE=$dir" >> "$GITHUB_ENV"
@@ -157,7 +169,7 @@ jobs:
         if: failure()
         run: |
           [ -f build.log ] || exit 0
-          tail -n 60 build.log | sed 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}' | sed 's/^/::error title=linux::/'
+          tail -n 60 build.log | sed 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}' | sed 's/^/::error title=linux-${{ matrix.arch }}::/'
           echo
 
   android:
@@ -434,6 +446,7 @@ jobs:
           apk=$(ls VBoyColor-*-quest-android-arm64.apk)
           win=$(ls VBoyColor-*-windows-x64.zip)
           lin=$(ls VBoyColor-*-linux-x64.tar.gz)
+          linarm=$(ls VBoyColor-*-linux-arm64.tar.gz)
           {
             if [ -f "../$notes" ]; then cat "../$notes"; echo; fi
             echo "## Which download?"
@@ -443,7 +456,8 @@ jobs:
             echo "| **Meta Quest** 2, 3, 3S, Pro - in VR, in 3D | \`$apk\` |"
             echo "| **Android phones, tablets and handhelds** (Android 10 or newer, 64-bit ARM, Vulkan - nearly every device from the last several years; Retroid, AYN, Anbernic and other Android handhelds too) - touch controls or a gamepad | \`$apk\` (the same file) |"
             echo "| **Windows** 10 / 11, 64-bit, with a Vulkan graphics driver - \`VBoyColor.exe\` plays in a window; \`VBoyColorVR.exe\` in a PC VR headset (Quest Link / Air Link, Virtual Desktop, SteamVR) | \`$win\` |"
-            echo "| **Linux** x86-64 with Vulkan - in a window | \`$lin\` |"
+            echo "| **Linux** x86-64 with Vulkan - \`VBoyColor\` plays in a window; \`VBoyColorVR\` in a PC VR headset (SteamVR) | \`$lin\` |"
+            echo "| **Steam Frame**, and Linux ARM64 with Vulkan - \`VBoyColorVR\` in VR, in 3D, as a non-Steam game (see docs/STEAM_FRAME.md); \`VBoyColor\` in a window | \`$linarm\` |"
             echo "| **RetroArch** (or another libretro frontend) on Windows, Linux (x86-64 and ARM64), macOS or Android - the colors and the 3D for a normal screen, as a core | \`vboycolor_libretro-...-<platform>.zip\` |"
             echo "| **Nintendo Switch** (homebrew, RetroArch for the Switch) - the RetroArch core; copy its \`retroarch\` folder onto the SD card | \`vboycolor_libretro-...-switch.zip\` |"
             echo

@@ -22,7 +22,7 @@ namespace
 
 } // namespace
 
-void XrInput::Initialize(XrInstance instance, XrSession session)
+void XrInput::Initialize(XrInstance instance, XrSession session, bool frameControllers)
 {
     m_instance = instance;
 
@@ -61,6 +61,15 @@ void XrInput::Initialize(XrInstance instance, XrSession session)
     m_thumbstickClickAction = createAction("thumbstick_click", "Left Stick Click", XR_ACTION_TYPE_BOOLEAN_INPUT, false);
     // The menu's laser pointer (see LocateAim).
     m_aimAction = createAction("aim", "Aim", XR_ACTION_TYPE_POSE_INPUT, true);
+    if (frameControllers)
+    {
+        m_dpadActions[0] = createAction("dpad_up", "D-pad Up", XR_ACTION_TYPE_BOOLEAN_INPUT, false);
+        m_dpadActions[1] = createAction("dpad_down", "D-pad Down", XR_ACTION_TYPE_BOOLEAN_INPUT, false);
+        m_dpadActions[2] = createAction("dpad_left", "D-pad Left", XR_ACTION_TYPE_BOOLEAN_INPUT, false);
+        m_dpadActions[3] = createAction("dpad_right", "D-pad Right", XR_ACTION_TYPE_BOOLEAN_INPUT, false);
+        m_bumperAction = createAction("bumper", "Bumper", XR_ACTION_TYPE_BOOLEAN_INPUT, true);
+        m_viewClickAction = createAction("view_click", "View Button", XR_ACTION_TYPE_BOOLEAN_INPUT, false);
+    }
 
     auto path = [&](const char *p)
     {
@@ -103,6 +112,48 @@ void XrInput::Initialize(XrInstance instance, XrSession session)
     suggestedBindings.suggestedBindings = bindings;
     suggestedBindings.countSuggestedBindings = static_cast<uint32_t>(std::size(bindings));
     CheckXr(xrSuggestInteractionProfileBindings(instance, &suggestedBindings), "xrSuggestInteractionProfileBindings");
+
+    // The Steam Frame's controllers: a gamepad split in two - the D-pad and
+    // View on the left, all four face buttons and Menu on the right. The
+    // buttons do what the same-named ones do on Touch (X and Y included,
+    // though they're on the right hand here), Menu opens the menu, and what
+    // Touch has no button for reads as the gamepad's own (see Sync), so the
+    // gamepad defaults cover it: the D-pad as the left D-pad, the bumpers as
+    // L and R, View as Select. Suggested only where the runtime offers the
+    // profile - one unknown path rejects the whole suggestion.
+    if (frameControllers)
+    {
+        const XrActionSuggestedBinding frameBindings[] = {
+            {m_thumbstickAction, path("/user/hand/left/input/thumbstick")},
+            {m_thumbstickAction, path("/user/hand/right/input/thumbstick")},
+            {m_aClickAction, path("/user/hand/right/input/a/click")},
+            {m_bClickAction, path("/user/hand/right/input/b/click")},
+            {m_xClickAction, path("/user/hand/right/input/x/click")},
+            {m_yClickAction, path("/user/hand/right/input/y/click")},
+            {m_triggerAction, path("/user/hand/left/input/trigger/value")},
+            {m_triggerAction, path("/user/hand/right/input/trigger/value")},
+            {m_menuClickAction, path("/user/hand/right/input/menu/click")},
+            {m_thumbstickClickAction, path("/user/hand/left/input/thumbstick/click")},
+            {m_aimAction, path("/user/hand/left/input/aim/pose")},
+            {m_aimAction, path("/user/hand/right/input/aim/pose")},
+            {m_dpadActions[0], path("/user/hand/left/input/dpad_up/click")},
+            {m_dpadActions[1], path("/user/hand/left/input/dpad_down/click")},
+            {m_dpadActions[2], path("/user/hand/left/input/dpad_left/click")},
+            {m_dpadActions[3], path("/user/hand/left/input/dpad_right/click")},
+            {m_bumperAction, path("/user/hand/left/input/bumper/click")},
+            {m_bumperAction, path("/user/hand/right/input/bumper/click")},
+            {m_viewClickAction, path("/user/hand/left/input/view/click")},
+        };
+        XrPath frameProfilePath;
+        CheckXr(xrStringToPath(instance, "/interaction_profiles/valve/frame_controller_valve", &frameProfilePath),
+                "xrStringToPath (Frame profile)");
+        XrInteractionProfileSuggestedBinding frameSuggested{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+        frameSuggested.interactionProfile = frameProfilePath;
+        frameSuggested.suggestedBindings = frameBindings;
+        frameSuggested.countSuggestedBindings = static_cast<uint32_t>(std::size(frameBindings));
+        CheckXr(xrSuggestInteractionProfileBindings(instance, &frameSuggested),
+                "xrSuggestInteractionProfileBindings (Frame)");
+    }
 
     XrSessionActionSetsAttachInfo attachInfo{XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
     attachInfo.countActionSets = 1;
@@ -280,6 +331,34 @@ void XrInput::Sync(XrSession session)
         m_buttonStates[ButtonMapper::DeviceLeftTouch] |= ButtonMapper::ButtonMapping[ButtonMapper::EmuButton_X];
     if (m_yPressed)
         m_buttonStates[ButtonMapper::DeviceLeftTouch] |= ButtonMapper::ButtonMapping[ButtonMapper::EmuButton_Y];
+
+    // The Frame's D-pad, bumpers and View, as a gamepad's (see Initialize).
+    // Gamepad bits, not Touch ones: the D-pad must not mix with the sticks'
+    // generic direction bits, and the button mapping page captures them
+    // like any pad's.
+    if (m_viewClickAction != XR_NULL_HANDLE)
+    {
+        uint32_t &pad = m_buttonStates[ButtonMapper::DeviceGamepad];
+        const uint32_t dpadBits[4] = {ButtonMapper::EmuButton_Up, ButtonMapper::EmuButton_Down, ButtonMapper::EmuButton_Left,
+                                      ButtonMapper::EmuButton_Right};
+        for (int i = 0; i < 4; ++i)
+            if (readRawBool(m_dpadActions[i]))
+                pad |= ButtonMapper::ButtonMapping[dpadBits[i]];
+        auto readHandBool = [&](XrAction action, XrPath handPath)
+        {
+            XrActionStateGetInfo getInfo{XR_TYPE_ACTION_STATE_GET_INFO};
+            getInfo.action = action;
+            getInfo.subactionPath = handPath;
+            XrActionStateBoolean state{XR_TYPE_ACTION_STATE_BOOLEAN};
+            return XR_SUCCEEDED(xrGetActionStateBoolean(session, &getInfo, &state)) && state.isActive && state.currentState;
+        };
+        if (readHandBool(m_bumperAction, m_leftHandPath))
+            pad |= ButtonMapper::ButtonMapping[ButtonMapper::EmuButton_LShoulder];
+        if (readHandBool(m_bumperAction, m_rightHandPath))
+            pad |= ButtonMapper::ButtonMapping[ButtonMapper::EmuButton_RShoulder];
+        if (readRawBool(m_viewClickAction))
+            pad |= ButtonMapper::ButtonMapping[ButtonMapper::EmuButton_Back];
+    }
 
     // On PC VR, holding the left stick click (about a second) is a second way
     // in - runtimes are free to keep the physical menu button for themselves

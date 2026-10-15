@@ -461,17 +461,19 @@ else()
     )
     if(NOT WIN32)
         # Off Windows the fonts and icons are loose files next to the
-        # executable (DesktopPlatform::LoadAssetBytes).
-        add_custom_command(
-            TARGET VBoyColor POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-                    "${CMAKE_SOURCE_DIR}/assets/runtime/fonts" "$<TARGET_FILE_DIR:VBoyColor>/fonts"
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-                    "${CMAKE_SOURCE_DIR}/assets/runtime/icons" "$<TARGET_FILE_DIR:VBoyColor>/icons"
-            COMMAND ${CMAKE_COMMAND} -E copy_directory
-                    "${CMAKE_SOURCE_DIR}/assets/runtime/logo" "$<TARGET_FILE_DIR:VBoyColor>/logo"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${CMAKE_SOURCE_DIR}/assets/runtime/icon.png" "$<TARGET_FILE_DIR:VBoyColor>/icon.png"
-        )
+        # executable (DesktopPlatform::LoadAssetBytes) - for both apps.
+        foreach(VBGO_APP_TARGET VBoyColor VBoyColorVR)
+            add_custom_command(
+                TARGET ${VBGO_APP_TARGET} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_directory
+                        "${CMAKE_SOURCE_DIR}/assets/runtime/fonts" "$<TARGET_FILE_DIR:${VBGO_APP_TARGET}>/fonts"
+                COMMAND ${CMAKE_COMMAND} -E copy_directory
+                        "${CMAKE_SOURCE_DIR}/assets/runtime/icons" "$<TARGET_FILE_DIR:${VBGO_APP_TARGET}>/icons"
+                COMMAND ${CMAKE_COMMAND} -E copy_directory
+                        "${CMAKE_SOURCE_DIR}/assets/runtime/logo" "$<TARGET_FILE_DIR:${VBGO_APP_TARGET}>/logo"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${CMAKE_SOURCE_DIR}/assets/runtime/icon.png" "$<TARGET_FILE_DIR:${VBGO_APP_TARGET}>/icon.png"
+            )
+        endforeach()
     endif()
 endif()

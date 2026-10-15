@@ -106,6 +106,11 @@ private:
     // little closer to the viewer than the screen layer so it visibly
     // floats in front of it instead of sitting flush on the same plane.
     bool RenderMenuLayer(XrCompositionLayerQuad &quadLayer);
+    // The screen's two quads (from RenderScreenLayer) as the views of one
+    // projection layer, for runtimes that show per-eye quads to both eyes
+    // (m_screenAsProjection) - see the definition's doc comment.
+    bool RenderScreenProjection(const XrCompositionLayerQuad &leftQuad, const XrCompositionLayerQuad &rightQuad,
+                                XrCompositionLayerProjectionView (&views)[2]) const;
     // Where the menu panel is (its center and orientation) and its size, in
     // m_appSpace.
     void MenuQuadPose(XrPosef &pose, XrExtent2Df &size) const;
@@ -138,6 +143,12 @@ private:
     // room around the screen instead of black (AppSettings::passthrough).
     // Created the first time it's switched on, paused while off.
     bool m_passthroughExtAvailable = false;
+    // XR_VALVE_frame_controller_interaction (the Steam Frame's controllers)
+    // was found and enabled - see XrInput::Initialize.
+    bool m_frameControllerExtAvailable = false;
+    // SteamVR: the screen goes out as a projection layer, not as per-eye
+    // quads - see RenderScreenProjection.
+    bool m_screenAsProjection = false;
     bool m_passthroughFailed = false; // creating it failed - stays black
     bool m_passthroughRunning = false;
     XrPassthroughFB m_passthrough = XR_NULL_HANDLE;
