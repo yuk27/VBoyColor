@@ -604,6 +604,14 @@ void AppMenu::HandlePointer(float deltaSeconds)
         p.lastY = p.y;
     }
     bool moved = p.present && (std::abs(p.x - p.lastX) > 0.01f || std::abs(p.y - p.lastY) > 0.01f);
+    if (p.navHeld)
+    {
+        constexpr float kNavRelease = 12.0f; // menu units: about two degrees of a laser
+        if (!p.present || std::hypot(p.x - p.navX, p.y - p.navY) > kNavRelease)
+            p.navHeld = false;
+        else
+            moved = false;
+    }
     bool clicked = p.present && p.down && !p.wasDown;
     const bool pressedNow = clicked; // (the moment it's pressed, whatever a laser's click waits for)
     bool longPressed = p.present && p.secondaryDown && !p.secondaryWasDown; // (the mouse's right button)
@@ -839,6 +847,19 @@ void AppMenu::Update(uint32_t buttonStates[3], uint32_t lastButtonStates[3], flo
         }
     }
 
+    // A stick or D-pad held: the pointer leaves the selection to it (see
+    // Pointer::navHeld).
+    {
+        using namespace ButtonMapper;
+        const uint32_t nav = ButtonMapping[EmuButton_Up] | ButtonMapping[EmuButton_Down] | ButtonMapping[EmuButton_Left] |
+                             ButtonMapping[EmuButton_Right];
+        if ((buttonStates[0] | buttonStates[1] | buttonStates[2]) & nav)
+        {
+            m_pointer.navHeld = true;
+            m_pointer.navX = m_pointer.x;
+            m_pointer.navY = m_pointer.y;
+        }
+    }
     HandlePointer(deltaSeconds);
 
     const bool wasOpen = m_open;

@@ -296,6 +296,12 @@ private:
         bool secondaryDown = false, secondaryWasDown = false; // the mouse's right button
         float heldSeconds = 0;  // how long it's been held still
         bool longFired = false; // a long press was reported for this press
+        // A stick or D-pad stepped the selection: where the pointer was then.
+        // Until it moves well away from there it doesn't select by hovering -
+        // a laser held in a hand always moves a little, and would otherwise
+        // take the selection straight back from the stick.
+        bool navHeld = false;
+        float navX = 0, navY = 0;
     } m_pointer;
     int m_sidebarHover = -1;
     // The hints row's hints, where they were last drawn (clickable).
